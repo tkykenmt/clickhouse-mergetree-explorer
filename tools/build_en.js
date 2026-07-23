@@ -3,12 +3,16 @@ const fs=require('fs'),path=require('path');
 const root=path.join(__dirname,'..');
 let h=fs.readFileSync(path.join(root,'ja/index.html'),'utf8');
 const map=JSON.parse(fs.readFileSync(path.join(__dirname,'ja-en.json'),'utf8'));
+// 言語ドロップダウン: 対訳適用前にラベルを退避し、選択マークを入れ替える
+h=h.replace('class="langopt on">日本語','class="langopt">@@JA_LABEL@@');
+h=h.replace('class="langopt">English','class="langopt on">English');
+h=h.replace('title="Language / 言語"','title="@@LANG_TITLE@@"');
 const keys=Object.keys(map).sort((a,b)=>b.length-a.length);
 keys.forEach(k=>{ if(map[k]!=null) h=h.split(k).join(map[k]); });
 h=h.replace('<html lang="ja">','<html lang="en">');
+h=h.split('@@JA_LABEL@@').join('日本語');
+h=h.split('@@LANG_TITLE@@').join('Language / 言語');
 
-h=h.replace('class="langopt on">日本語','class="langopt">日本語');
-h=h.replace('class="langopt">English','class="langopt on">English');
 h=h.replace('>EN</a>','>日本語</a>');
 h=h.split(' ・ ').join(' · ');
 // コメントを除いた残存日本語の検査
