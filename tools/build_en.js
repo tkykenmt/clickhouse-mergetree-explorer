@@ -7,8 +7,8 @@ const keys=Object.keys(map).sort((a,b)=>b.length-a.length);
 keys.forEach(k=>{ if(map[k]!=null) h=h.split(k).join(map[k]); });
 h=h.replace('<html lang="ja">','<html lang="en">');
 
-h=h.replace('href="../en/" title="English version" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center"',
-            'href="../ja/" title="日本語版" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;width:auto;padding:0 12px;white-space:nowrap;border-radius:99px"');
+h=h.replace('class="langopt on">日本語','class="langopt">日本語');
+h=h.replace('class="langopt">English','class="langopt on">English');
 h=h.replace('>EN</a>','>日本語</a>');
 h=h.split(' ・ ').join(' · ');
 // コメントを除いた残存日本語の検査
@@ -17,7 +17,7 @@ const JA=/[぀-ヿ㐀-鿿]/;
 const bad=[];
 t.split('\n').forEach((l,i)=>{ if(JA.test(l)) bad.push((i+1)+': '+l.trim().slice(0,100)); });
 // 「日本語」リンクラベルは意図的な残存
-const real=bad.filter(l=>!l.includes('>日本語</a>')&&!l.includes('id="langBtn"'));
+const real=bad.filter(l=>!l.includes('langopt')&&!l.includes('Language / 言語'));
 if(real.length){ console.error('未翻訳の日本語が残っています:'); real.slice(0,30).forEach(l=>console.error(' '+l)); process.exit(1); }
 fs.mkdirSync(path.join(root,'en'),{recursive:true});
 fs.writeFileSync(path.join(root,'en/index.html'),h);

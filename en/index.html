@@ -79,6 +79,9 @@ select{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);b
 .msel-pop{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:40;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;flex-direction:column;gap:8px;white-space:nowrap;box-shadow:0 12px 30px var(--shadow)}
 .msel.open .msel-pop{display:flex}
 .msel-pop label{display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px;color:var(--ink)}
+.langopt{display:block;padding:5px 12px;color:var(--ink);text-decoration:none;border-radius:6px;font-size:13px;font-family:var(--jp);white-space:nowrap}
+.langopt:hover{background:var(--panel-2)}
+.langopt.on::after{content:" ✓";color:var(--cyan)}
 .fviz{border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:11.5px;color:var(--muted);font-family:var(--mono)}
 .fvt{font-family:var(--jp);font-size:12.5px;color:var(--ink);margin-bottom:8px}
 .fvn{font-family:var(--jp);font-size:12px;margin-top:8px;line-height:1.7}
@@ -535,7 +538,13 @@ body.L8.smt-on .smtnote{display:block}
     <h1>MergeTree <span class="y">Explorer</span></h1>
     <span class="sub">How does ClickHouse lay out data, and how does it read it? Using SaaS access logs (<code>events</code> table) as the example — poke around and see for yourself</span>
     <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
-      <a class="helpbtn" id="langBtn" href="../ja/" title="日本語版" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;width:auto;padding:0 12px;white-space:nowrap;border-radius:99px">日本語</a>
+      <span class="msel" id="langSel">
+        <button class="helpbtn" id="langBtn" title="Language / 言語">🌐</button>
+        <span class="msel-pop" style="left:auto;right:0">
+          <a href="../ja/" class="langopt on"> days本語</a>
+          <a href="../en/" class="langopt on">English</a>
+        </span>
+      </span>
       <button class="helpbtn" id="themeBtn" title="Light / dark toggle">🌓</button>
       <button class="helpbtn" id="docsBtn" title="Docs Map (mapping to the official documentation)">📚</button>
       <button class="helpbtn" id="helpBtn" title="About this tool">?</button>
@@ -2245,6 +2254,7 @@ document.querySelectorAll('.modal').forEach(m=>{
 document.querySelectorAll('.modal-x').forEach(b=>b.addEventListener('click',()=>{ b.closest('.modal').style.display='none'; }));
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.querySelectorAll('.modal').forEach(m=>m.style.display='none'); });
 $('helpBtn').addEventListener('click',()=>{ $('mHelp').style.display='flex'; });
+$('langBtn').addEventListener('click',e=>{ e.stopPropagation(); document.querySelectorAll('.msel.open').forEach(m=>{ if(m.id!=='langSel') m.classList.remove('open'); }); $('langSel').classList.toggle('open'); });
 $('docsBtn').addEventListener('click',()=>{ $('mDocs').style.display='flex'; });
 function applyTheme(t){ if(t==='light') document.documentElement.dataset.theme='light'; else delete document.documentElement.dataset.theme; try{ localStorage.setItem('mtx-theme',t); }catch(e){} }
 $('themeBtn').addEventListener('click',()=>{ applyTheme(document.documentElement.dataset.theme==='light'?'dark':'light'); });

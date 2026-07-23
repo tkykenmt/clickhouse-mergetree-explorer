@@ -13,7 +13,7 @@ setTimeout(()=>{
   d.getElementById('btnInsert').dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true}));
   if(errors.length) fails.push('insert errors');
   const clone=d.body.cloneNode(true);
-  clone.querySelectorAll('script,style').forEach(e=>e.remove());
+  clone.querySelectorAll('script,style,#langSel').forEach(e=>e.remove());
   const visible=clone.textContent.match(/[぀-ヿ㐀-鿿][^\n]{0,30}/g)||[];
   const allowed=visible.filter(s=>!s.startsWith('日本語'));
   if(allowed.length) fails.push('Japanese visible: '+JSON.stringify(allowed.slice(0,5)));
