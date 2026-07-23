@@ -1,14 +1,14 @@
 // 英語版ビルド: ja-en.json の対訳を長い順に適用して en/index.html を生成
 const fs=require('fs'),path=require('path');
 const root=path.join(__dirname,'..');
-let h=fs.readFileSync(path.join(root,'index.html'),'utf8');
+let h=fs.readFileSync(path.join(root,'ja/index.html'),'utf8');
 const map=JSON.parse(fs.readFileSync(path.join(__dirname,'ja-en.json'),'utf8'));
 const keys=Object.keys(map).sort((a,b)=>b.length-a.length);
 keys.forEach(k=>{ if(map[k]!=null) h=h.split(k).join(map[k]); });
 h=h.replace('<html lang="ja">','<html lang="en">');
-h=h.replace('href="en/" title="English version"','href="../" title="日本語版"');
-h=h.replace('href="../" title="日本語版" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center"',
-            'href="../" title="日本語版" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;width:auto;padding:0 12px;white-space:nowrap;border-radius:99px"');
+
+h=h.replace('href="../en/" title="English version" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center"',
+            'href="../ja/" title="日本語版" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;width:auto;padding:0 12px;white-space:nowrap;border-radius:99px"');
 h=h.replace('>EN</a>','>日本語</a>');
 h=h.split(' ・ ').join(' · ');
 // コメントを除いた残存日本語の検査

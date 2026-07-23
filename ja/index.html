@@ -1,0 +1,2475 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="alternate" hreflang="ja" href="https://tkykenmt.github.io/clickhouse-mergetree-explorer/ja/">
+<link rel="alternate" hreflang="en" href="https://tkykenmt.github.io/clickhouse-mergetree-explorer/en/">
+<link rel="alternate" hreflang="x-default" href="https://tkykenmt.github.io/clickhouse-mergetree-explorer/">
+<title>MergeTree Explorer | ClickHouse ストレージをさわって理解する</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0c0d10; --panel:#14161b; --panel-2:#191c23;
+  --line:#262a33; --line-soft:#1d2129;
+  --ink:#e8eaf0; --muted:#98a0b3; --dim:#707a8c;
+  --yellow:#faff69; --cyan:#6fe3ff; --orange:#ff9d5c; --green:#7dffb2; --red:#ff7d7d;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+  --jp:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN",sans-serif;
+  color-scheme:dark;
+  --t0:#7dffb230;--t1:#faff6970;--t2:#faff6900;--t3:#faff6930;--t4:#101820;--t5:#1b2836;--t6:#1f3743;--t7:#10181d;--t8:#1a1d10;--t9:#101318;--t10:#3f431f;--t11:#131a14;--t12:#2a3f52;--t13:#0e141b;--t14:#3d5a75;--t15:#171008;--t16:#5c3f24;--t17:#22402b;--t18:#4a90a8;--t19:#2a2f3a;--t20:#3a4152;--t21:#0d141a;--t22:#101713;--t23:#151823;--t24:#15170f;--t25:#16170f;--t26:#0e151b;--t27:#3a3f4a;--t28:#15171c;--t29:#4a2f43;--t30:#1a1016;--t31:#ff9dd6;--t32:#0f1216;--t33:#5c2424;--backdrop:rgba(6,8,12,.72);--shadow:rgba(0,0,0,.65);
+}
+[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f3f5f8; --panel:#ffffff; --panel-2:#edf0f5;
+  --line:#d4dae2; --line-soft:#e5e9ef;
+  --ink:#1c232e; --muted:#465366; --dim:#6d7889;
+  --yellow:#8a6d00; --cyan:#0b7ea6; --orange:#c05f0e; --green:#177a41; --red:#c94444;
+  --t0:#077b3630;--t1:#8a8f0870;--t2:#8a8f0800;--t3:#8a8f0830;--t4:#e0e7ee;--t5:#cad6e3;--t6:#bed3de;--t7:#e3eaee;--t8:#eceee3;--t9:#e7eaef;--t10:#dbdebe;--t11:#e5ece6;--t12:#afc2d3;--t13:#e5eaf0;--t14:#8da7bf;--t15:#f6f0e9;--t16:#d8bea6;--t17:#c1dbc9;--t18:#5c9bb0;--t19:#c6cad4;--t20:#aeb4c4;--t21:#e6ecf1;--t22:#e8efeb;--t23:#dddfe9;--t24:#eef0e8;--t25:#eff0e8;--t26:#e5ebf0;--t27:#b6bac4;--t28:#e3e5ea;--t29:#cfb6c8;--t30:#efe5eb;--t31:#5d0538;--t32:#e9ecf0;--t33:#d8a6a6;--backdrop:rgba(25,32,44,.38);--shadow:rgba(30,42,60,.28);
+}
+[data-theme="light"] .btn.primary{background:#f2cf3d;border-color:#dcbb2e;color:#332f10}
+[data-theme="light"] .tab.on{color:#8a6d00;border-bottom-color:#c9a400}
+[data-theme="light"] .lvchip.on{background:#faf3d4}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--jp);font-size:14px;line-height:1.65}
+button{font-family:inherit;cursor:pointer}
+code{font-family:var(--mono);font-size:.92em;color:var(--cyan);background:var(--t4);border:1px solid var(--t5);padding:1px 6px;border-radius:4px}
+
+.app{max-width:1180px;margin:0 auto;padding:0 20px 60px}
+header{padding:18px 0 10px;display:flex;flex-wrap:wrap;align-items:baseline;gap:14px}
+header h1{font-size:22px;font-weight:900}
+header h1 .y{color:var(--yellow)}
+header .sub{color:var(--muted);font-size:13px}
+
+.tabs{display:flex;gap:8px;border-bottom:1px solid var(--line);margin-bottom:12px;flex-wrap:wrap}
+.tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);padding:10px 16px;font-size:14px;font-weight:700}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--yellow);border-bottom-color:var(--yellow)}
+.pane{display:none}
+.pane.on{display:block;animation:fade .25s}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.pane.on{animation:none}}
+
+.hint{font-size:13px;color:var(--muted);border-left:2px solid var(--line);padding:2px 12px;margin-bottom:14px}
+.hint .y{color:var(--yellow)}
+
+/* ===== tab1: explorer ===== */
+.explorer{display:grid;grid-template-columns:1fr 360px;gap:22px;align-items:start}
+@media(max-width:900px){.explorer{grid-template-columns:1fr}}
+.detail{position:static;margin-top:-8px}
+.detail .badge{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:2px 10px;border-radius:99px;border:1px solid var(--line);color:var(--muted);margin-bottom:10px}
+.detail h2{font-size:18px;font-weight:900;margin-bottom:8px;font-family:var(--mono)}
+.detail p{font-size:13px;color:var(--muted);margin-bottom:12px}
+.detail dl{font-size:13px}
+.detail dt{font-family:var(--mono);color:var(--yellow);margin-top:10px;font-size:12px}
+.detail dd{color:var(--muted);margin-left:0}
+.detail .empty{color:var(--dim);font-size:13px;text-align:center;padding:40px 0}
+
+/* ===== tab2: merge sim ===== */
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;align-items:center}
+.btn{border:1px solid var(--line);background:var(--panel-2);color:var(--ink);border-radius:8px;padding:9px 16px;font-size:13px;font-weight:700;transition:all .12s}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--yellow);color:#111;border-color:var(--yellow)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+select{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:13px}
+.msel{position:relative;display:inline-block}
+.msel-btn{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:13px;cursor:pointer}
+.msel-pop{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:40;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;flex-direction:column;gap:8px;white-space:nowrap;box-shadow:0 12px 30px var(--shadow)}
+.msel.open .msel-pop{display:flex}
+.msel-pop label{display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px;color:var(--ink)}
+.fviz{border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:11.5px;color:var(--muted);font-family:var(--mono)}
+.fvt{font-family:var(--jp);font-size:12.5px;color:var(--ink);margin-bottom:8px}
+.fvn{font-family:var(--jp);font-size:12px;margin-top:8px;line-height:1.7}
+.fvgrid{display:grid;gap:4px}
+.fvgrid i{font-style:normal;text-align:center;border:1px solid var(--line);border-radius:6px;padding:4px 2px;background:var(--panel-2);line-height:1.5}
+.fvgrid i.fva{border:none;background:none;color:var(--dim);padding:0}
+.fvgrid i.win{border-color:var(--green);color:var(--green)}
+.fvrec{display:flex;gap:8px;flex-wrap:wrap;align-items:center;border:1px solid var(--t6);border-radius:8px;padding:6px 10px;background:var(--panel-2);margin-bottom:2px}
+.fvrec b{color:var(--cyan)}
+.fvarr{display:flex;justify-content:space-around;color:var(--dim);font-family:var(--jp);font-size:11.5px;margin:4px 0}
+.fvbar{display:flex;gap:2px;margin-top:12px}
+.fvbar i{position:relative;font-style:normal;text-align:center;border:1px solid var(--line);border-radius:6px;padding:9px 2px;background:var(--panel-2)}
+.fvbar i.win{border-color:var(--cyan);color:var(--cyan)}
+.fvbar em.tick{position:absolute;font-style:normal;font-size:10px;color:var(--orange);top:-13px;white-space:nowrap}
+body.smt-on .conn-oss{display:none}
+body:not(.smt-on) .conn-smt{display:none}
+.msCard{border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12.5px;color:var(--muted);line-height:1.7;cursor:pointer}
+.msCard:hover{border-color:var(--cyan)}
+.msCard .msMore{display:block;margin-top:4px;color:var(--cyan);font-size:11.5px}
+.msType{flex:1;min-width:200px;border:1px dashed var(--line);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--muted);line-height:1.7}
+#tourPanel{position:fixed;z-index:70;background:var(--panel);border:1px solid var(--yellow);border-radius:12px;padding:12px 16px;width:min(560px,calc(100vw - 32px));box-shadow:0 18px 50px var(--shadow);display:flex;gap:12px;align-items:center;font-size:13.5px;color:var(--ink);font-family:var(--jp);line-height:1.7}
+#tourPanel::before{content:'';position:absolute;top:-7px;left:26px;width:12px;height:12px;background:var(--panel);border-left:1px solid var(--yellow);border-top:1px solid var(--yellow);transform:rotate(45deg)}
+#tourPanel .tourbtns{margin-left:auto;display:flex;gap:8px;flex-shrink:0}
+.tourHl{outline:2px solid var(--yellow);outline-offset:3px;border-radius:8px}
+.svcmap.readview .pbox{opacity:.3;border-color:var(--line)}
+.svcmap.readview .pbox.qread{opacity:1;border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan) inset}
+#qpipeFoldBar{display:none}
+body.L8 #qpipeFoldBar{display:block;margin-bottom:12px}
+body.qfold .qpipe{display:none}
+body.qfold .qonly{display:none!important}
+.partitions{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.pcol{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-height:180px}
+.pcol h3{font-family:var(--mono);font-size:13px;color:var(--yellow);margin-bottom:12px;display:flex;justify-content:space-between}
+.pcol h3 span{color:var(--dim);font-weight:400;font-size:12px}
+.partbox{border:1px solid var(--t6);background:var(--t7);border-radius:8px;padding:8px 12px;margin-bottom:8px;font-family:var(--mono);font-size:13px;color:var(--cyan);display:flex;justify-content:space-between;align-items:center;transition:all .4s}
+.partbox small{color:var(--dim);font-size:11px}
+.partbox.new{animation:pop .4s}
+@keyframes pop{from{transform:scale(.9);opacity:0}to{transform:scale(1);opacity:1}}
+.partbox.inactive{opacity:.35;border-style:dashed;text-decoration:line-through}
+.partbox.merged{border-color:var(--yellow);color:var(--yellow);background:var(--t8)}
+.mlog{margin-top:14px;background:var(--t9);border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:13px;max-height:130px;overflow-y:auto}
+.mlog div{padding:3px 0;border-bottom:1px solid var(--line-soft);color:var(--muted)}
+.lts{color:var(--dim);font-size:10px;margin-right:8px}
+.ltag{display:inline-block;border:1px solid var(--t10);border-radius:4px;padding:0 6px;font-size:10px;color:var(--yellow);margin-right:8px;vertical-align:1px}
+.mlog .y{color:var(--yellow)} .mlog .c{color:var(--cyan)} .mlog .g{color:var(--green)}
+
+/* ===== tab3: query sim ===== */
+.qgrid{display:grid;grid-template-columns:330px 1fr;gap:22px;align-items:start}
+@media(max-width:900px){.qgrid{grid-template-columns:1fr}}
+.controls{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;position:sticky;top:16px}
+.controls h3{font-size:14px;margin-bottom:4px}
+.controls .sql{font-family:var(--mono);font-size:13px;background:var(--t9);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0;line-height:1.9;color:var(--muted)}
+.sql .kw{color:var(--yellow)} .sql .off{opacity:.3;text-decoration:line-through}
+.ctl{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line-soft);font-size:13px}
+.ctl input[type=checkbox]{accent-color:var(--yellow);width:16px;height:16px}
+.ctl input[type=range]{flex:1;accent-color:var(--cyan)}
+.ctl .val{font-family:var(--mono);color:var(--cyan);min-width:52px;text-align:right;font-size:13px}
+.funnel{display:flex;flex-direction:column;gap:6px;margin-top:14px}
+.frow{display:grid;grid-template-columns:120px 1fr 84px;gap:8px;align-items:center;font-size:12px}
+.frow .fl{color:var(--muted)}
+.fbar{height:14px;border-radius:4px;background:var(--line-soft);overflow:hidden}
+.fbar i{display:block;height:100%;border-radius:4px;transition:width .3s}
+.frow .fn{font-family:var(--mono);text-align:right;color:var(--ink)}
+.f1 i{background:var(--dim)} .f2 i{background:var(--yellow)} .f3 i{background:var(--cyan)} .f4 i{background:var(--orange)} .f5 i{background:var(--green)}
+.board{display:flex;flex-direction:column;gap:14px}
+.qpart{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;transition:opacity .25s}
+.qpart.pruned{opacity:.28}
+.qpart h4{font-family:var(--mono);font-size:13px;color:var(--cyan);margin-bottom:8px;display:flex;gap:10px;align-items:baseline}
+.qpart h4 em{font-style:normal;color:var(--dim);font-size:11px;font-family:var(--jp)}
+.qpart h4 .tag-pruned{color:var(--red);font-size:11px;font-family:var(--jp)}
+.grow{display:flex;flex-wrap:wrap;gap:5px}
+.gc{width:64px;height:38px;border-radius:6px;border:1px solid var(--line);font-family:var(--mono);font-size:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--dim);transition:all .25s;cursor:default}
+.gc b{font-size:11px;font-weight:600}
+.gc.read{border-color:var(--green);background:var(--t11);color:var(--green);box-shadow:0 0 6px var(--t0)}
+.gc.cut-pk{border-color:var(--t12);background:var(--t13);color:var(--t14)}
+.gc.cut-skip{background:var(--t15);color:var(--orange);opacity:.55;border-style:dashed;border-color:var(--t16)}
+.gc.cut-part{opacity:.25}
+.qlegend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:4px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.d-read{background:var(--t11);border:1px solid var(--green)}
+.d-pk{background:var(--t13);border:1px solid var(--t12)}
+.d-skip{background:var(--t15);border:1px dashed var(--t16)}
+.d-part{background:var(--line-soft);border:1px solid var(--line)}
+.readout{font-family:var(--mono);font-size:13px;margin-top:8px}
+.readout .g{color:var(--green)} .readout .m{color:var(--muted);font-size:12px;font-family:var(--jp)}
+
+/* ===== tab4: ORDER BY vs PRIMARY KEY ===== */
+.obgrid{display:grid;grid-template-columns:320px 1fr;gap:22px;align-items:start}
+@media(max-width:960px){.obgrid{grid-template-columns:1fr}}
+.obpanels{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:760px){.obpanels{grid-template-columns:1fr}}
+.obcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.obcard>h3{font-size:14px;margin-bottom:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.obcard .owner{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:99px}
+.owner.o-order{color:var(--green);border:1px solid var(--t17);background:var(--t11)}
+.owner.o-pk{color:var(--cyan);border:1px solid var(--t6);background:var(--t7)}
+.obcard .cap{font-size:13px;color:var(--muted);margin-bottom:12px}
+.nochange{display:inline-block;font-size:11px;font-family:var(--jp);color:var(--green);border:1px solid var(--t17);border-radius:99px;padding:1px 8px;opacity:0;transition:opacity .2s}
+.nochange.flash{opacity:1}
+.dtable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+.dtable th{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:4px 8px;text-align:left;border-bottom:1px solid var(--line)}
+.dtable td{padding:4px 8px;color:var(--muted);border-bottom:1px solid var(--line-soft)}
+.dtable td.c1{color:var(--yellow)} .dtable td.c2{color:var(--ink)} .dtable td.c3{color:var(--muted)}
+.dtable tr.gline td{border-top:2px solid var(--t17);position:relative}
+.dtable .gtag{font-size:10px;color:var(--green);font-family:var(--jp)}
+.idx-list{display:flex;flex-direction:column;gap:8px}
+.idx-row{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;border:1px solid var(--t6);background:var(--t7);border-radius:8px;padding:7px 10px}
+.idx-row .gref{color:var(--dim);font-size:10px;font-family:var(--jp);margin-right:4px;min-width:52px}
+.kcell{padding:2px 8px;border-radius:5px;border:1px solid var(--t6);color:var(--cyan);transition:all .2s}
+.kcell.off{border-style:dashed;border-color:var(--line);color:var(--dim);text-decoration:line-through;opacity:.5;background:none}
+.sizebar{margin-top:12px}
+.sizebar .lbl{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;font-family:var(--mono)}
+.sizebar .track{height:10px;border-radius:5px;background:var(--line-soft);margin-top:4px;overflow:hidden}
+.sizebar .track i{display:block;height:100%;background:var(--cyan);border-radius:5px;transition:width .25s}
+.ddlbox{font-family:var(--mono);font-size:13px;background:var(--t9);border:1px solid var(--line);border-radius:8px;padding:14px;line-height:2;margin:12px 0}
+.ddlbox .kw{color:var(--yellow)} .ddlbox .ok{color:var(--green)} .ddlbox .pk{color:var(--cyan)} .ddlbox .cm{color:var(--dim);font-size:11px}
+.pkslider{display:flex;align-items:center;gap:10px;padding:8px 0}
+.pkslider input{flex:1;accent-color:var(--cyan)}
+.rulebox{margin-top:14px;font-size:13px;color:var(--muted)}
+.rulebox li{margin:8px 0 8px 18px}
+.rulebox b{color:var(--ink)}
+.qcheck{margin-top:16px}
+.qc-row{display:grid;grid-template-columns:26px 1fr;gap:10px;align-items:start;border-top:1px solid var(--line-soft);padding:10px 0}
+.qc-row .mark{font-size:15px;line-height:1.3}
+.qc-row .sql2{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+.qc-row .why{font-size:12.5px;color:var(--muted);margin-top:2px}
+.qc-row.ok .mark{color:var(--green)} .qc-row.part .mark{color:var(--orange)} .qc-row.ng .mark{color:var(--red)}
+
+.subnav{margin:0 0 18px;border-bottom:1px dashed var(--line-soft);padding-bottom:14px}
+.ctxbar{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin-bottom:12px}
+.ctxsum{display:flex;gap:10px;align-items:center;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.ctxq{flex:1;min-width:0;overflow-x:auto;white-space:nowrap}
+.ctxbtn{margin-left:auto;background:none;border:1px solid var(--line);border-radius:6px;color:var(--muted);font-size:10.5px;padding:2px 10px;font-family:var(--jp);flex-shrink:0}
+.ctxbtn:hover{color:var(--ink);border-color:var(--muted)}
+.ctxfull{display:none}
+.ctxbar.open .ctxfull{display:grid;grid-template-columns:1fr 1fr;gap:8px 26px;margin-top:10px;border-top:1px dashed var(--line-soft);padding-top:10px}
+@media(max-width:860px){.ctxbar.open .ctxfull{grid-template-columns:1fr}}
+.ctxcol{min-width:0}
+.ctxbar .cl{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--dim);margin-bottom:5px}
+.ctxbar .cl em{font-style:normal;letter-spacing:0;text-transform:none;color:var(--dim);opacity:.8}
+.ctxcode{font-family:var(--mono);font-size:11.5px;line-height:1.7;color:var(--muted);overflow-x:auto;white-space:nowrap}
+.ctxcode .kw{color:var(--yellow)} .ctxcode .ok{color:var(--green)} .ctxcode .cm{color:var(--dim);font-size:10.5px}
+.ctxcode .off{opacity:.35;text-decoration:line-through}
+.ctxcode i{font-style:normal}
+.ctxbar .q-part,.deck .q-part{color:var(--yellow)} .ctxbar .q-pk,.deck .q-pk{color:var(--cyan)} .ctxbar .q-skip,.deck .q-skip{color:var(--orange)}
+.deck .cm{color:var(--dim)}
+
+.mvrows{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.8;margin-top:6px}
+.mvrows .hl{color:var(--green)}
+
+/* ===== 学習レベル(段階的アンロック) ===== */
+.term{border-bottom:1px dashed var(--t18);cursor:help}
+.term:hover{color:var(--cyan);border-bottom-color:var(--cyan)}
+#mTerm .modal-box{max-width:460px}
+.helpbtn{margin-left:auto;align-self:center;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);border-radius:50%;width:26px;height:26px;font-weight:700;font-size:14px}
+.helpbtn:hover{color:var(--ink);border-color:var(--muted)}
+.lvbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.lvbar .lvt{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--dim);margin-right:2px}
+.lvchip{border:1px solid var(--line);background:var(--panel-2);color:var(--dim);border-radius:50%;width:27px;height:27px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;transition:all .15s}
+.lvchip:hover{color:var(--ink)}
+.lvchip.done{color:var(--muted);border-color:var(--t19)}
+.lvchip.on{border-color:var(--yellow);color:var(--yellow);background:var(--t8)}
+.lvintro{border-left:2px solid var(--yellow);padding:4px 12px 6px;margin-bottom:12px;font-size:12.5px;color:var(--muted)}
+.lvintro .lvhead{font-size:14.5px;font-weight:700;color:var(--ink);font-family:var(--jp);margin-bottom:4px}
+.lvintro .lvbody{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.lvintro b{color:var(--yellow)}
+.lvintro .try{border:1px dashed var(--line);border-radius:8px;padding:3px 10px;font-size:11.5px;flex:0 1 auto;max-width:400px;line-height:1.6}
+/* ゲーティング: body.Lk のとき、解禁レベルが k より上の要素を隠す */
+body.L1 .lv2,body.L1 .lv3,body.L1 .lv4,body.L1 .lv5,body.L1 .lv6,body.L1 .lv7,body.L1 .lv8,
+body.L2 .lv3,body.L2 .lv4,body.L2 .lv5,body.L2 .lv6,body.L2 .lv7,body.L2 .lv8,
+body.L3 .lv4,body.L3 .lv5,body.L3 .lv6,body.L3 .lv7,body.L3 .lv8,
+body.L4 .lv5,body.L4 .lv6,body.L4 .lv7,body.L4 .lv8,
+body.L5 .lv6,body.L5 .lv7,body.L5 .lv8,
+body.L6 .lv7,body.L6 .lv8,
+body.L7 .lv8{display:none!important}
+/* Lv8 未満は物理の入れ物(Service/S3)を透明化して論理だけ見せる */
+body:not(.L8) .b-svc{border:none;padding:0;background:none}
+body:not(.L8) .b-svc>.bt{display:none}
+body:not(.L8) .b-s3{border:none;background:none;padding:0;margin-top:0}
+body:not(.L8) .b-s3>.bt,body:not(.L8) .b-s3>.bhead{display:none}
+body.L1 .b-partition,body.L2 .b-partition{border:none;background:none;padding:0}
+body.L1 .tab[data-pane="pB"]{opacity:.45}
+.only-l1{display:none}
+body.L1 .only-l1{display:block}
+
+/* ===== modal(深掘りポップアップ) ===== */
+.modal{position:fixed;inset:0;background:var(--backdrop);z-index:50;display:flex;align-items:center;justify-content:center;padding:20px;animation:fade .18s}
+@media (prefers-reduced-motion:reduce){.modal{animation:none}}
+.modal-box{background:var(--panel);border:1px solid var(--line);border-radius:14px;max-width:780px;width:100%;max-height:85vh;overflow-y:auto;padding:20px 22px;box-shadow:0 24px 70px var(--shadow)}
+.modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.modal-x{background:none;border:1px solid var(--line);border-radius:8px;color:var(--muted);font-size:14px;padding:4px 10px}
+.modal-x:hover{color:var(--ink);border-color:var(--muted)}
+
+/* ===== tabB: query pipeline ===== */
+.qpipe{display:flex;flex-direction:column}
+.stage{border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:12px 16px;transition:all .25s}
+.sthead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline}
+.sthead b{font-size:13.5px}
+.stcut{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.stcut b{color:var(--green)}
+.stbody{margin-top:8px;font-size:13px;color:var(--muted)}
+.stwhy{margin-top:8px;border-left:3px solid var(--line);padding:2px 10px;font-size:12.5px;color:var(--muted)}
+.stwhy b{color:var(--ink)}
+.pipearrow{text-align:center;font-family:var(--mono);font-size:11.5px;color:var(--dim);padding:4px 0}
+.pipearrow b{color:var(--green)}
+.qpipe{border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.qpipe-l{font-size:12px;color:var(--muted);letter-spacing:.06em;margin-bottom:10px;font-family:var(--jp)}
+.reveal{animation:fade .45s}
+@media (prefers-reduced-motion:reduce){.reveal{animation:none}}
+.stdeep{margin-top:10px}
+.stdeep summary{cursor:pointer;font-size:12px;color:var(--muted);font-family:var(--mono);display:inline-block;border:1px solid var(--line);border-radius:8px;padding:4px 12px;background:var(--panel-2)}
+.stdeep summary:hover{color:var(--ink);border-color:var(--muted)}
+.stdeep>div{margin-top:10px}
+.pgrp{display:inline-block;border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin:4px 6px 0 0;vertical-align:top}
+.pgrp .pgt{font-family:var(--mono);font-size:11px;color:var(--muted);display:block;margin-bottom:4px}
+.pgrp.cutp{opacity:.35;border-style:dashed}
+.pgrp.cutp .pgt::after{content:" ✂ minmax(date) で除外";color:var(--red)}
+.pgpart{display:inline-block;font-family:var(--mono);font-size:11px;border:1px solid var(--t6);color:var(--cyan);border-radius:5px;padding:2px 7px;margin-right:4px}
+.drow{font-family:var(--mono);font-size:12px;padding:5px 0;border-bottom:1px solid var(--line-soft);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.drow .dwin{color:var(--yellow)}
+.dcand{border:1px solid var(--line);border-radius:5px;padding:1px 7px;font-size:11px;color:var(--muted)}
+.dcand.win{border-color:var(--yellow);color:var(--yellow)}
+.mgr{display:flex;gap:3px;margin:4px 0 8px;max-width:520px}
+.mgr i{flex:1;height:20px;border-radius:4px;background:var(--line-soft);border:1px solid var(--line);font-style:normal;font-family:var(--mono);font-size:9.5px;display:flex;align-items:center;justify-content:center;color:var(--dim)}
+.mgr i.rd{background:var(--t11);border-color:var(--green);color:var(--green)}
+.mgr i.ck{background:var(--t13);border-color:var(--t12);color:var(--t14)}
+.mgr i.cs{background:var(--t15);border-color:var(--t16);border-style:dashed;color:var(--orange);opacity:.6}
+.mgrcap{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.mgrcap .who{color:var(--yellow);font-family:var(--jp)}
+
+/* ===== tabA: integrated service map ===== */
+.deck{display:flex;gap:8px 0;flex-wrap:wrap;margin-bottom:14px;align-items:stretch;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 4px}
+.deck-g{border:none;background:none;border-radius:0;padding:0 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-right:1px dashed var(--line-soft)}
+.deck-g:last-child{border-right:none}
+.deck-l{flex-basis:100%;font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;color:var(--muted)}
+.ctl-inline{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--muted);cursor:pointer;user-select:none}
+.ctl-inline input{accent-color:var(--yellow);width:14px;height:14px}
+.svcmap{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;overflow-x:auto}
+.box{border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.box .bt{font-family:var(--mono);font-size:12.5px;color:var(--ink);display:block;cursor:pointer}
+.box .bt[data-n]{text-decoration:underline dotted var(--t20);text-underline-offset:4px}
+.box .bt:hover{color:var(--yellow)}
+.b-svc{border:none;background:transparent;padding:0}
+.b-svc>.bt{color:var(--muted)}
+.crow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+@media(max-width:900px){.crow{grid-template-columns:repeat(2,1fr)}}
+.b-node{background:var(--panel-2);transition:all .25s}
+.box.ghost{opacity:.45;border-style:dashed;position:relative}
+
+.chipline{font-family:var(--mono);font-size:10.5px;color:var(--muted);border:1px dashed var(--line);border-radius:6px;padding:3px 8px;margin-top:6px;cursor:pointer;transition:all .2s}
+.chipline:hover{border-color:var(--muted);color:var(--ink)}
+.b-keeper{border-color:var(--t10);background:var(--panel-2)}
+.b-keeper>.bt{color:var(--yellow)}
+.b-s3{border:none;background:var(--t21);margin-top:10px}
+.b-s3>.bt{color:var(--cyan)}
+.b-table{border:none;background:var(--t22);margin-top:10px}
+.b-table>.bt{color:var(--green)}
+.b-mv{border:1px dashed var(--t17)}
+.b-mv.ghostish{opacity:.4}
+.prow{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:8px}
+.b-partition{flex:1;min-width:250px;border:none;background:var(--t23)}
+.b-partition>.bt{color:var(--muted);font-size:11.5px}
+.zone{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--muted);margin:6px 0 2px}
+.conn{text-align:center;font-size:12px;color:var(--muted);border-top:1px dashed var(--line-soft);border-bottom:1px dashed var(--line-soft);padding:4px 0;margin:10px 0 2px}
+.bhead{display:flex;gap:8px;align-items:flex-start;margin-bottom:4px}
+.bico{font-size:15px;line-height:1.3}
+.bhead .bt{display:block}
+.brole{display:block;font-size:12.5px;color:var(--muted);font-family:var(--jp);margin-top:2px;cursor:default}
+.pbox{border:1px solid var(--t6);background:var(--t7);border-radius:8px;padding:7px 10px;margin-top:8px;font-family:var(--mono);font-size:12px;color:var(--cyan);cursor:pointer;transition:all .3s}
+.pbox .pexp{color:var(--dim);margin-right:6px;font-size:11px}
+.pbox .pico{margin-right:6px}
+.pbox .prows{color:var(--muted);font-size:12px}
+.pbox .plvl{border:1px solid var(--line);border-radius:4px;padding:0 5px;color:var(--dim);font-size:10px;margin-left:6px}
+.pbox .psize{color:var(--dim);font-size:10px;margin-left:6px}
+.pbox .pname{color:var(--ink);font-weight:600;font-size:12px;margin-right:2px}
+.pbox:hover{border-color:var(--muted)}
+.pbox .pmeta{color:var(--dim);font-size:10.5px}
+.pbox.new{animation:pop .4s}
+.pbox.inactive{opacity:.35;border-style:dashed;text-decoration:line-through}
+.pbox.merged{border-color:var(--yellow);color:var(--yellow);background:var(--t8)}
+.pbox.rewrote{border-color:var(--red)}
+.pbox.patch{border-style:dashed;border-color:var(--t10);color:var(--yellow)}
+.pbox.gone{opacity:0;transform:scale(.85)}
+.pbox.sel{box-shadow:0 0 0 1px var(--yellow);border-color:var(--yellow)}
+.pchip{display:inline-block;font-family:var(--jp);font-size:10px;border:1px solid var(--t6);color:var(--cyan);border-radius:4px;padding:0 6px;margin:4px 4px 0 0}
+.pchip.pc-warn{color:var(--orange);border-color:var(--t16);border-style:dashed}
+.anat{margin-top:8px;border-top:1px dashed var(--line-soft);padding-top:8px;display:flex;flex-wrap:wrap;gap:5px}
+.fch{border:1px solid var(--line);background:var(--panel-2);border-radius:6px;padding:3px 8px;font-family:var(--mono);font-size:11px;color:var(--muted);cursor:pointer;transition:all .15s}
+.fch:hover{border-color:var(--yellow);color:var(--yellow)}
+.gstrip{display:flex;gap:3px;flex-basis:100%;cursor:pointer}
+.gstrip:hover i{border-color:var(--yellow);color:var(--yellow)}
+.gstrip i{flex:1;height:16px;background:var(--t11);border:1px solid var(--t17);border-radius:3px;font-style:normal;font-family:var(--mono);font-size:9px;color:var(--green);display:flex;align-items:center;justify-content:center}
+.tgreadout{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:8px;border-top:1px dashed var(--line-soft);padding-top:8px}
+.ndisk{margin-top:6px;border:1px dashed var(--t17);border-radius:6px;padding:5px 8px}
+.ndt{font-family:var(--mono);font-size:10.5px;color:var(--green);display:block}
+.nz{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+.nz .pgpart{cursor:pointer}
+.pgpart.pend{border-style:dashed;color:var(--orange);border-color:var(--t16)}
+.pgpart.dead{opacity:.35;text-decoration:line-through}
+
+/* ===== tab5: MV & Projection ===== */
+.mvflow{display:grid;grid-template-columns:1fr 250px 1fr;gap:14px;align-items:start;margin-bottom:14px}
+@media(max-width:960px){.mvflow{grid-template-columns:1fr}}
+.trigcol{display:flex;flex-direction:column;gap:4px}
+.trigarrow{text-align:center;color:var(--dim);font-size:14px}
+.trigbox{border:1px solid var(--t10);background:var(--t24);border-radius:12px;padding:12px 14px}
+.trigbox b{color:var(--yellow);font-family:var(--mono);font-size:13px;display:block;margin-bottom:6px}
+.trigbox .tsql{font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.8}
+.trigbox .tsql .kw{color:var(--yellow)}
+.trigbox.fire{animation:trigfire .6s}
+@keyframes trigfire{0%{box-shadow:0 0 0 0 var(--t1)}100%{box-shadow:0 0 0 14px var(--t2)}}
+@media (prefers-reduced-motion:reduce){.trigbox.fire{animation:none}}
+.tgrow{display:inline-block;font-family:var(--mono);font-size:11.5px;border:1px solid var(--t17);color:var(--green);border-radius:5px;padding:1px 7px;margin:2px 2px 0 0}
+.tgrow.dup{border-color:var(--t16);color:var(--orange)}
+.mvnote{font-size:12.5px;color:var(--muted);margin-top:12px;line-height:1.7}
+.prjboard{display:flex;flex-direction:column;gap:14px}
+.prjpart{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.prjpart h4{font-family:var(--mono);font-size:13px;color:var(--cyan);margin-bottom:4px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.prjpart h4 em{font-style:normal;color:var(--dim);font-size:11px;font-family:var(--jp)}
+.prjside{border:1px dashed var(--line);border-radius:8px;padding:8px 10px;margin-top:8px;transition:all .2s}
+.prjside .pl{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:6px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.prjside .pl .who{color:var(--yellow);font-family:var(--jp);opacity:0;transition:opacity .2s}
+.prjside.chosen{border-color:var(--yellow);border-style:solid;background:var(--t25)}
+.prjside.chosen .pl .who{opacity:1}
+.prjside.idle{opacity:.4}
+.pgr{display:flex;gap:3px}
+.pgr i{flex:1;height:24px;border-radius:4px;background:var(--line-soft);border:1px solid var(--line);font-style:normal;font-family:var(--mono);font-size:9.5px;display:flex;align-items:center;justify-content:center;color:var(--dim);overflow:hidden}
+.pgr i.rd{background:var(--t11);border-color:var(--green);color:var(--green)}
+.prjmiss{font-size:12px;color:var(--orange);border:1px dashed var(--t16);border-radius:6px;padding:4px 8px;margin-top:8px}
+.cmpwrap{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 18px 14px;overflow-x:auto}
+.cmpt{width:100%;border-collapse:collapse;font-size:13.5px;min-width:640px}
+.cmpt th{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);text-align:left;padding:12px 10px 6px;border-bottom:1px solid var(--line)}
+.cmpt th:nth-child(2){color:var(--cyan)} .cmpt th:nth-child(3){color:var(--green)}
+.cmpt td{padding:9px 10px;border-bottom:1px solid var(--line-soft);color:var(--muted);vertical-align:top;line-height:1.6}
+.cmpt td:first-child{color:var(--ink);white-space:nowrap;font-size:13px}
+
+/* ===== SharedMergeTree annotations ===== */
+.smt-toggle{margin-left:8px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);padding:6px 4px;cursor:pointer;user-select:none}
+.smt-toggle .sw{width:34px;height:18px;border-radius:99px;background:var(--line);position:relative;transition:background .2s}
+.smt-toggle .sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--muted);transition:all .2s}
+body.smt-on .smt-toggle .sw{background:var(--t6)}
+body.smt-on .smt-toggle .sw::after{left:18px;background:var(--cyan)}
+body.smt-on .smt-toggle{color:var(--cyan)}
+.smtnote{display:none;border:1px solid var(--t6);border-left:3px solid var(--cyan);background:var(--t26);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--muted);margin-top:12px}
+.smtnote::before{content:"☁️ SharedMergeTree では";display:block;font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--cyan);margin-bottom:4px}
+.smtnote b{color:var(--ink)}
+body.L8.smt-on .smtnote{display:block}
+
+/* ===== tab5: file internals ===== */
+.filesel{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.fchip{font-family:var(--mono);font-size:13px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);border-radius:8px;padding:8px 14px;transition:all .12s}
+.fchip:hover{color:var(--ink)}
+.fchip.on{border-color:var(--yellow);color:var(--yellow);background:var(--t8)}
+.fileview{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px}
+.fileview h3{font-family:var(--mono);font-size:15px;margin-bottom:4px}
+.fileview .fdesc{font-size:13px;color:var(--muted);margin-bottom:16px}
+.bytes{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:10px 0}
+.seg{font-family:var(--mono);font-size:11.5px;padding:8px 10px;border-radius:6px;border:1px solid var(--line);color:var(--muted);text-align:center;line-height:1.4}
+.seg small{display:block;font-size:10px;color:var(--dim);font-family:var(--jp)}
+.seg.s-h{border-color:var(--t27);background:var(--t28)}
+.seg.s-c{border-color:var(--t10);background:var(--t8);color:var(--yellow)}
+.seg.s-n{border-color:var(--t6);background:var(--t7);color:var(--cyan)}
+.seg.s-d{border-color:var(--t17);background:var(--t11);color:var(--green)}
+.seg.s-k{border-color:var(--t29);background:var(--t30);color:var(--t31)}
+.seg.rep{border:none;background:none;color:var(--dim);font-family:var(--jp);font-size:12px;padding:0 4px}
+.howread{margin-top:14px;border-top:1px solid var(--line-soft);padding-top:12px;font-size:13.5px;color:var(--muted)}
+.howread b{color:var(--ink)}
+.howread .fnote{margin-top:8px;font-size:12.5px;color:var(--dim)}
+
+/* skip index lab */
+.slab-controls{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:16px;font-size:13px;color:var(--muted)}
+.slab-controls select{padding:6px 8px}
+.slab-controls input[type=range]{width:150px;accent-color:var(--orange)}
+.slab-controls .qv{font-family:var(--mono);color:var(--orange);font-size:14px;min-width:30px}
+.slab-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:6px}
+@media(max-width:760px){.slab-grid{grid-template-columns:repeat(4,1fr)}}
+.iblock{border:1px solid var(--line);border-radius:8px;padding:8px;font-family:var(--mono);font-size:11px;color:var(--muted);text-align:center;transition:all .2s}
+.iblock .agg{color:var(--ink);font-size:11.5px;word-break:break-all}
+.iblock .verdict{display:block;margin-top:4px;font-family:var(--jp);font-size:11px}
+.iblock.skip{border-color:var(--t16);background:var(--t15);border-style:dashed}
+.iblock.skip .verdict{color:var(--orange)}
+.iblock.read{border-color:var(--t17);background:var(--t11)}
+.iblock.read .verdict{color:var(--green)}
+.iblock.fp{border-color:var(--red)}
+.iblock.fp .verdict{color:var(--red)}
+.gcard{border:1px solid var(--line);border-radius:8px;padding:6px;min-height:64px;transition:all .2s}
+.gcard .gt{font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:3px}
+.gcard.cut{opacity:.3;border-style:dashed}
+.vchip{display:inline-block;padding:1px 5px;margin:1px;border-radius:4px;background:var(--t32);border:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted)}
+.vchip.hit{border-color:var(--yellow);color:var(--yellow);background:var(--t8)}
+.slab-sum{margin-top:14px;font-family:var(--mono);font-size:13px}
+.slab-sum .g{color:var(--green)} .slab-sum .o{color:var(--orange)}
+.slab-sum .m{display:block;font-family:var(--jp);font-size:12.5px;color:var(--muted);margin-top:4px}
+
+/* block alignment */
+.alignwrap{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px}
+.arow{display:grid;grid-template-columns:170px 1fr;gap:14px;align-items:center;margin:10px 0}
+@media(max-width:700px){.arow{grid-template-columns:1fr}}
+.arow .albl{font-size:13px;color:var(--muted);text-align:right}
+@media(max-width:700px){.arow .albl{text-align:left}}
+.arow .albl b{display:block;font-family:var(--mono);font-size:13px;color:var(--ink)}
+.abar{display:flex;height:36px;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+.acell{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;border-right:1px solid var(--bg)}
+.acell:last-child{border-right:none}
+.acell.ag{background:var(--t11);color:var(--green)}
+.acell.ac{background:var(--t7);color:var(--cyan)}
+.acell.ab{background:var(--t8);color:var(--yellow)}
+.flowrow{display:flex;gap:6px;align-items:stretch;flex-wrap:wrap;margin-bottom:18px}
+.fstage{flex:1;min-width:130px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px;padding:10px 12px}
+.fstage b{font-family:var(--mono);font-size:12px;display:block}
+.fstage span{font-size:11.5px;color:var(--muted)}
+.fstage.st-mem b{color:var(--cyan)} .fstage.st-disk b{color:var(--green)} .fstage.st-proc b{color:var(--yellow)}
+.farrow{align-self:center;color:var(--dim);font-size:14px}
+
+/* ===== glow(操作アニメーション) ===== */
+.glow{border-color:var(--yellow)!important;box-shadow:0 0 0 1px var(--yellow),0 0 18px var(--t3);opacity:1!important}
+
+/* ===== tab7: update/delete sim ===== */
+.udboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:16px 0}
+.udpart{border:1px solid var(--t6);background:var(--t7);border-radius:10px;padding:10px 12px;font-family:var(--mono);font-size:12px;color:var(--cyan);transition:all .4s}
+.udpart .pn{display:flex;justify-content:space-between;margin-bottom:6px}
+.udpart .pn em{font-style:normal;color:var(--dim);font-size:10px;font-family:var(--jp)}
+.udpart.gone{opacity:0;transform:scale(.85)}
+.udpart.rewrote{border-color:var(--red)}
+.udpart.patch{border-color:var(--t10);color:var(--yellow);border-style:dashed}
+.udpart .maskbadge{display:inline-block;font-size:10px;color:var(--orange);border:1px dashed var(--t16);border-radius:4px;padding:0 6px;margin-top:6px}
+.rchip{display:inline-block;padding:2px 7px;margin:2px;border-radius:5px;background:var(--t32);border:1px solid var(--line);color:var(--muted);font-size:11.5px;transition:all .3s}
+.rchip.tgt{border-color:var(--yellow);color:var(--yellow)}
+.rchip.dead{text-decoration:line-through;color:var(--red);border-color:var(--t33);opacity:.6}
+.rchip.upd{color:var(--green);border-color:var(--t17)}
+.rchip.v2{color:var(--green);border-color:var(--t17)}
+.udverdict{border:1px solid var(--line);border-left:3px solid var(--yellow);background:var(--panel);border-radius:10px;padding:14px 18px;font-size:13px;color:var(--muted)}
+.udverdict b{color:var(--ink)}
+.udverdict .cost{display:inline-flex;gap:3px;margin-left:8px;vertical-align:middle}
+.udverdict .cost i{width:14px;height:8px;border-radius:2px;background:var(--line)}
+.udverdict .cost i.on{background:var(--orange)}
+.udmeta{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:6px}
+
+/* ===== tab8: doc map ===== */
+.refsec{margin-bottom:26px}
+.refsec>h3{font-size:15px;margin-bottom:4px}
+.refsec .rs-sub{font-size:13px;color:var(--muted);margin-bottom:12px}
+.refgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.refcard{display:block;border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:12px 14px;text-decoration:none;transition:all .12s}
+.refcard:hover{border-color:var(--yellow);transform:translateY(-1px)}
+.refcard b{font-size:13px;color:var(--ink);display:block}
+.refcard span{font-size:12.5px;color:var(--muted);line-height:1.5;display:block;margin-top:3px}
+.refcard .tabref{display:inline-block;font-size:10px;font-family:var(--mono);color:var(--green);border:1px solid var(--t17);border-radius:99px;padding:0 7px;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>MergeTree <span class="y">Explorer</span></h1>
+    <span class="sub">ClickHouse はデータをどう置き、どう読むのか。SaaS のアクセスログ(<code>events</code> テーブル)を例に、さわって確かめる</span>
+    <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <a class="helpbtn" id="langBtn" href="../en/" title="English version" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">EN</a>
+      <button class="helpbtn" id="themeBtn" title="ライト / ダーク切替">🌓</button>
+      <button class="helpbtn" id="docsBtn" title="ドキュメントマップ(公式ドキュメントの対応表)">📚</button>
+      <button class="helpbtn" id="helpBtn" title="このツールについて">?</button>
+    </span>
+  </header>
+
+  <div class="lvbar">
+    <span class="lvt">LEVEL</span>
+    <button class="lvchip" data-lv="1" title="Part と PRIMARY KEY">1</button>
+    <button class="lvchip" data-lv="2" title="primary.idx と ORDER BY">2</button>
+    <button class="lvchip" data-lv="3" title="Partition">3</button>
+    <button class="lvchip" data-lv="4" title="Text index(文字列検索)">4</button>
+    <button class="lvchip" data-lv="5" title="MV・Projection">5</button>
+    <button class="lvchip" data-lv="6" title="実行時の最適化">6</button>
+    <button class="lvchip" data-lv="7" title="更新・削除">7</button>
+    <button class="lvchip" data-lv="8" title="物理・SMT">8</button>
+  </div>
+  <div class="lv8" style="margin-bottom:10px"><label class="smt-toggle" id="smtToggle" title="デプロイ形態を切替: セルフホスト(ReplicatedMergeTree) ⇄ Cloud(SharedMergeTree)。SQL・図の構造・操作の挙動が変わります"><span class="sw"></span><span id="modeLabel">☁️ Cloud(SharedMergeTree)</span></label></div>
+  <div class="lvintro" id="lvIntro"></div>
+
+  <div class="ctxbar lv2" id="ctxbar">
+    <div class="ctxsum" id="ctxSum"></div>
+    <div class="ctxfull">
+    <div class="ctxcol">
+      <span class="cl">DDL(テーブル設計)<em>⚡ デッキの設計トグル・モードスイッチと連動</em></span>
+      <div class="ctxcode" id="ctxDdl"></div>
+    </div>
+    <div class="ctxcol">
+      <span class="cl">DML(共通クエリ)<em>⚡ デッキの WHERE トグルと連動</em></span>
+      <div class="ctxcode" id="ctxDml"></div>
+    </div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-pane="pA">🧱 構造と書き込み</button>
+    <button class="tab" data-pane="pB">⚡ クエリと読み取り</button>
+  </div>
+
+  <!-- ============ TAB A : 構造と書き込み ============ -->
+  <div class="pane on" id="pA">
+    <div class="deck">
+      <div class="deck-g lv2"><span class="deck-l">テーブル設計(上の DDL に連動)</span>
+        <label class="ctl-inline"><i class="q-pk" style="font-style:normal">PRIMARY KEY</i>
+          <select id="fPk"><option value="1">(tenant_id)</option><option value="2" selected>(tenant_id, user_id)</option></select></label>
+        <label class="ctl-inline" title="並び順だけ欲しい列は PRIMARY KEY の後ろに足す(索引には載らず、圧縮と範囲読みに効く)"><i class="q-pk" style="font-style:normal">ORDER BY</i>
+          <select id="fOb"><option value="pk">(tenant_id, user_id)</option><option value="ts" selected>(tenant_id, user_id, ts)</option></select></label>
+        <label class="ctl-inline lv5"><input type="checkbox" id="prjOn" checked>PROJECTION p_url</label>
+        <button class="btn lv5" id="btnPrjMat" title="ALTER TABLE events MATERIALIZE PROJECTION p_url; — 既存の全 Part にも p_url を構築する1回きりのバッチ">MATERIALIZE 実行</button>
+      </div>
+      <div class="deck-g"><span class="deck-l">書き込み</span>
+        <select id="insPartition"><option value="202607">今月のイベント(2026-07)</option><option value="202606">先月のイベント(2026-06)</option></select>
+        <button class="btn primary" id="btnInsert">＋ INSERT</button>
+        <button class="btn" id="btnMerge">⇄ マージ</button>
+      </div>
+      <div class="deck-g lv5"><span class="deck-l">Materialized View(INSERT に連動)</span>
+        <label class="ctl-inline" title="INSERT のたびに mv_daily が発火して daily_counts に部分集計を書く"><input type="checkbox" id="mvOn" checked>mv_daily → daily_counts(日次集計)</label>
+        <label class="ctl-inline" title="daily_counts への書き込みも「ただの INSERT」なので、そこに張った mv_weekly が連鎖して発火する(カスケード)"><input type="checkbox" id="mvCas">mv_weekly → weekly_counts(カスケード)</label>
+      </div>
+      <div class="deck-g lv7"><span class="deck-l">更新・削除(方式を選ぶと下に説明)</span>
+        <select id="udMethod">
+          <optgroup label="書き換えを避ける(軽量系)">
+            <option value="lwdelete">DELETE FROM — マスク列を足すだけ</option>
+            <option value="lwupdate">UPDATE — 差分 patch part を足す</option>
+          </optgroup>
+          <optgroup label="Part を書き直す(mutation)">
+            <option value="mutdelete">ALTER TABLE DELETE — Part 丸ごと再構築</option>
+            <option value="mutupdate">ALTER TABLE UPDATE — Part 丸ごと再構築</option>
+          </optgroup>
+          <optgroup label="設計で解決する">
+            <option value="rmt">ReplacingMergeTree — 新バージョン行を INSERT</option>
+            <option value="ttl">TTL — 期限切れをマージ時に削除</option>
+          </optgroup>
+          <optgroup label="パーティション単位(メタデータ操作)">
+            <option value="droppart">DROP PARTITION — 先月を丸ごと即削除</option>
+            <option value="truncate">TRUNCATE — 全 Part を即削除</option>
+          </optgroup>
+        </select>
+        <button class="btn" id="udRun">実行</button>
+      </div>
+      <div class="deck-g"><span class="deck-l">&nbsp;</span><button class="btn" id="btnResetAll">リセット</button></div>
+    </div>
+    <div class="hint" id="actDesc" style="font-family:var(--jp)"></div>
+  <div class="smtnote lv8">OSS(セルフホスト)ではこの図の S3 の位置に<b>各ノードのローカルディスク</b>が入り、レプリカ=データの完全コピーを Part 転送で複製します(ReplicatedMergeTree)。SMT はその複製を「共有ストレージ + 共有メタデータ(Keeper)」に置き換えた形。図の構造そのものが SMT の答えです。</div>
+        <div class="svcmap" id="svcmap">
+          <div class="box b-svc"><span class="bt" data-n="cluster">☁️ ClickHouse Service(Cloud / SharedMergeTree 構成)</span>
+            <div class="zone lv8">COMPUTE(計算する場所。データを持たない)</div>
+            <div class="crow lv8">
+              <div class="box b-node" id="an1"><div class="bhead"><span class="bico">🖥</span><div><span class="bt" data-n="cnode">Compute Node 1</span><span class="brole">クエリを実行する。データは持たない</span></div></div>
+                <div class="chipline" data-n="nodemem">🧠 メモリ: primary.idx / mark cache / メタデータ</div>
+                <div class="chipline" data-n="nodecache" id="ac1">⚡ ローカル NVMe キャッシュ</div>
+                <div class="ndisk" id="nd1" style="display:none"><span class="ndt">💾 ローカルディスク(完全コピー)</span><div class="nz" id="nz1"></div></div>
+              </div>
+              <div class="box b-node" id="an2"><div class="bhead"><span class="bico">🖥</span><div><span class="bt" data-n="cnode">Compute Node 2</span><span class="brole">同じ役割。Node 1 と直接は話さない</span></div></div>
+                <div class="chipline" data-n="nodemem">🧠 メモリ(同上)· Node 1 と直接通信しない</div>
+                <div class="chipline" data-n="nodecache" id="ac2">⚡ ローカル NVMe キャッシュ</div>
+                <div class="ndisk" id="nd2" style="display:none"><span class="ndt">💾 ローカルディスク(完全コピー)</span><div class="nz" id="nz2"></div></div>
+              </div>
+              <div class="box b-node ghost" id="an3"><div class="bhead"><span class="bico">🖥</span><div><span class="bt" data-n="cnode">Compute Node 3</span><span class="brole">追加しても即戦力(データコピー不要)</span></div></div>
+                <div class="chipline" data-n="nodecache" id="ac3">⚡ キャッシュ(空)</div>
+                <div class="ndisk" id="nd3" style="display:none"><span class="ndt">💾 ローカルディスク</span><div class="nz" id="nz3"></div></div>
+              </div>
+              <div class="box b-keeper" id="akeeper"><div class="bhead"><span class="bico">📒</span><div><span class="bt" data-n="keeper">ClickHouse Keeper</span><span class="brole">唯一の真実: どの Part がどこにあるか</span></div></div>
+                <div class="chipline" data-n="keeper" id="kchip">📋 …</div>
+              </div>
+            </div>
+            <div class="conn lv8 conn-smt">⇅ データの読み書きは各ノードが S3 と直接やり取り。調整は Keeper 経由で、ノード同士は話さない</div>
+            <div class="conn lv8 conn-oss">⇅ 各ノードは自分のローカルディスクを読み書き。新しい Part はレプリケーションログを見た他レプリカが fetch 転送でコピー</div>
+            <div class="box b-s3" id="as3"><div class="bhead"><span class="bico">🪣</span><div><span class="bt" data-n="objstore">Object Storage(S3 / GCS)</span><span class="brole">データの実体が住む場所。全 Part がここに1コピーだけ</span></div></div>
+              <div class="box b-table"><div class="bhead"><span class="bico">📄</span><div><span class="bt" data-n="table">table <b>events</b></span><span class="brole">生イベント。行は PRIMARY KEY 順に整列<span class="lv3">、月ごとの区画に分割(PARTITION BY)</span></span></div></div>
+                <div class="prow">
+                  <div class="box b-partition"><span class="bt lv3" data-n="partition">🗓 PARTITION 202607(今月の区画)</span><div id="pz202607"></div></div>
+                  <div class="box b-partition"><span class="bt lv3" data-n="partition">🗓 PARTITION 202606(先月の区画)</span><div id="pz202606"></div></div>
+                </div>
+              </div>
+              <div class="box b-table b-mv lv5" id="tblmv"><div class="bhead"><span class="bico">📊</span><div><span class="bt" data-n="tgtable">table <b>daily_counts</b>(SummingMergeTree)</span><span class="brole">MV mv_daily が書き足す集計テーブル。これも普通のテーブルで、自分の Part とマージを持つ</span></div></div>
+                <div id="tgz"></div>
+              </div>
+              <div class="box b-table b-mv lv5" id="tblwk" style="display:none"><div class="bhead"><span class="bico">🗓</span><div><span class="bt" data-n="wktable">table <b>weekly_counts</b>(SummingMergeTree)</span><span class="brole">カスケード: daily_counts への INSERT に mv_weekly が連鎖発火して書き足す週次集計</span></div></div>
+                <div id="wkz"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mlog" id="mlog"><div>— ログ —</div></div>
+        <div class="flowrow" id="mvSteps" style="display:none;margin:14px 0 0"><div style="flex-basis:100%;font-size:12.5px;color:var(--muted);font-family:var(--jp)"><b style="color:var(--ink)">MV mv_daily が発火</b>(いまの INSERT に連動。トリガは INSERT だけで、テーブル全体は読まない)</div>
+          <div class="fstage st-disk" style="flex:1.4"><b>① INSERT されたブロック</b><div class="mvrows" id="mvsBlock"></div></div>
+          <span class="farrow">→</span>
+          <div class="fstage st-proc" style="flex:1.2"><b>② このブロックだけに SELECT</b><div class="mvrows">SELECT toDate(ts) AS d, count() AS cnt<br>FROM <s style="color:var(--dim)">events</s> <span style="color:var(--yellow)">→ 挿入ブロック</span><br>GROUP BY d</div></div>
+          <span class="farrow">→</span>
+          <div class="fstage st-mem" style="flex:1"><b>③ 結果を新 Part として追記</b><div class="mvrows" id="mvsOut"></div></div>
+        </div>
+
+    <div class="modal" id="deepFiles" style="display:none">
+      <div class="modal-box">
+        <div class="modal-head"><h3 style="margin:0" id="dfTitle"></h3><button class="modal-x" id="dfClose" title="閉じる(Esc)">✕</button></div>
+        <div class="fileview" id="fileView" style="border:none;padding:0;background:none"></div>
+      </div>
+    </div>
+    <div class="modal" id="mNode" style="display:none">
+      <div class="modal-box">
+        <div class="modal-head" style="margin-bottom:0"><span></span><button class="modal-x" title="閉じる(Esc)">✕</button></div>
+        <div class="detail" id="detail"></div>
+      </div>
+    </div>
+    <div class="modal" id="mTerm" style="display:none">
+      <div class="modal-box">
+        <div class="modal-head"><h3 style="margin:0" id="mTermT"></h3><button class="modal-x" title="閉じる(Esc)">✕</button></div>
+        <div id="mTermB" style="font-size:14px;color:var(--muted);line-height:1.9"></div>
+      </div>
+    </div>
+    <div class="modal" id="mHelp" style="display:none">
+      <div class="modal-box">
+        <div class="modal-head"><h3 style="margin:0">このツールについて</h3><button class="modal-x" title="閉じる(Esc)">✕</button></div>
+        <div style="font-size:14px;color:var(--muted);line-height:1.9">
+          <p>ClickHouse がデータをどう置き、どう読むのかを、さわって確かめる教材です。社内外のトレーニングとデモに使います。単一の HTML ファイルで、ブラウザで開くだけで動きます。</p>
+          <ul class="rulebox" style="margin-top:10px">
+            <li><b>学習レベル</b>: Lv1〜8 で要素が段階的に解禁。経験者は「ぜんぶ表示」で即 Lv8。URL に <code>#lv=4</code> を付けると開始レベルを指定できます(研修用)。前回のレベルと文字サイズは記憶されます。</li>
+            <li><b>デプロイ形態スイッチ</b>(Lv8): ☁️ Cloud(SharedMergeTree)⇄ 🖥 セルフホスト(Replicated)。SQL・図・挙動が丸ごと切り替わります。</li>
+            <li><b>題材は全画面共通</b>: SaaS のアクセスログ <code>events</code> テーブルと1本の共通クエリ。どの画面も同じデータの話をしています。</li>
+          </ul>
+          <div class="qlegend" style="font-size:13px;margin-top:12px">
+            <span><i class="dot" style="background:var(--t8);border:1px solid var(--yellow)"></i>黄 = ClickHouse / 主役・強調</span>
+            <span><i class="dot" style="background:var(--t11);border:1px solid var(--green)"></i>緑 = granule / データ</span>
+            <span><i class="dot" style="background:var(--t7);border:1px solid var(--cyan)"></i>シアン = インデックス / ポインタ / S3</span>
+            <span><i class="dot" style="background:var(--t15);border:1px dashed var(--orange)"></i>橙 = Skip Index / 警告</span>
+            <span><i class="dot" style="background:#1a1010;border:1px solid var(--red)"></i>赤 = 破壊的・偽陽性</span>
+          </div>
+          <p style="font-size:13px;color:var(--dim);margin-top:12px">数値・仕様は ClickHouse 公式ドキュメントに準拠(最終確認 2026-07-23)。一次情報は 📚 ドキュメントマップから。シミュレーションの Part 名・行数は説明用の縮尺模型です。</p>
+        </div>
+      </div>
+    </div>
+    <div class="modal" id="mBlock" style="display:none">
+      <div class="modal-box">
+        <div class="modal-head"><h3 style="margin:0">境界の対応: Granule・圧縮ブロック・処理 Block</h3><button class="modal-x" title="閉じる(Esc)">✕</button></div>
+            <div class="flowrow">
+      <div class="fstage st-mem"><b>primary.idx / skp_idx</b><span>メモリ上で「読む granule」を決定</span></div>
+      <span class="farrow">→</span>
+      <div class="fstage st-mem"><b>*.cmrk2</b><span>granule 番号 → .bin 内バイト位置</span></div>
+      <span class="farrow">→</span>
+      <div class="fstage st-disk"><b>.bin 圧縮ブロック</b><span>該当ブロックだけ読んで展開</span></div>
+      <span class="farrow">→</span>
+      <div class="fstage st-disk"><b>Granule の行</b><span>展開後オフセットから切り出し</span></div>
+      <span class="farrow">→</span>
+      <div class="fstage st-proc"><b>処理 Block</b><span>複数 granule を束ねて実行エンジンへ</span></div>
+    </div>
+    <div class="alignwrap">
+      <div class="arow">
+        <div class="albl"><b>Granule</b>索引の単位(行数で切る: 8192行)</div>
+        <div class="abar">
+          <div class="acell ag" style="flex:1">G0</div><div class="acell ag" style="flex:1">G1</div><div class="acell ag" style="flex:1">G2</div><div class="acell ag" style="flex:1">G3</div><div class="acell ag" style="flex:1">G4</div><div class="acell ag" style="flex:1">G5</div><div class="acell ag" style="flex:1">G6</div><div class="acell ag" style="flex:1">G7</div>
+        </div>
+      </div>
+      <div class="arow">
+        <div class="albl"><b>圧縮ブロック(.bin 内)</b>圧縮の単位(バイト量で切る: ≤1MiB)</div>
+        <div class="abar">
+          <div class="acell ac" style="flex:3.4">CB0</div><div class="acell ac" style="flex:2.1">CB1</div><div class="acell ac" style="flex:2.5">CB2</div>
+        </div>
+      </div>
+      <div class="arow">
+        <div class="albl"><b>処理 Block(メモリ内)</b>実行の単位(行数で切る: ≤65,409行)</div>
+        <div class="abar">
+          <div class="acell ab" style="flex:4">Block 0(G0〜G3 を連結)</div><div class="acell ab" style="flex:4">Block 1(G4〜G7 を連結)</div>
+        </div>
+      </div>
+      <p class="note" style="margin-top:10px"><b>読み方:</b> 同じデータ範囲を3通りに区切った図です。<b>処理 Block は granule の整数個から組み立てられる</b>ので境界は granule と一致します(緑と黄の線が揃う)。一方<b>圧縮ブロックはバイト量基準</b>なので granule 境界とズレます(青の線)。だから Mark には「圧縮ブロックの位置」と「展開後のずれ」の2つのオフセットが必要になるわけです。Granule はディスクにもメモリにも実体がない「索引が指すための目盛り」、処理 Block はファイルとして存在しない「実行時だけの入れ物」です。</p>
+      <div class="smtnote">この対応関係も<b>変更なし</b>。圧縮ブロックが S3 上のオブジェクト内に並ぶだけで、Mark の2段オフセットも処理 Block の組み立ても同じです。</div>
+    </div>
+      </div>
+    </div>
+    <div class="modal" id="mSlab" style="display:none">
+      <div class="modal-box">
+        <div class="modal-head"><h3 style="margin:0">Skip Index(primary.idx 以外の絞り込み索引)</h3><button class="modal-x" title="閉じる(Esc)">✕</button></div>
+            <div class="cap" style="font-size:13px;color:var(--muted);margin-bottom:10px">キーに載っていない列の絞り込みを担うのが skip index。仕組みは2系統あります。</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+              <div class="msCard" id="scTxt" style="flex:1;min-width:240px"><b style="color:var(--ink)">text index(転置索引・26.2 GA)</b><br>辞書+ポスティングリストで token → granule を直接特定。索引起因の偽陽性なし。url のような文字列検索の推奨で、このテーブルの skp_idx_url_text もこれ(動きは「クエリと読み取り」STAGE 4 で)。<span class="msMore">▸ ファイル構造を見る</span></div>
+              <div class="msCard" id="scSum" style="flex:1;min-width:240px"><b style="color:var(--ink)">要約型(minmax / set / bloom_filter)</b><br>granule を GRANULARITY 個まとめた単位(index granule)ごとの要約で、値を「<b>含みえない</b>」と証明できた granule 群を読み飛ばします。偽陽性はあり、行の位置も分かりません。数値範囲や ID 向き(全文検索用途では非推奨化)。このテーブルの ts_minmax がこれで、動きは「クエリと読み取り」の「ts 7/20 以降」条件で試せます。<span class="msMore">▸ ファイル構造を見る</span></div>
+            </div>
+            <div class="cap" style="font-size:13px;color:var(--muted);margin-bottom:8px"><b style="color:var(--ink)">要約型の3方式</b> — 違いは「要約に何を控えるか」だけです。</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+              <div class="msType"><b style="color:var(--ink)">minmax</b><br>要約 = 区間の<b>最小値と最大値</b>。範囲・大小条件(&lt;、BETWEEN)に強く、要約が2値だけなので索引は最小。挿入順と相関する列(時刻・連番)で真価を発揮します。</div>
+              <div class="msType"><b style="color:var(--ink)">set(N)</b><br>要約 = 区間に現れた<b>値の集合</b>(最大 N 個。あふれると「何でも含むかも」に退化して効かなくなる)。カーディナリティの低い列の等価・IN 向き。</div>
+              <div class="msType"><b style="color:var(--ink)">bloom_filter</b><br>要約 = ハッシュを立てた<b>ビットマップ</b>。値の種類が多い列の等価・IN 向きで、偽陽性率を指定できます。文字列向け派生の tokenbf / ngrambf は全文検索では text index に交代。</div>
+            </div>
+            <div class="cap" style="font-size:13px;color:var(--muted);margin-bottom:10px"><b style="color:var(--ink)">実験室(要約型の原理)</b>: 下の8つの Granule の実データ(events.url を数値トークンに単純化)から index granule(要約)が計算されます。TYPE を切り替えると要約の中身が変わります。</div>
+    <div class="slab-controls">
+      <label>TYPE <select id="sType"><option value="minmax">minmax</option><option value="set">set(N)</option><option value="bloom" selected>bloom_filter</option></select></label>
+      <label id="sSetNWrap" style="display:none" title="集合に控える上限。ユニーク値がこれを超えた要約は「何でも含むかも」に退化する">N <select id="sSetN"><option>2</option><option selected>4</option><option>8</option><option>16</option></select></label>
+      <label>GRANULARITY <select id="sGran"><option value="1">1</option><option value="2" selected>2</option><option value="4">4</option></select></label>
+      <label>探す値 <input type="range" id="sVal" min="0" max="99" value="42"> <span class="qv" id="sValV">42</span></label>
+      <button class="btn" id="sSort">データを局所化(ソート)</button>
+      <button class="btn" id="sShuf">データをシャッフル</button>
+    </div>
+    <div class="slab-grid" id="slabIdx"></div>
+    <div style="height:8px"></div>
+    <div class="slab-grid" id="slabGr"></div>
+    <div class="slab-sum" id="slabSum"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TAB B : クエリと読み取り ============ -->
+  <div class="pane" id="pB">
+    <div class="only-l1" style="border:1px dashed var(--line);border-radius:12px;padding:26px;text-align:center;color:var(--muted);font-size:14px">🔒 クエリの流れは <b style="color:var(--ink)">Lv2(<span class="term" data-g="primaryidx">primary.idx</span> の登場)</b>で解禁されます。まず「構造と書き込み」タブで INSERT と<span class="term" data-g="merge">マージ</span>を動かして、<span class="term" data-g="part">Part</span> の感覚をつかんでください。<div style="margin-top:14px"><button class="btn primary" id="qUnlock">Lv2 に進んでクエリを見る →</button></div></div>
+    <div class="hint lv2">ClickHouse は<span class="y">「どこを読まないか」を先に決めきってから</span>、最後に初めてストレージに触ります。以下は optimizer が実際に判断する順序です。</div>
+    <div class="deck lv2">
+      <div class="deck-g lv3"><span class="deck-l"><i class="q-part" style="font-style:normal">PARTITION BY で月ごと切る</i> → STAGE 1</span>
+        <span class="ctl-inline">期間
+          <span class="msel" id="mselMonth"><button type="button" class="msel-btn"></button>
+            <span class="msel-pop">
+              <label><input type="checkbox" class="fMonth" value="202606">2026-06</label>
+              <label><input type="checkbox" class="fMonth" value="202607">2026-07</label>
+            </span></span></span>
+      </div>
+      <div class="deck-g lv2 qonly"><span class="deck-l"><i class="q-pk" style="font-style:normal">PRIMARY KEY(primary.idx)で絞る</i> → STAGE 3</span>
+        <span class="ctl-inline">tenant
+          <span class="msel" id="mselTen"><button type="button" class="msel-btn"></button>
+            <span class="msel-pop">
+              <label><input type="checkbox" class="fTen" value="A">A</label>
+              <label><input type="checkbox" class="fTen" value="B">B</label>
+              <label><input type="checkbox" class="fTen" value="C">C</label>
+            </span></span></span>
+        <label class="ctl-inline"><input type="checkbox" id="cPk">user_id =</label>
+        <input type="range" id="rPk" min="0" max="1000" value="420" style="width:100px;accent-color:var(--cyan)"><span class="val" id="vPk" style="font-family:var(--mono);color:var(--cyan)">420</span>
+      </div>
+      <div class="deck-g lv4 qonly"><span class="deck-l"><i class="q-skip" style="font-style:normal">skip index で絞る</i> → STAGE 4</span>
+        <label class="ctl-inline" title="hasToken(url, 'checkout')。text index(転置索引)が加速します"><input type="checkbox" id="cSkip">url に checkout <span class="cm" style="font-size:11px">(text)</span></label>
+        <label class="ctl-inline" title="ts >= '2026-07-20'。minmax skip index が Part の時間窓で読み飛ばします"><input type="checkbox" id="cTs">ts 7/20 以降 <span class="cm" style="font-size:11px">(minmax)</span></label>
+      </div>
+      <div class="deck-g lv2 qonly"><span class="deck-l">再生</span>
+        <button class="btn primary" id="qPlay">▶ ステップ再生</button>
+      </div>
+      <div class="deck-g lv8"><span class="deck-l">読み取りシナリオ(物理の読み経路)</span>
+        <button class="btn" data-scn="hit">▶ キャッシュヒット</button>
+        <button class="btn" data-scn="cold">▶ コールドリード</button>
+        <button class="btn" data-scn="scale">▶ スケールアウト</button>
+        <button class="btn" data-scn="mvq">▶ daily_counts(MV)に聞く</button>
+      </div>
+    </div>
+    <div class="mlog lv8" id="scnLog" style="margin-bottom:12px"><div>— 読み取りシナリオの実況がここに流れます —</div></div>
+    <div class="lv8" id="mapDockB"></div>
+    <div id="qpipeFoldBar"><button class="btn" id="qpipeFoldBtn"></button></div>
+    <div class="qpipe"><div class="qpipe-l">1つの SELECT の一生(受信 → 結果、上から下へ)</div>
+      <div class="stage lv2" id="stg0"><div class="sthead"><b>受信(メモリ内で計画)</b><span class="stcut" id="cut0"></span></div><div class="stbody">クエリは Node のメモリ内で解析されます。ここから下の判断はすべて<b>メモリ内(primary.idx などの常駐メタデータ)</b>で行われ、ストレージに触るのは STAGE 5 が最初です。</div></div>
+      <div class="pipearrow lv2" id="arr0"></div>
+      <div class="stage lv3" id="stg1"><div class="sthead"><b>STAGE 1: Partition pruning(月ごと丸ごと除外)</b><span class="stcut" id="cut1"></span></div><div class="stbody" id="sb1"></div><div class="stwhy" id="why1"></div></div>
+      <div class="pipearrow lv3" id="arr1"></div>
+      <div class="stage lv5" id="stg2"><div class="sthead"><b>STAGE 2: Projection の自動選択で読む場所を決める(Part ごと)</b><span class="stcut" id="cut2"></span></div><div class="stbody" id="sb2"></div><div class="stwhy" id="why2"></div>
+        <details class="stdeep"><summary>🔬 深掘り: Projection 実験室と MV との使い分け</summary>
+      <div class="qgrid">
+        <div class="controls">
+          <h3>Projection の定義(設定はデッキと連動)</h3>
+          <div class="ddlbox" id="prjDdl"></div>
+          <div class="readout" id="prjReadout"></div>
+          <div class="smtnote">動作は<b>変更なし</b>。Projection は Part の中身の一部なので、S3 上の Part オブジェクトに一緒に格納され、マージも親 Part と一体で行われます。</div>
+        </div>
+        <div>
+          <div class="prjboard" id="prjBoard"></div>
+          <div class="udverdict" id="prjVerdict" style="margin-top:14px"></div>
+          <div class="mvnote">⚠ 代償と制約: INSERT のたびに Projection の分も書く(挿入負荷+ストレージ増)。まず本体の ORDER BY 設計を済ませ、実測で遅いクエリにだけ足すのが定石です。<code>SET force_optimize_projection = 1</code> にすると「使われなければエラー」になり検証できます。FINAL とは併用不可、軽量削除(DELETE FROM)ともデフォルト非互換(v24.7+ の <code>lightweight_mutation_projection_mode</code> で緩和可)。GROUP BY を含む Projection は AggregatingMergeTree として Part 内に格納され、事前集計にも使えます。</div>
+        </div>
+      </div>
+      <h3 style="margin:26px 0 10px">⚖️ Materialized View との使い分け</h3>
+      <div class="cmpwrap">
+        <table class="cmpt">
+          <thead><tr><th>観点</th><th>Materialized View</th><th>Projection</th></tr></thead>
+          <tbody>
+            <tr><td>実体の置き場所</td><td>別のターゲット表(明示的に作る・見える)</td><td>各 Part 内部の隠しテーブル(見えない)</td></tr>
+            <tr><td>更新のされ方</td><td>INSERT トリガとして同期実行(Refreshable MV は定期再計算)</td><td>INSERT 時に一緒に書かれ、マージも親 Part と一体</td></tr>
+            <tr><td>クエリの書き方</td><td>ターゲット表を自分で読みに行く(存在を知っている必要がある)</td><td>変更不要(optimizer が granule 最少の候補を自動選択)</td></tr>
+            <tr><td>ソースの UPDATE / DELETE</td><td>伝播しない(トリガは INSERT だけ)</td><td>軽量削除とはデフォルト非互換(lightweight_mutation_projection_mode で緩和)</td></tr>
+            <tr><td>定義に JOIN / WHERE</td><td>使える(JOIN は左端テーブルの INSERT のみトリガ)</td><td>使えない</td></tr>
+            <tr><td>多段パイプライン</td><td>カスケード MV で組める</td><td>組めない</td></tr>
+            <tr><td>ターゲットの設計自由度</td><td>別エンジン・別 PARTITION BY・別 TTL を選べる</td><td>親テーブルに従う(MergeTree 系のみ)</td></tr>
+            <tr><td>FINAL との併用</td><td>できる</td><td>できない</td></tr>
+            <tr><td>失敗時のふるまい</td><td>ビューが throw すると INSERT ごと失敗(リトライ+挿入 dedup で回復)</td><td>バックグラウンドで静かに処理。Part 単位で本体へフォールバック</td></tr>
+            <tr><td>向いている場面</td><td>変換・フィルタ・複数表への振り分け・集計パイプライン</td><td>同じ表の「別 ORDER BY」「透過的な事前集計」</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mvnote">出典: <a href="https://clickhouse.com/docs/managing-data/materialized-views-versus-projections" target="_blank" style="color:var(--cyan)">Materialized views versus projections(公式比較表)</a>。📚 ドキュメントマップのデータモデリング節にもリンクがあります。</div>
+        </details>
+      </div>
+      <div class="pipearrow lv5" id="arr2"></div>
+      <div class="stage lv2" id="stg3"><div class="sthead"><b>STAGE 3: primary.idx の二分探索で granule 範囲を絞る</b><span class="stcut" id="cut3"></span></div><div class="stbody" id="sb3"></div><div class="stwhy" id="why3"></div>
+        <details class="stdeep"><summary>🔬 深掘り: ORDER BY vs PRIMARY KEY(並びと索引の分離)</summary>
+    <div class="hint">💡 <b>ORDER BY</b> = ディスク上の<span class="y">並び順</span>を決める。<b>PRIMARY KEY</b> = そのうち<span class="y">primary.idx に載せる接頭辞</span>を決める。スライダーで PRIMARY KEY を短くして、<b>左(並び)は不変・右(索引)だけ痩せる</b>ことを確認してください。</div>
+    <div class="obgrid">
+      <div class="controls">
+        <h3>DDL を組み立てる</h3>
+        <div class="ddlbox" id="ddlView"></div>
+        <div class="pkslider">
+          <span style="font-size:13px;color:var(--muted);white-space:nowrap">PRIMARY KEY の長さ</span>
+          <input type="range" id="rPkLen" min="1" max="3" value="3">
+          <span class="val" id="vPkLen" style="font-family:var(--mono);color:var(--cyan)">3列</span>
+        </div>
+        <ul class="rulebox">
+          <li><b>省略時は PRIMARY KEY = ORDER BY。</b>多くのテーブルはこの状態で運用されています。</li>
+          <li>別指定する場合、PRIMARY KEY は <b>ORDER BY の接頭辞</b>でなければなりません(例: ORDER BY (a,b,c) に対し (a) や (a,b) は OK、(b) や (a,c) は NG)。</li>
+          <li>RDBMS と違い<b>一意制約ではありません</b>。同じキーの行が何行あっても OK。</li>
+          <li>短くする動機は <b>primary.idx のメモリ削減</b>。SummingMergeTree 等で ORDER BY に集計ディメンションを全部並べる必要があるが、検索は先頭の数列でしかしない、という時に効きます。</li>
+        </ul>
+        <div class="smtnote">このタブの内容は<b>変更なし</b>。ORDER BY / PRIMARY KEY の意味論、primary.idx の構造とメモリ常駐はローカルでも Cloud でも同一です。なお Cloud では <code>ENGINE = MergeTree</code> と書くだけで自動的に SharedMergeTree にマッピングされます。</div>
+      </div>
+      <div>
+        <div class="obpanels">
+          <div class="obcard">
+            <h3>ディスク上のデータ(.bin)<span class="owner o-order">ORDER BY が決める</span><span class="nochange" id="noChange">← 変化なし!</span></h3>
+            <div class="cap">Part 内の全行がこの順で物理的に並ぶ。※表示上は 1 Granule = 4 行(実際は 8192 行)</div>
+            <table class="dtable" id="diskTable">
+              <thead><tr><th></th><th>tenant_id</th><th>user_id</th><th>ts</th><th>url(キー外)</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="obcard">
+            <h3>primary.idx<span class="owner o-pk">PRIMARY KEY が決める</span></h3>
+            <div class="cap">各 Granule の<b>先頭行</b>から、PRIMARY KEY に含まれる列の値だけを記録(メモリ常駐)</div>
+            <div class="idx-list" id="idxList"></div>
+            <div class="sizebar">
+              <div class="lbl"><span>primary.idx サイズ(相対)</span><span id="szLabel"></span></div>
+              <div class="track"><i id="szBar"></i></div>
+            </div>
+          </div>
+        </div>
+        <div class="obcard qcheck">
+          <h3>このインデックスでクエリはどう走る?</h3>
+          <div class="cap">現在の PRIMARY KEY 長に応じた各 WHERE 句の効き方(緑=索引フル活用 / 橙=部分的 / 赤=索引使えず)</div>
+          <div id="qcList"></div>
+        </div>
+      </div>
+    </div>
+        </details>
+      </div>
+      <div class="pipearrow lv2" id="arr3"></div>
+      <div class="stage lv4" id="stg4"><div class="sthead"><b>STAGE 4: Skip index(text / minmax)で granule を絞る</b><span class="stcut" id="cut4"></span></div><div class="stbody" id="sb4"></div><div class="stwhy" id="why4"></div></div>
+      <div class="pipearrow lv4" id="arr4"></div>
+      <div class="stage lv2" id="stg5"><div class="sthead"><b>STAGE 5: 生き残った granule の列を読む(ここで初めて I/O)</b><span class="stcut" id="cut5"></span></div><div class="stbody" id="sb5"></div>
+        <div class="obpanels lv6" style="margin-top:10px">
+<div class="obcard">
+          <h3>PREWHERE(フィルタ列だけ先に読む)</h3>
+          <div class="cap"><code>SELECT tenant_id, url FROM events WHERE user_id = 420</code>(url は重い String 列)</div>
+          <div class="ctl"><input type="checkbox" id="pwOn" checked><label for="pwOn">PREWHERE 自動最適化(<code>optimize_move_to_prewhere</code>、既定 ON)</label></div>
+          <div id="pwViz"></div>
+        </div>
+<div class="obcard">
+          <h3>Lazy materialization(重い列は最後まで読まない)</h3>
+          <div class="cap"><code>SELECT * FROM events ORDER BY ts DESC LIMIT 3</code></div>
+          <div class="ctl"><input type="checkbox" id="lmOn" checked><label for="lmOn">遅延読み込み(<code>query_plan_optimize_lazy_materialization</code>)</label></div>
+          <div id="lmViz"></div>
+        </div>
+        </div>
+        <div class="smtnote lv8">読みに行く<b>先</b>が変わります: ローカルディスク → ローカル NVMe の FS キャッシュ、ミス時はオブジェクトストレージへ range GET。コールドリードは S3 レイテンシが乗るため、Cloud では「そもそも読む granule を減らす」上流ステージの価値がさらに上がります。</div>
+      </div>
+      <div class="pipearrow lv2" id="arr5"></div>
+      <div class="stage lv2" id="stg6"><div class="sthead"><b>STAGE 6: 処理 Block に束ねて並列実行</b><span class="stcut" id="cut6"></span></div><div class="stbody" id="sb6"></div>
+        <div class="obpanels lv6" style="margin-top:10px">
+<div class="obcard">
+          <h3>並列実行(granule → Block → スレッド)</h3>
+          <div class="cap">枝刈りを生き残った granule のその後</div>
+          <p style="font-size:13.5px;color:var(--muted);line-height:1.8">生き残った granule は <code>max_threads</code> 本のスレッドに分配され、複数 granule を束ねた<b style="color:var(--ink)">処理 Block(既定 ≤65,409 行)</b>単位でベクトル化(SIMD)実行されます。つまりこのタブの最適化はすべて「Block に載せる行を減らす」工夫です。Granule・圧縮ブロック・処理 Block の境界対応は、「構造と書き込み」タブで Part を開き、.bin か .cmrk2 のバイト図の中のリンクから図解が開きます。</p>
+        </div>
+<div class="obcard">
+          <h3>Query cache / Query condition cache</h3>
+          <div class="cap">2種類の「読まずに答える」キャッシュ</div>
+          <dl style="font-size:13px">
+            <dt style="font-family:var(--mono);color:var(--yellow);font-size:12px">use_query_cache</dt>
+            <dd style="color:var(--muted)">クエリの<b style="color:var(--ink)">結果そのもの</b>をキャッシュ。同一クエリの再実行(ダッシュボードの自動更新など)で granule を1つも読まずに返せます。明示的にオプトイン。</dd>
+            <dt style="font-family:var(--mono);color:var(--yellow);font-size:12px;margin-top:10px">use_query_condition_cache</dt>
+            <dd style="color:var(--muted)">WHERE 述語ごとに「<b style="color:var(--ink)">どの granule が条件を満たしたか</b>」を記憶。次回は一致 granule だけ読みます。結果でなく枝刈りの答えをキャッシュするので、似たクエリにも効きます。</dd>
+          </dl>
+        </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TAB C : doc map ============ -->
+  <div class="modal" id="mDocs" style="display:none">
+    <div class="modal-box" style="max-width:1100px">
+      <div class="modal-head"><h3 style="margin:0">ドキュメントマップ(続きは公式ドキュメントへ)</h3><button class="modal-x" title="閉じる(Esc)">✕</button></div>
+
+    <div class="hint">バッジは対応する画面です。</div>
+
+    <div class="refsec">
+      <h3>🧱 コアコンセプト<span style="font-size:12px;color:var(--dim);font-weight:400">(/docs/managing-data/core-concepts)</span></h3>
+      <div class="rs-sub">「構造と書き込み」「クエリと読み取り」の両タブでカバーしている領域です。</div>
+      <div class="refgrid">
+        <a class="refcard" href="https://clickhouse.com/docs/parts" target="_blank"><b>Table parts</b><span>Part の構造・不変性・ライフサイクル</span><span class="tabref">→ 構造と書き込み</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/partitions" target="_blank"><b>Table partitions</b><span>パーティションの目的は管理(削除・TTL)。クエリ高速化は副次効果</span><span class="tabref">→ 構造と書き込み / クエリと読み取り(STAGE 1)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/merges" target="_blank"><b>Part merges</b><span>マージの仕組み・レベル・OPTIMIZE</span><span class="tabref">→ 構造と書き込み(操作デッキ)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/primary-indexes" target="_blank"><b>Primary indexes</b><span>疎インデックスの原理と設計</span><span class="tabref">→ クエリと読み取り(STAGE 3)/ 構造と書き込み</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/shards" target="_blank"><b>Shards and replicas</b><span>シャーディングとレプリケーション。Cloud では SMT がレプリカ問題を置き換え</span><span class="tabref">→ ヘッダのモードスイッチ(Lv8)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/academic_overview" target="_blank"><b>Architecture overview</b><span>VLDB 論文ベースの全体アーキテクチャ解説</span></a>
+      </div>
+    </div>
+
+    <div class="refsec">
+      <h3>✏️ 更新と削除<span style="font-size:12px;color:var(--dim);font-weight:400">(/docs/updating-data, /docs/managing-data/deleting-data/overview)</span></h3>
+      <div class="rs-sub">「構造と書き込み」の「更新・削除」で8方式を体験できます。原則: mutation はなるべく避け、軽量削除・パーティション操作・エンジン選択で設計する。</div>
+      <div class="refgrid">
+        <a class="refcard" href="https://clickhouse.com/docs/updating-data/overview" target="_blank"><b>Working with updates</b><span>OLTP との違いと更新手段の全体像</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/replacing-merge-tree" target="_blank"><b>ReplacingMergeTree</b><span>「上書き」を INSERT + マージ時置換で表現する定番</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/developer/lightweight-delete" target="_blank"><b>Lightweight deletes</b><span>DELETE FROM。マスクで即時反映、物理削除はマージ時</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/managing-data/delete_mutations" target="_blank"><b>Delete mutations</b><span>ALTER DELETE。Part 書き換えを伴う重い操作</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/managing-data/drop_partition" target="_blank"><b>Drop partition</b><span>メタデータ操作のみで最速・最安の削除</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/managing-data/truncate" target="_blank"><b>Truncate table</b><span>全データ削除。テーブル定義は残る</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/developer/ttl" target="_blank"><b>TTL</b><span>行・列・Part の有効期限。古いデータの自動削除/移動</span></a>
+      </div>
+    </div>
+
+    <div class="refsec">
+      <h3>📐 データモデリング<span style="font-size:12px;color:var(--dim);font-weight:400">(/docs/data-modeling/overview)</span></h3>
+      <div class="rs-sub">「JOIN を減らし、読む量を減らす」ための道具箱。ORDER BY 設計(⚡ > 🧭)の次に効く領域です。</div>
+      <div class="refgrid">
+        <a class="refcard" href="https://clickhouse.com/docs/data-modeling/schema-design" target="_blank"><b>Schema design</b><span>型選び・ORDER BY 設計・Nullable 回避などの基本方針</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/data-modeling/denormalization" target="_blank"><b>Denormalizing data</b><span>JOIN の代わりに非正規化。列指向では冗長でも読みは速い</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/materialized-views" target="_blank"><b>Materialized views</b><span>INSERT 時トリガの事前集計。読み時コストを書き時に移す</span><span class="tabref">→ 構造と書き込み(MV)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/data-modeling/projections" target="_blank"><b>Projections</b><span>同じ Part 内に別 ORDER BY の複製を持ち、クエリに応じ自動選択</span><span class="tabref">→ クエリと読み取り(STAGE 2)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/managing-data/materialized-views-versus-projections" target="_blank"><b>MV vs Projections</b><span>公式の使い分け比較表。アプリ内早見表の出典</span><span class="tabref">→ クエリと読み取り(STAGE 2)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/dictionary" target="_blank"><b>Dictionary</b><span>参照データのメモリ常駐キー・バリュー。JOIN の高速な代替</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/data-compression/compression-in-clickhouse" target="_blank"><b>Data compression</b><span>コーデック選択(ZSTD, Delta, Gorilla…)で .bin を圧縮</span><span class="tabref">→ 構造と書き込み</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/data-modeling/backfilling" target="_blank"><b>Backfilling data</b><span>過去データの安全な投入パターン</span></a>
+      </div>
+    </div>
+
+    <div class="refsec">
+      <h3>🛠 開発ガイド<span style="font-size:12px;color:var(--dim);font-weight:400">(/docs/guides/developer/overview)</span></h3>
+      <div class="refgrid">
+        <a class="refcard" href="https://clickhouse.com/docs/guides/developer/deduplication" target="_blank"><b>Deduplication strategies</b><span>ReplacingMergeTree / GROUP BY / FINAL の使い分け</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/developer/deduplicating-inserts-on-retries" target="_blank"><b>Dedup inserts on retries</b><span>リトライ時の重複防止(insert_deduplicate、ブロックハッシュ)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/developer/transactional" target="_blank"><b>Transactional (ACID) support</b><span>単一 Part への INSERT は原子的。どこまで ACID かの整理</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/joining-tables" target="_blank"><b>Using JOINs</b><span>JOIN アルゴリズムの選択と最適化</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/developer/cascading-materialized-views" target="_blank"><b>Cascading materialized views</b><span>MV を多段に連結する設計</span><span class="tabref">→ 構造と書き込み(MV)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/developer/time-series-filling-gaps" target="_blank"><b>Time series - gap fill</b><span>WITH FILL で時系列の欠損を埋める</span></a>
+      </div>
+    </div>
+
+    <div class="refsec">
+      <h3>🚀 パフォーマンスと最適化<span style="font-size:12px;color:var(--dim);font-weight:400">(/docs/operations/overview)</span></h3>
+      <div class="rs-sub">枝刈り(⚡ > 枝刈りシミュレータ)の先にある実行時の最適化群。一部は「⚡ > ⏩ 実行時の最適化」で体験できます。</div>
+      <div class="refgrid">
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/query-optimization" target="_blank"><b>Query optimization</b><span>EXPLAIN と system テーブルで読む量・実行を診断する総論</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/guides/best-practices/sparse-primary-indexes" target="_blank"><b>Sparse primary indexes</b><span>疎インデックス設計の決定版ガイド</span><span class="tabref">→ クエリと読み取り(STAGE 3 深掘り)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/engines/table-engines/mergetree-family/textindexes" target="_blank"><b>Full-text search(text index)</b><span>転置索引によるトークン検索。26.2 GA、bloom 系に代わる推奨</span><span class="tabref">→ クエリと読み取り(STAGE 4)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/skipping-indexes" target="_blank"><b>Data skipping indexes</b><span>要約型 Skip Index(minmax/set/bloom)の設計と落とし穴</span><span class="tabref">→ 構造と書き込み(Part 解剖 → 実験室)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/partitioning-key" target="_blank"><b>Partitioning key</b><span>パーティションキー設計。細かすぎは Part 爆発</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/prewhere" target="_blank"><b>PREWHERE</b><span>フィルタ列だけ先に読んで他列の読み取りを減らす自動最適化</span><span class="tabref">→ クエリと読み取り(STAGE 5・6)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/lazy-materialization" target="_blank"><b>Lazy materialization</b><span>ORDER BY + LIMIT で重い列の読み込みを最後まで遅延</span><span class="tabref">→ クエリと読み取り(STAGE 5・6)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/bulk-inserts" target="_blank"><b>Bulk inserts</b><span>まとめて挿入して Part 数とマージ負荷を抑える</span><span class="tabref">→ 構造と書き込み(操作デッキ)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/asynchronous-inserts" target="_blank"><b>Asynchronous inserts</b><span>サーバー側バッファリングで小口 INSERT を束ねる</span><span class="tabref">→ 構造と書き込み(操作デッキ)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/avoid-mutations" target="_blank"><b>Avoid mutations</b><span>ALTER UPDATE/DELETE を避ける理由と代替</span><span class="tabref">→ 構造と書き込み(更新・削除)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/optimize/query-parallelism" target="_blank"><b>Query parallelism</b><span>granule → 処理 Block → スレッドの並列実行モデル</span><span class="tabref">→ クエリと読み取り(STAGE 5・6)/ 構造と書き込み(境界図)</span></a>
+        <a class="refcard" href="https://clickhouse.com/docs/operations/query-cache" target="_blank"><b>Query cache / condition cache</b><span>結果キャッシュと述語評価キャッシュ</span><span class="tabref">→ クエリと読み取り(STAGE 5・6)</span></a>
+      </div>
+    </div>
+  </div>
+  </div>
+</div>
+<div id="tourPanel" style="display:none">
+  <span id="tourText"></span>
+  <span class="tourbtns"><button class="btn primary" id="tourNext"></button><button class="btn" id="tourStop">終了</button></span>
+</div>
+
+<script>
+var LV=7; // 学習レベル(末尾のレベルシステムが localStorage / #lv= から確定させる)
+
+/* ============================================================
+   tabs
+============================================================ */
+var mapHome=null;
+function dockMap(){
+  const map=document.getElementById('svcmap'); if(!map) return;
+  if(!mapHome) mapHome={parent:map.parentElement,next:map.nextElementSibling};
+  const dock=document.getElementById('mapDockB');
+  const inB=document.getElementById('pB').classList.contains('on') && typeof LV!=='undefined' && LV>=8;
+  if(inB && dock && map.parentElement!==dock){ dock.appendChild(map); }
+  else if(!inB && map.parentElement!==mapHome.parent){ mapHome.parent.insertBefore(map,mapHome.next); }
+  if(typeof syncReadHighlight==='function') syncReadHighlight();
+}
+document.querySelectorAll('.tab').forEach(t=>{
+  t.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+    document.querySelectorAll('.pane').forEach(x=>x.classList.remove('on'));
+    t.classList.add('on');
+    document.getElementById(t.dataset.pane).classList.add('on');
+    dockMap();
+  });
+});
+
+/* ============================================================
+   SharedMergeTree annotation toggle
+============================================================ */
+const smtOn=()=>document.body.classList.contains('smt-on');
+document.getElementById('smtToggle').addEventListener('click',()=>{
+  document.body.classList.toggle('smt-on');
+  actTag='MODE';
+  // 詳細パネルの注記を出し入れし、モード依存の SQL・図・挙動を同期
+  if(window.__lastDetail) showDetail(window.__lastDetail,true);
+  if(typeof syncMode==='function') syncMode(true);
+});
+
+/* ============================================================
+   PANE 1 : structure explorer
+============================================================ */
+const NODES = {
+  table:{cls:'t-table',badge:'LOGICAL',title:'events(MergeTree テーブル)',
+    desc:'ユーザーが CREATE TABLE で定義する論理テーブル。ORDER BY がデータの物理的な並び順と primary index を決める、設計上いちばん重要な句。',
+    dl:[['DDL の要点','ENGINE = MergeTree · PARTITION BY toYYYYMM(ts) · PRIMARY KEY (tenant_id, user_id)(ORDER BY は必要なら ts を足した並び)'],
+        ['物理実体','複数のパーティションに属する複数の Part(ディレクトリ)の集合'],
+        ['確認','system.tables / system.parts']],
+    viz:'<div class="fvt">構造: テーブル = パーティション ⊃ Part の入れ子</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+      '<div style="flex:1;min-width:170px;border:1px solid var(--line);border-radius:8px;padding:8px"><b style="color:var(--ink)">PARTITION 202606</b><div class="fvgrid" style="grid-template-columns:1fr;margin-top:6px"><i>Part 202606_1_5_1</i></div></div>'+
+      '<div style="flex:1;min-width:170px;border:1px solid var(--line);border-radius:8px;padding:8px"><b style="color:var(--ink)">PARTITION 202607</b><div class="fvgrid" style="grid-template-columns:1fr 1fr;margin-top:6px"><i>Part 202607_1_5_2</i><i>Part 202607_6_6_0</i></div></div>'+
+      '</div>'+
+      '<div class="fvn">テーブル自体のデータファイルは無く、実体はこの Part の集合(台帳は system.parts)。</div>'},
+  partition:{cls:'t-table',badge:'MANAGEMENT UNIT',title:'Partition 202607',
+    desc:'PARTITION BY 式の値ごとのデータのまとまり。主目的はデータ管理(DROP PARTITION での一括削除、TTL)で、クエリ高速化は副次効果。パーティションをまたぐ MERGE は起きない。',
+    dl:[['枝刈り','WHERE にパーティションキー条件があると Part 丸ごとスキップ(minmax idx + partition.dat)'],
+        ['注意','細かすぎるパーティション(例: 日+ID)は Part 数爆発の元。月単位などが定石'],
+        ['操作','ALTER TABLE ... DROP/DETACH/MOVE PARTITION']],
+    viz:'<div class="fvt">構造: パーティション = Part の入れ物(管理の単位)</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+      '<div style="flex:1;min-width:170px;border:1px dashed var(--red);border-radius:8px;padding:8px;opacity:.8"><b style="color:var(--red);text-decoration:line-through">PARTITION 202606</b><div class="fvgrid" style="grid-template-columns:1fr;margin-top:6px"><i style="text-decoration:line-through">Part 202606_1_5_1</i></div><div style="color:var(--red);font-family:var(--jp);font-size:11.5px;margin-top:6px">DROP PARTITION → 箱ごと即削除(行を走査しない)</div></div>'+
+      '<div style="flex:1;min-width:170px;border:1px solid var(--line);border-radius:8px;padding:8px"><b style="color:var(--ink)">PARTITION 202607</b><div class="fvgrid" style="grid-template-columns:1fr 1fr;margin-top:6px"><i>Part</i><i>Part</i></div><div style="color:var(--muted);font-family:var(--jp);font-size:11.5px;margin-top:6px">マージはこの箱の中でだけ起きる(またがない)</div></div>'+
+      '</div>'},
+  part:{cls:'t-part',badge:'PHYSICAL / IMMUTABLE',title:'Part 202607_3_8_2',
+    desc:'ディスク上の1ディレクトリ。INSERT のたびに生成され、一度書いたら変更されない(immutable)。名前は「パーティションID_最小ブロック番号_最大ブロック番号_マージレベル」。',
+    dl:[['ソート','Part 内部は ORDER BY キーで常にソート済み'],
+        ['フォーマット','Wide(列ごとにファイル)/ Compact(全列を data.bin に集約、小さい Part 向け)'],
+        ['ライフサイクル','INSERT → active → merge で新 Part に統合 → inactive → 削除'],
+        ['確認','system.parts(active, rows, bytes_on_disk...)'],
+        ['物理の姿','下の「物理構造」ツリーの Part オブジェクト群が同一物。Cloud では実体は S3 上']],
+    viz:'<div class="fvt">構造: Part = ソート済みの行を書き固めた1ディレクトリ</div>'+
+      '<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px"><b style="color:var(--ink)">202607_3_8_2/</b>'+
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'+['primary.idx','tenant_id.bin','user_id.bin','user_id.cmrk2','skp_idx_…'].map(f=>'<span style="border:1px solid var(--line);border-radius:6px;padding:2px 8px;background:var(--panel-2)">'+f+'</span>').join('')+'</div>'+
+      '<div class="fvgrid" style="grid-template-columns:repeat(4,1fr);margin-top:8px"><i>G0</i><i>G1</i><i>G2</i><i>G3</i></div>'+
+      '<div style="font-size:11.5px;color:var(--dim);font-family:var(--jp);margin-top:4px">行は PRIMARY KEY 順に整列済み。8192 行ごとの目盛りが granule</div>'+
+      '</div>'+
+      '<div class="fvn">名前 = パーティションID_最小ブロック_最大ブロック_マージ世代。不変なので、変更はすべて「新しい Part への置き換え」で表現されます。</div>'},
+  primaryidx:{cls:'t-idx',badge:'SPARSE INDEX',title:'primary.idx',
+    desc:'疎な主キーインデックス。全行ではなく「各 Granule の先頭行」の ORDER BY キー値だけを持つ。だから10億行でも約12万エントリで済み、メモリに常駐できる。',
+    dl:[['引き方','二分探索で「条件を含みうる Granule 範囲」を特定(行の特定はしない)'],
+        ['効く条件','ORDER BY キーの接頭辞(先頭列から)の等価・範囲'],
+        ['サイズ感','1エントリ / 8192 行(index_granularity)']]},
+  bin:{cls:'t-file',badge:'COLUMN DATA',title:'user_id.bin',
+    desc:'列データ本体。列ごとに1ファイル(Wide format)。LZ4(既定)や ZSTD で圧縮ブロック単位に圧縮されている。',
+    dl:[['圧縮ブロック','既定 64KiB〜1MiB。Granule 境界とは一致しない'],
+        ['列指向の利点','SELECT で触る列の .bin だけ読めばよい'],
+        ['コーデック','CODEC(ZSTD(3)) や Delta, DoubleDelta, Gorilla など列ごとに指定可']]},
+  mrk:{cls:'t-idx',badge:'POINTER',title:'user_id.cmrk2(Mark)',
+    desc:'「Granule 番号 → .bin 内の物理位置」の対応表。primary.idx が“どの Granule か”を決め、Mark が“ディスクのどこか”を教える。2つで住所録が完成する。',
+    dl:[['エントリ内容','(圧縮ファイル内オフセット, 展開後ブロック内オフセット)のペア'],
+        ['なぜ2段?','Granule 境界と圧縮ブロック境界がズレるため'],
+        ['キャッシュ','mark cache としてメモリにキャッシュされる']]},
+  skip:{cls:'t-skip',badge:'SKIP INDEX',title:'skp_idx_url_text(text index)',
+    desc:'主キー以外の列を絞る補助インデックス。text index(26.2 GA)は token → 行の転置索引で候補を直接列挙し、索引自体の偽陽性なし。minmax / set / bloom 系は「見なくていい範囲を証明する」要約型。',
+    dl:[['種類','text(転置索引・文字列検索の推奨)/ minmax / set(N) / bloom_filter / vector_similarity。ngrambf_v1 / tokenbf_v1 は全文検索では非推奨化'],
+        ['GRANULARITY n','Skip Index 1ブロック = Granule n 個分。index_granularity とは別物'],
+        ['注意','データの局所性がないと効かない。EXPLAIN indexes=1 で効果を必ず確認']]},
+  granule:{cls:'t-gran',badge:'READ UNIT',title:'Granule(読み取りの最小単位)',
+    desc:'読み取りの最小論理単位。既定 8192 行。物理ファイルではなく .bin 内の論理的な区切りで、インデックスはすべて Granule 単位で「読む/読まない」を判定する。',
+    dl:[['サイズ','index_granularity = 8192 行(適応的: index_granularity_bytes = 10MiB 上限)'],
+        ['トレードオフ','小さくすると点検索が速いが index が肥大。大きいとスキャン向き'],
+        ['ここが肝','ClickHouse は行単位ではなく Granule 単位で読む']],
+    viz:'<div class="fvt">構造: ディスクに実体のない「読み取り単位の目盛り」</div>'+
+      '<div class="fvgrid" style="grid-template-columns:repeat(3,1fr)">'+
+      '<i>rows 0〜8,191<br>= G0</i><i class="win">rows 8,192〜16,383<br>= G1</i><i>rows 16,384〜…<br>= G2</i>'+
+      '</div>'+
+      '<div class="fvn">primary.idx が控えるのは各目盛りの<b>先頭行のキーだけ</b>。読む/読まないの判断は常にこの目盛り単位で、「G1 の中の1行だけ読む」はできません(G1 を丸ごと展開)。</div>'},
+  block:{cls:'t-block',badge:'PROCESSING UNIT',title:'処理 Block(メモリ内)',
+    desc:'クエリ実行エンジンを流れるデータの単位。読み取った複数 Granule が最大 max_block_size 行(既定 65,409)の Block に束ねられ、フィルタ・集計がベクトル化(SIMD)実行される。',
+    dl:[['中身','列チャンク + 型 + 列名のセット'],
+        ['ディスクの圧縮ブロックとは別物','あちらはストレージの圧縮単位。名前が同じで紛らわしい'],
+        ['チューニング','max_block_size / max_threads がスループットに直結']],
+    viz:'<div class="fvt">構造: 生き残った granule を束ねた、実行時だけの入れ物</div>'+
+      '<div class="fvgrid" style="grid-template-columns:repeat(3,1fr)"><i class="win">G2</i><i class="win">G4</i><i class="win">G7</i></div>'+
+      '<div class="fvarr"><span>↓ 束ねる(≤65,409 行)</span></div>'+
+      '<div class="fvbar" style="margin-top:2px"><i style="flex:1" class="win">処理 Block → thread が SIMD で一括処理</i></div>'+
+      '<div class="fvn">ファイルとしては存在しません。granule の整数個から組み立てるので、境界は granule と一致します(圧縮ブロックとは別物)。</div>'},
+  row:{cls:'t-gran',badge:'ROW',title:'Row(1行)',
+    desc:'ClickHouse が単体で扱うことはほぼない最小単位。行は常に Granule → Block という束で動く。「1行だけ読む」ことはできず、その行が属する Granule(8192行)を展開する。',
+    dl:[['教訓','点検索(OLTP)が苦手な理由がこれ。主キー1件の取得でも 8192 行分の展開が走る']]},
+  cluster:{cls:'t-table',badge:'PHYSICAL / SERVICE',title:'ClickHouse サービス(クラスタ)',
+    desc:'ここから下は「物理の世界」。論理構造(テーブル)を実際に動かすインフラです。Cloud では「ステートレスなコンピュートノード群 + Keeper + オブジェクトストレージ」の3層構成。',
+    dl:[['Cloud(SMT)','計算と保存を分離。ノードはデータを持たず、S3上の1コピーを全員で共有'],
+        ['OSS(セルフホスト)','shard(データ分割)× replica(複製)のサーバー格子。各サーバーがローカルディスクにデータを保持'],
+        ['スケール','Cloud はノード追加=即戦力(コピー不要)。OSS はデータ再配置・再同期を伴う']]},
+  cnode:{cls:'t-file',badge:'COMPUTE / REPLICA',title:'Compute Node(レプリカ)',
+    desc:'クエリを実行する計算資源。SMT の世界では「レプリカ」= データのコピーではなく、同じ共有データを見る計算面の複製。ノード自体はステートレスで、落ちてもデータは無傷です。',
+    dl:[['持ち物','メモリ(primary.idx / mark cache / メタデータキャッシュ)+ ローカル NVMe の FS キャッシュのみ'],
+        ['通信','ノード同士は直接通信しない。すべて Keeper と S3 経由'],
+        ['OSS では','ReplicatedMergeTree のレプリカ=データの完全コピーを持つサーバー。Part をノード間で転送して複製する'],
+        ['確認','system.clusters / system.replicas']]},
+  nodemem:{cls:'t-idx',badge:'MEMORY',title:'ノードのメモリ',
+    desc:'論理構造で見た primary.idx や Mark が住んでいる場所。「どの granule を読むか」の決定はすべてここで完結し、ディスクにも S3 にも触れません。',
+    dl:[['常駐するもの','primary.idx(全 Part 分)/ mark cache / Keeper メタデータのローカルキャッシュ(購読で自動更新)'],
+        ['効果','枝刈りフェーズ(「クエリと読み取り」の STAGE 1〜4)はメモリ内処理。I/O が発生するのは生き残った granule の読み取りだけ']]},
+  nodecache:{cls:'t-gran',badge:'NVMe CACHE',title:'ローカル NVMe キャッシュ',
+    desc:'S3 から取得した圧縮ブロックを保持するファイルシステムキャッシュ。ウォーム状態ならローカルディスク並みの速度、ミスすればコールドリードになります。',
+    dl:[['ヒット時','S3 アクセスなしで返却'],
+        ['ミス時','Mark が指す範囲だけを S3 に range GET → キャッシュに格納'],
+        ['注意','スケールアウト直後のノードはキャッシュが空。クエリを捌きながら温まる']]},
+  keeper:{cls:'t-table',badge:'COORDINATION',title:'ClickHouse Keeper',
+    desc:'共有メタデータ層であり、クラスタの「唯一の真実」。どの Part が存在し、S3 のどこにあるかを一元管理します。INSERT のコミットもマージの調整もここ経由。',
+    dl:[['役割','Part メタデータの保管 / INSERT のコミット点(クォーラム)/ マージ担当ノードの調整 / 変更の購読配信'],
+        ['OSS では','Keeper(旧 ZooKeeper)はレプリケーションログの調整役。SMT ではメタデータ本体を持つ点が違う'],
+        ['障害時','Keeper が止まると書き込み・DDL が止まる(読みは継続可能な場合あり)。だから Keeper 自体も3台以上の合議制']]},
+  objstore:{cls:'t-part',badge:'SHARED STORAGE',title:'Object Storage(S3 / GCS)',
+    desc:'すべての Part の実体がここに1コピーだけ置かれる共有ストレージ。耐久性は S3 に委譲し、容量は事実上無制限、コンピュートと独立に増減・課金されます。',
+    dl:[['論理との対応','論理構造の「Part」の中身(.bin / primary.idx / .cmrk2 / skp_idx)がオブジェクトとして格納される'],
+        ['OSS では','各ノードのローカルディスクがこれに相当(=ノード数分のコピーが必要だった)'],
+        ['性能特性','レイテンシは遅いがスループットは太い。だからノード側の NVMe キャッシュとセットで成立する']]},
+  partobj:{cls:'t-part',badge:'PART OBJECTS',title:'Part オブジェクト群',
+    desc:'論理構造ツリーの「Part 202607_3_8_2/」と同一物を、物理側から見た姿。同じものが2つの世界に登場する、このアプリの合流点です。',
+    dl:[['中身','「🔍 構造エクスプローラ」論理側で掘った .bin / primary.idx / .cmrk2 / skp_idx がオブジェクトとして並ぶ'],
+        ['不変性','immutable なのでオブジェクトストレージと相性が良い(上書き不要、追加と削除だけ)'],
+        ['ライフサイクル','INSERT で誕生 → マージで新 Part に置換 → inactive → S3 から削除']]},
+  proj:{cls:'t-part',badge:'PROJECTION',title:'p_url/(Part 内の隠しテーブル)',
+    desc:'Part のサブディレクトリに住む「url 順に並べ直した匿名 MergeTree テーブル」。INSERT 時に本体と一緒に書かれ、マージも親 Part と一体。クエリでの自動選択は「クエリと読み取り」の STAGE 2 とその深掘りで体験できます。',
+    dl:[['中身','本体と同じ行を ORDER BY url で並べ直した Part(primary.idx も別に持つ)'],
+        ['同期','常に親 Part と一体で、ズレようがない(MV との最大の違い)'],
+        ['代償','INSERT のたびに余分な書き込み+ストレージ']]},
+  tgtable:{cls:'t-table',badge:'MV TARGET',title:'daily_counts(SummingMergeTree)',
+    desc:'MV mv_daily の書き込み先。ただの普通のテーブルで、自分の Part とマージのライフサイクルを持つ。INSERT のたびに「そのブロック分の部分集計」の小さな Part が積まれ、マージが同じ d の行を合算して畳んでいく。',
+    dl:[['読み方','SELECT d, sum(cnt) ... GROUP BY d。マージ前でも sum() で畳めば常に正しい'],
+        ['注意','ソース events への mutation / DROP PARTITION は伝播しない(トリガは INSERT だけ)'],
+        ['確認','system.tables / system.parts(通常のテーブルと同じ)']]},
+  wktable:{cls:'t-table',badge:'CASCADED MV TARGET',title:'weekly_counts(SummingMergeTree)',
+    desc:'カスケード MV mv_weekly の書き込み先。トリガは events ではなく daily_counts への INSERT で、mv_daily が書いたブロックにも連鎖して発火する。MV の宛先への書き込みも「ただの INSERT」だから成り立つ多段パイプライン。',
+    dl:[['流れ','events → (mv_daily) → daily_counts → (mv_weekly) → weekly_counts'],
+        ['読み方','SELECT w, sum(cnt) ... GROUP BY w。日次と同じく部分集計を sum() で畳む'],
+        ['注意','段数が深いほど1回の INSERT のコストが増える。連鎖はすべて同じ INSERT の中で同期的に実行される']]},
+};
+
+const SMT_NOTES={
+  table:'Cloud では <code>ENGINE = MergeTree</code> と書くだけで自動的に SharedMergeTree にマッピングされます。DDL の書き方は変わりません。',
+  part:'ローカルディスクのディレクトリではなく、<b>オブジェクトストレージ(S3/GCS)上のオブジェクト群</b>になります。「どの Part が存在し、ファイルがどこにあるか」は <b>Keeper 上のメタデータ層</b>が一元管理。データは1コピーだけで、全レプリカが同じ Part を共有します。immutable・命名規則・ライフサイクルは同一です。',
+  bin:'実体は S3/GCS 上。読み取りはローカル NVMe の<b>ファイルシステムキャッシュ</b>経由で、キャッシュミス時のみオブジェクトストレージへ。コールドリードにはレイテンシが乗ります。',
+  primaryidx:'役割・構造とも<b>変更なし</b>。各コンピュートノードのメモリに常駐する点も同じです。',
+  mrk:'構造は同一。mark cache が各ノードのローカルメモリに載る点も変わりません。',
+  block:'実行時のメモリ内概念なので<b>変更なし</b>。max_block_size などのチューニングもそのまま有効です。',
+};
+const DEEP_FILE={bin:'bin',primaryidx:'idx',mrk:'mrk'};
+function showDeep(id){
+  const g=x=>document.getElementById(x);
+  g('deepFiles').style.display=DEEP_FILE[id]?'flex':'none';
+  g('mSlab').style.display=(id==='skip')?'flex':'none';
+  if(DEEP_FILE[id]&&typeof renderFile==='function') renderFile(DEEP_FILE[id]);
+}
+function showDetail(id,skipDeep){
+  const d=NODES[id]; if(!d) return;
+  window.__lastDetail=id;
+  if(!skipDeep) showDeep(id);
+  document.getElementById('detail').innerHTML=
+    '<span class="badge">'+d.badge+'</span><h2>'+d.title+'</h2><p>'+d.desc+'</p>'+
+    (d.viz?'<div class="fviz">'+d.viz+'</div>':'')+'<dl>'+
+    d.dl.map(([k,v])=>'<dt>'+k+'</dt><dd>'+v+'</dd>').join('')+'</dl>'+
+    (SMT_NOTES[id]?'<div class="smtnote">'+SMT_NOTES[id]+'</div>':'');
+  if(!skipDeep && !DEEP_FILE[id] && id!=='skip'){ document.getElementById('mNode').style.display='flex'; }
+}
+
+/* ============================================================
+   PANE 3 : query pruning simulator
+============================================================ */
+// クエリパイプラインの評価対象は構造タブの実 Part 群(ST)。granule メタは genGranules が付与
+const $=id=>document.getElementById(id);
+function fmt(n){return n.toLocaleString()}
+
+/* ============================================================
+   PANE 4 : ORDER BY vs PRIMARY KEY
+============================================================ */
+const OB_COLS=['tenant_id','user_id','ts'];
+const OB_ROWS=[ // ORDER BY (tenant_id, user_id, ts) でソート済み
+  ['A',101,'09:00','/home'],['A',101,'09:05','/cart'],['A',102,'09:01','/home'],['A',107,'09:20','/checkout'],
+  ['A',110,'08:59','/home'],['B',402,'09:02','/item/12'],['B',420,'09:03','/home'],['B',420,'09:11','/cart'],
+  ['B',471,'09:00','/home'],['C', 12,'09:04','/item/9'],['C', 12,'09:09','/checkout'],['C', 15,'09:00','/home'],
+  ['C', 31,'09:06','/home'],['C', 31,'09:15','/cart'],['C', 44,'09:01','/item/3'],['C', 44,'09:30','/checkout'],
+];
+const GSIZE=4; // 表示用グラニュールサイズ
+
+(function buildDisk(){
+  const tb=document.querySelector('#diskTable tbody');
+  OB_ROWS.forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    if(i%GSIZE===0) tr.className='gline';
+    tr.innerHTML='<td>'+(i%GSIZE===0?'<span class="gtag">Granule '+(i/GSIZE)+'</span>':'')+'</td>'+
+      '<td class="c1">'+r[0]+'</td><td class="c2">'+r[1]+'</td><td class="c3">'+r[2]+'</td><td style="color:var(--dim)">'+r[3]+'</td>';
+    tb.appendChild(tr);
+  });
+})();
+
+function renderOB(flash){
+  const len=parseInt($('rPkLen').value);
+  $('vPkLen').textContent=len+'列';
+
+  // DDL
+  const pkCols=OB_COLS.slice(0,len);
+  $('ddlView').innerHTML=
+    '<span class="kw">ENGINE</span> = MergeTree<br>'+
+    '<span class="kw">ORDER BY</span> <span class="ok">(tenant_id, user_id, ts)</span> <span class="cm">← 並び順</span><br>'+
+    '<span class="kw">PRIMARY KEY</span> <span class="pk">('+pkCols.join(', ')+')</span>'+
+    (len===3?' <span class="cm">← 省略時と同じ(既定)</span>':' <span class="cm">← 接頭辞だけ索引化</span>');
+
+  // primary.idx entries(各グラニュール先頭行)
+  const list=$('idxList'); list.innerHTML='';
+  for(let g=0;g<OB_ROWS.length/GSIZE;g++){
+    const first=OB_ROWS[g*GSIZE];
+    const row=document.createElement('div'); row.className='idx-row';
+    row.innerHTML='<span class="gref">mark '+g+' →</span>'+
+      OB_COLS.map((c,ci)=>'<span class="kcell'+(ci<len?'':' off')+'">'+first[ci]+'</span>').join('');
+    list.appendChild(row);
+  }
+  $('szBar').style.width=(len/3*100)+'%';
+  $('szLabel').textContent='4 entries × '+len+' cols'+(len<3?'('+Math.round((1-len/3)*100)+'% 削減)':'');
+
+  // 「並びは変わらない」フラッシュ
+  if(flash){
+    const nc=$('noChange'); nc.classList.add('flash');
+    clearTimeout(nc._t); nc._t=setTimeout(()=>nc.classList.remove('flash'),1400);
+  }
+
+  // クエリ効き方チェック
+  const checks=[
+    {sql:"WHERE tenant_id = 'B'",need:1,
+     ok:'先頭列なので二分探索で Granule 範囲を即特定',
+     part:'',ng:''},
+    {sql:"WHERE tenant_id = 'B' AND user_id = 420",need:2,
+     ok:'2列とも索引にあるので範囲をさらに絞り込める',
+     part:'tenant_id までは索引で絞れる。user_id は Granule を読んだ後にフィルタ(並んではいるが索引に値がない)'},
+    {sql:"WHERE user_id = 420",need:99,
+     part:'先頭列の条件がないため二分探索は不可。ただしキー列なので generic exclusion search が部分的に効く場合あり',
+     ng:''},
+    {sql:"WHERE url LIKE '%checkout%'",need:100,
+     ng:'キー外の列。primary.idx は無力 → フルスキャン(Skip Index の出番)'},
+  ];
+  const qc=$('qcList'); qc.innerHTML='';
+  checks.forEach(c=>{
+    let cls,mark,why;
+    if(c.need===99){cls='part';mark='△';why=c.part;}
+    else if(c.need===100){cls='ng';mark='✗';why=c.ng;}
+    else if(len>=c.need){cls='ok';mark='✓';why=c.ok;}
+    else {cls='part';mark='△';why=c.part;}
+    const d=document.createElement('div'); d.className='qc-row '+cls;
+    d.innerHTML='<span class="mark">'+mark+'</span><div><div class="sql2">'+c.sql+'</div><div class="why">'+why+'</div></div>';
+    qc.appendChild(d);
+  });
+}
+$('rPkLen').addEventListener('input',()=>renderOB(true));
+renderOB(false);
+
+/* ============================================================
+   PANE 5 : MV & Projection
+============================================================ */
+/* サブメニュー(タブ内ナビ)共通ハンドラ */
+document.querySelectorAll('.subnav').forEach(nav=>{
+  const pane=nav.parentElement;
+  nav.querySelectorAll('.fchip').forEach(b=>{
+    b.addEventListener('click',()=>{
+      nav.querySelectorAll('.fchip').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on');
+      pane.querySelectorAll(':scope > .subsec').forEach(s=>s.style.display='none');
+      $(b.dataset.s).style.display='block';
+    });
+  });
+});
+
+/* ---- Projection: 自動選択シミュレータ ---- */
+const PRJ_U=['A 0‥','A 210‥','A 540‥','B 0‥','B 380‥','C 0‥','C 260‥','C 700‥'];
+const PRJ_URL=['/api','/blog','/cart','/checkout','/docs','/home','/item','/login'];
+let prjQ='uid';
+function pgrHtml(labels,readIdx){
+  return '<div class="pgr">'+labels.map((l,i)=>'<i class="'+(readIdx.has(i)?'rd':'')+'">'+l+'</i>').join('')+'</div>';
+}
+function prjRender(){
+  const on=$('prjOn').checked;
+  let mat=on;
+  if(typeof ST!=='undefined'&&ST&&ST.ev) Object.keys(ST.ev).forEach(m=>ST.ev[m].forEach(sp=>{ if(sp.active&&!sp.patch&&!sp.hasProj) mat=false; })); else mat=false;
+  $('prjDdl').innerHTML= on
+   ? '<span class="kw">ALTER TABLE</span> events<br>&nbsp;&nbsp;<span class="kw">ADD PROJECTION</span> <span class="ok">p_url</span><br>&nbsp;&nbsp;( <span class="kw">SELECT</span> * <span class="kw">ORDER BY</span> <span class="pk">url</span> );'+
+     (mat?'<br><span class="kw">ALTER TABLE</span> events<br>&nbsp;&nbsp;<span class="kw">MATERIALIZE PROJECTION</span> <span class="ok">p_url</span>; <span class="cm">← mutation</span>'
+         :'<br><span class="cm">-- MATERIALIZE 前: これ以降の新しい Part にだけ作られる</span>')
+   : '<span class="cm">-- Projection なし。本体の ORDER BY (user_id, ts) だけ</span>';
+  const parts=[
+    {name:'202607_1_5_2',label:'古い Part(Projection 追加前から存在)',has:mat},
+    {name:'202607_6_6_0',label:'新しい Part(追加後に INSERT)',has:on}
+  ];
+  const bd=$('prjBoard'); bd.innerHTML='';
+  let read=0,total=0; const lines=[];
+  parts.forEach(p=>{
+    let side, baseRead=new Set(), projRead=new Set();
+    if(prjQ==='uid'){ side='base'; baseRead.add(4); }
+    else if(p.has){ side='proj'; projRead.add(3); }
+    else { side='base'; for(let i=0;i<8;i++) baseRead.add(i); }
+    total+=8;
+    const n=(side==='base'?baseRead:projRead).size;
+    read+=n;
+    lines.push('Part '+p.name+' → ReadFromMergeTree('+(side==='proj'?'<span class="g">p_url</span>':'本体')+') '+n+'/8 granules');
+    const d=document.createElement('div'); d.className='prjpart';
+    d.innerHTML='<h4>'+p.name+'/<em>'+p.label+'</em></h4>'+
+      '<div class="prjside '+(side==='base'?'chosen':'idle')+'"><div class="pl"><span>本体データ: ORDER BY (tenant_id, user_id, ts)</span><span class="who">← optimizer が選択</span></div>'+pgrHtml(PRJ_U,baseRead)+'</div>'+
+      (p.has
+        ?'<div class="prjside '+(side==='proj'?'chosen':'idle')+'"><div class="pl"><span>p_url/: ORDER BY (url)</span><span class="who">← optimizer が選択</span></div>'+pgrHtml(PRJ_URL,projRead)+'</div>'
+        :(on?'<div class="prjmiss">この Part に p_url はまだ存在しません(MATERIALIZE 前)→ 本体へフォールバック</div>':''));
+    bd.appendChild(d);
+  });
+  $('prjReadout').innerHTML='読む granule: <span class="g">'+read+'</span> / '+total+
+    '<div class="m">'+lines.join('<br>')+'<br>実物では EXPLAIN indexes=1 や system.query_log の projections 列で確認できます</div>';
+  const V={
+    uid:'条件(tenant_id → user_id)が本体の ORDER BY (tenant_id, user_id, ts) の接頭辞を成すので、<b>optimizer は本体を選びます</b>。候補(本体・p_url)の中から「読む granule が最少」のものを Part ごとに選ぶ。これが自動選択の中身です。',
+    urlOff:'url は ORDER BY に含まれないので primary.idx は無力、<b>全 granule を読むしかありません</b>。ここが Projection の出番です(デッキの「PROJECTION p_url」を有効化してみてください)。',
+    urlHalf:'<b>選択は Part ごと</b>です。p_url を持つ新しい Part は 1 granule で済み、持たない古い Part は本体へフォールバックして全読み。既存 Part にも効かせるには MATERIALIZE PROJECTION(mutation)が必要です。',
+    urlFull:'全 Part が p_url を持つので 16 → 2 granule。<b>クエリは1文字も変えていません</b>。アプリから見えないところで別の並びが選ばれる、これが MV との最大の違いです。'
+  };
+  $('prjVerdict').innerHTML= prjQ==='uid'?V.uid : !on?V.urlOff : mat?V.urlFull:V.urlHalf;
+}
+$('prjOn').addEventListener('change',prjRender);
+prjRender();
+
+/* ---- 実行時の最適化(PREWHERE / lazy materialization) ---- */
+function xbar(label,cls,w,txt){
+  return '<div class="frow '+cls+'" style="margin-top:6px"><span class="fl">'+label+'</span><div class="fbar"><i style="width:'+w+'%"></i></div><span class="fn">'+txt+'</span></div>';
+}
+function pwRender(){
+  const on=$('pwOn').checked;
+  $('pwViz').innerHTML=
+    xbar('user_id(条件列)','f3',100,'全域')+
+    xbar('tenant_id','f5',on?7:100,on?'7%':'全域')+
+    xbar('url(重)','f5',on?7:100,on?'7%':'全域')+
+    '<div style="font-size:12.5px;color:var(--muted);margin-top:10px">'+(on
+      ?'条件列 user_id だけを先に読んで評価し、<b style="color:var(--ink)">条件を満たした行を含む範囲だけ</b>残りの列を読みます。SQL は WHERE と書いたままで自動適用(明示的に PREWHERE と書くことも可能)。'
+      :'すべての列を同じ範囲だけ読んでからフィルタします。url のような重い列も全域読むことになります。この無駄を消すのが PREWHERE です。')+'</div>';
+}
+function lmRender(){
+  const on=$('lmOn').checked;
+  $('lmViz').innerHTML=
+    xbar('ts(ソートキー)','f3',100,'全域')+
+    xbar('他の3列','f5',on?1:100,on?'3行分':'全域')+
+    '<div style="font-size:12.5px;color:var(--muted);margin-top:10px">'+(on
+      ?'まず ts 列だけを読んで上位3行の位置を確定し、残りの列は<b style="color:var(--ink)">その3行の分だけ</b>読みます。SELECT * のように重い列が多いクエリほど、削れる読み取り量が大きくなります。'
+      :'全列を読み終えてからソートして上位3行を選びます。捨てる行のために重い列を読む無駄が発生します。')+'</div>';
+}
+$('pwOn').addEventListener('change',pwRender);
+$('lmOn').addEventListener('change',lmRender);
+pwRender(); lmRender();
+
+/* ============================================================
+   PANE 1 深掘り : file internals / skip index lab
+============================================================ */
+const FILES={
+  bin:{title:'user_id.bin',
+    desc:'列データ本体。「圧縮ブロック」が隙間なく並んだだけのファイル。各ブロックは自己記述的(ヘッダにサイズを持つ)なので、先頭位置さえ分かれば単独で展開できます。',
+    segs:[['s-h','checksum<small>16B · CityHash128</small>'],['s-c','codec<small>1B · 0x82=LZ4 / 0x90=ZSTD</small>'],['s-n','圧縮後サイズ<small>4B</small>'],['s-n','展開後サイズ<small>4B</small>'],['s-d','圧縮データ<small>展開後 ≤1MiB</small>'],['rep','× ブロック数だけ繰り返し …']],
+    read:'<b>読み方:</b> cmrk2 の「圧縮ファイル内オフセット」がブロック先頭(checksum の位置)を指す → ヘッダを読んでブロック丸ごと展開 → 「展開後オフセット」から目的の granule の行が始まる。',
+    note:'圧縮ブロック境界は granule 境界と無関係(バイト量で切るため)。checksum があるので破損はブロック単位で検出されます。',
+    viz:'<div class="fvt">構造: 自己記述的な圧縮ブロックが隙間なく並ぶだけ(全体のヘッダやオフセット表は無い)</div>'+
+      '<div class="fvbar" style="margin-top:2px"><i style="flex:2">block 0<br><small>hdr+圧縮データ</small></i><i style="flex:3">block 1<br><small>hdr+圧縮データ</small></i><i style="flex:2">block 2<br><small>hdr+圧縮データ</small></i></div>'+
+      '<div class="fvn">先頭位置さえ分かれば単独で展開できるので、その「先頭位置」を教える相棒が .cmrk2 です。'},
+  idx:{title:'primary.idx',
+    desc:'各 granule 先頭行の主キー値を、型のバイナリ表現でベタ書きしただけのファイル。オフセット表もヘッダもありません。小さいので全部メモリに読むからです。',
+    segs:[['s-k','mark 0: tenant_id<small>String · varint長+バイト列</small>'],['s-k','mark 0: user_id<small>UInt32 · 4B</small>'],['s-k','mark 0: ts<small>DateTime · 4B</small>'],['s-k','mark 1: tenant_id …<small>以下、granule ごとに同様</small>'],['rep','× granule 数だけ繰り返し …']],
+    read:'<b>読み方:</b> サービス起動後の初回アクセスで丸ごとメモリへロード。以後の二分探索は完全にメモリ内で完結し、ここではディスク I/O が発生しません。',
+    note:'固定長型はそのまま、String は varint 長+バイト列で書かれます。キー列の型を小さくする(例: UInt64→UInt32、String→LowCardinality)と primary.idx とメモリ使用量が直接減ります。',
+    viz:'<div class="fvt">構造: 各 granule の先頭行のキーだけを並べた表(全行の索引ではない)</div>'+
+      '<div class="fvgrid" style="grid-template-columns:repeat(4,1fr)">'+
+      '<i>mark 0<br>(A, 0)</i><i>mark 1<br>(A, 496)</i><i class="win">mark 2<br>(B, 80)</i><i>mark 3<br>(B, 550)</i>'+
+      '<i class="fva">↓</i><i class="fva">↓</i><i class="fva">↓</i><i class="fva">↓</i>'+
+      '<i>G0(8192行)</i><i>G1</i><i class="win">G2</i><i>G3</i>'+
+      '</div>'+
+      '<div class="fvn">WHERE tenant_id = \'B\' AND user_id = 420 なら二分探索で (B, 80) ≦ (B, 420) &lt; (B, 550) → <b>G2 だけ読めばよい</b>と分かります。行の位置までは分からず、決まるのは granule の範囲だけです。'},
+  mrk:{title:'user_id.cmrk2',
+    desc:'「granule 番号 → .bin 内の物理位置」の対応表。1 mark = 3つの UInt64(24バイト)の固定長レコードなので、mark N の位置は N×24B で即計算できます。先頭の c は、この表自体も圧縮されている印。',
+    segs:[['s-n','圧縮ファイル内オフセット<small>UInt64 · 8B</small>'],['s-n','展開後ブロック内オフセット<small>UInt64 · 8B</small>'],['s-d','granule の行数<small>UInt64 · 8B(適応粒度用)</small>'],['rep','× granule 数だけ繰り返し …']],
+    read:'<b>読み方:</b> primary.idx の二分探索で mark 番号が決まる → mark N のレコードを読む → 「.bin のどのブロックを展開し、その中のどこから何行読むか」が確定。列ごとに存在するので、SELECT で触る列の分だけ引きます。',
+    note:'なぜオフセットが2段か: granule 境界と圧縮ブロック境界がズレるため(下の境界図リンクで図解が開きます)。mark cache としてメモリにキャッシュされます。',
+    viz:'<div class="fvt">構造: granule 番号を添字にした固定長レコードの配列。1レコードが .bin 内の位置を2段で指す</div>'+
+      '<div class="fvrec"><b>mark 2</b><span>圧縮ファイル内 off = 5,832</span><span>展開後ブロック内 off = 1,204</span><span>rows = 8,192</span></div>'+
+      '<div class="fvarr"><span>① off 5,832 のブロックを丸ごと展開</span><span>② 展開結果の 1,204 行目から読む</span></div>'+
+      '<div class="fvbar"><i style="flex:2">block 0</i><i style="flex:3" class="win">block 1(off 5,832)<em class="tick" style="left:40%">▼ 1,204</em></i><i style="flex:2">block 2</i></div>'+
+      '<div class="fvn">granule 境界(行数基準)と圧縮ブロック境界(バイト量基準)はズレるので、「どのブロックか」+「ブロック内のどこか」の2段が要ります。mark N の位置は N×24B で即計算できます。'},
+  txt:{title:'skp_idx_url_text(text index / 転置索引)',
+    desc:'token を引くと「その token を含む行・granule の一覧(ポスティングリスト)」が直接出てくるファイル群。辞書とポスティングリストの2部構成です。',
+    segs:[['s-k','辞書<small>ソート済み token → ポスティング位置</small>'],['s-d','posting list: "cart" …<small>含む行/granule の ID 列(差分圧縮)</small>'],['s-d','posting list: "checkout" …<small>同上</small>'],['rep','× token 数だけ繰り返し …']],
+    read:'<b>読み方:</b> hasToken(url, \'checkout\') → 辞書で checkout を二分探索 → ポスティングリストが該当 granule を直接列挙。選択率が低ければ列を読まずに索引だけで答える direct read も効きます。',
+    note:'内部フォーマットはバージョン依存の実装詳細です(概念図)。要約型と違い、索引起因の偽陽性はありません。',
+    viz:'<div class="fvt">構造: 辞書で token を引く → ポスティングリストが「含む granule」を直接列挙</div>'+
+      '<div class="fvgrid" style="grid-template-columns:repeat(3,1fr)">'+
+      '<i>"cart"</i><i class="win">"checkout"</i><i>"docs"</i>'+
+      '<i class="fva"></i><i class="fva">↓ ポスティングリスト</i><i class="fva"></i>'+
+      '<i class="fva"></i><i class="win">{ G1, G4, G7 }</i><i class="fva"></i>'+
+      '</div>'+
+      '<div class="fvn">一覧に無い granule は checkout を<b>1行も含まない</b>と確定(偽陽性ゼロ)。要約型の「含みえないの証明」と違い、<b>含む場所を直接指す</b>のが転置索引です。'},
+  skp:{title:'skp_idx(要約型: minmax / set / bloom)',
+    desc:'GRANULARITY 個の granule をまとめた「index granule(要約)」が並ぶファイル。中身はタイプ次第: minmax なら min/max 値、set なら値の集合、bloom 系ならビットマップ。相棒の skp_idx_*.cmrk2 が各要約の位置を持ちます。',
+    segs:[['s-d','index granule 0<small>bloom: ビットマップ mB / minmax: [min][max] / set: [個数][値…]</small>'],['s-d','index granule 1<small>同上</small>'],['rep','× (granule 数 ÷ GRANULARITY) 個 …']],
+    read:'<b>読み方:</b> primary.idx で残った granule 範囲に対応する要約だけを skp_idx_*.cmrk2 経由で読む → 条件値と照合 → 「含みえない」と証明できたブロックの granule をまとめて除外。行の位置は一切分かりません。',
+    note:'内部フォーマットはバージョン依存の実装詳細です(概念図)。要約が答えるのは「含むかもしれない/絶対に含まない」の二択です。偽陽性はあっても偽陰性はありません。なお 26.2 GA の text index は辞書+ポスティングリスト(転置索引)で、この要約型とは別構造です。',
+    viz:'<div class="fvt">構造: GRANULARITY 個(例: 2)の granule ごとに要約を1つ</div>'+
+      '<div class="fvgrid" style="grid-template-columns:repeat(4,1fr)">'+
+      '<i style="grid-column:span 2">要約 0: min 3 / max 471</i><i class="win" style="grid-column:span 2">要約 1: min 12 / max 980</i>'+
+      '<i class="fva" style="grid-column:span 2">↓ カバー</i><i class="fva" style="grid-column:span 2">↓ カバー</i>'+
+      '<i>G0</i><i>G1</i><i class="win">G2</i><i class="win">G3</i>'+
+      '</div>'+
+      '<div class="fvn">探す値が 700 なら要約 0(max 471)のブロックは「含みえない」と証明でき、G0〜G1 をまとめて skip。要約 1 は含む<b>かもしれない</b>ので G2〜G3 を読みます(偽陽性ありうる)。'},
+};
+function renderFile(key){
+  const f=FILES[key];
+  document.getElementById('dfTitle').textContent=f.title;
+  document.getElementById('fileView').innerHTML='<div class="fdesc">'+f.desc+'</div>'+
+    (f.viz?'<div class="fviz">'+f.viz+'</div><div class="fvt" style="margin:10px 0 4px">ファイル上のバイト列</div>':'')+
+    '<div class="bytes">'+f.segs.map(([c,t])=>'<span class="seg '+c+'">'+t+'</span>').join('')+'</div>'+
+    '<div class="howread">'+f.read+'<div class="fnote">'+f.note+'</div>'+((key==='bin'||key==='mrk')?'<div style="margin-top:8px"><span class="fch" data-open-block>granule と圧縮ブロックの境界図を開く</span></div>':'')+'</div>';
+  document.getElementById('fileView').onclick=e=>{ if(e.target.closest('[data-open-block]')){ document.getElementById('deepFiles').style.display='none'; document.getElementById('mBlock').style.display='flex'; } };
+}
+
+/* ---- skip index lab ---- */
+const NG=8, NV=6;
+let slabData=[];
+function slabSort(){ // 局所化: granule g は g*12 近辺の値
+  slabData=[];
+  for(let g=0;g<NG;g++){
+    const vals=[];
+    for(let i=0;i<NV;i++) vals.push(Math.max(0,Math.min(99, g*12+Math.floor(Math.random()*14))));
+    vals.sort((a,b)=>a-b); slabData.push(vals);
+  }
+}
+function slabShuffle(){
+  const pool=slabData.flat();
+  for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+  slabData=[]; for(let g=0;g<NG;g++) slabData.push(pool.slice(g*NV,(g+1)*NV));
+}
+function renderSlab(){
+  const type=$('sType').value, gran=parseInt($('sGran').value), v=parseInt($('sVal').value), setN=parseInt($('sSetN').value);
+  $('sValV').textContent=v;
+  $('sSetNWrap').style.display=(type==='set')?'':'none';
+  const nb=NG/gran;
+  const idxEl=$('slabIdx'), grEl=$('slabGr');
+  idxEl.innerHTML=''; grEl.innerHTML='';
+  let readG=0, fpCount=0;
+  for(let b=0;b<nb;b++){
+    const vals=[]; for(let g=b*gran;g<(b+1)*gran;g++) vals.push(...slabData[g]);
+    const uniq=[...new Set(vals)].sort((a,b)=>a-b);
+    const mn=Math.min(...vals), mx=Math.max(...vals), has=vals.includes(v);
+    let skip=false, agg='', verdict='', fp=false;
+    if(type==='minmax'){
+      agg='min '+mn+' / max '+mx;
+      skip=(v<mn||v>mx);
+      verdict=skip?(v+' ∉ ['+mn+','+mx+'] → skip'):(v+' ∈ 範囲 → 読む');
+    }else if(type==='set'){
+      if(uniq.length>setN){ agg='ユニーク値 '+uniq.length+'個 > '+setN; skip=false; verdict='要約を放棄 → 読む'; }
+      else { agg='{'+uniq.join(',')+'}'; skip=!uniq.includes(v);
+             verdict=skip?(v+' ∉ 集合 → skip'):(v+' ∈ 集合 → 読む'); }
+    }else{ // bloom
+      fp=!has && ((v*31+b*17)%19===0); // 決定的な擬似・偽陽性
+      skip=!has&&!fp;
+      agg='bloom bitmap('+uniq.length+'値を登録)';
+      verdict=skip?'ハッシュ照合: 確実に不在 → skip':(has?'含む可能性あり → 読む':'偽陽性! 実は無いが読む');
+      if(fp) fpCount++;
+    }
+    const d=document.createElement('div');
+    d.className='iblock '+(skip?'skip':'read')+(fp?' fp':'');
+    d.style.gridColumn='span '+gran;
+    d.innerHTML='<div class="agg">'+agg+'</div><span class="verdict">'+verdict+'</span>';
+    idxEl.appendChild(d);
+    for(let g=b*gran;g<(b+1)*gran;g++){
+      const gc=document.createElement('div');
+      gc.className='gcard'+(skip?' cut':'');
+      gc.innerHTML='<div class="gt">Granule '+g+(skip?'(skip)':'')+'</div>'+
+        slabData[g].map(x=>'<span class="vchip'+(x===v?' hit':'')+'">'+x+'</span>').join('');
+      grEl.appendChild(gc);
+      if(!skip) readG++;
+    }
+  }
+  const isSorted=slabData.every((g,i)=>i===0||Math.min(...g)>=Math.min(...slabData[i-1])-14);
+  $('slabSum').innerHTML='読む: <span class="g">'+readG+'</span> / '+NG+' granules'+
+    (fpCount?'(うち<span style="color:var(--red)">偽陽性 '+fpCount+' ブロック</span>)':'')+
+    '<span class="m">'+(readG===NG?'1つも飛ばせていません。'+(type==='set'?'ユニーク値が多すぎるか、':'')+'値がどのブロックにも散らばっている状態です。「シャッフル」後の Skip Index はほぼ無力で、ORDER BY による局所化が前提だと分かります。':
+    'ヒント: 「シャッフル」を押すと同じデータ・同じインデックスでも急に効かなくなります。逆に「局所化」すると復活します。Skip Index の効きは、インデックス定義ではなく<b>データの並び</b>で決まります。')+'</span>';
+}
+$('sType').addEventListener('change',renderSlab);
+$('sSetN').addEventListener('change',renderSlab);
+$('sGran').addEventListener('change',renderSlab);
+$('sVal').addEventListener('input',renderSlab);
+$('sSort').addEventListener('click',()=>{slabSort();renderSlab();});
+$('sShuf').addEventListener('click',()=>{slabShuffle();renderSlab();});
+slabSort(); renderSlab();
+
+/* ============================================================
+   PANE 7 : update / delete simulator
+============================================================ */
+const UD_M={
+  lwdelete:{sql:"DELETE FROM events IN PARTITION '202607' WHERE user_id = 420",cost:2,when:'即時(見た目上)',target:'202607(今月)の u420 の行',
+    what:'既存の列データには触れず、対象の Part に <code>_row_exists</code> という<b>小さなマスク列だけを書き足し</b>、消したい行に 0 を立てます。SELECT は読み時にマスク行を除外。<b>Part 全体が消えるわけではなく</b>、行が物理的に落ちるのは後のマージでその Part が作り直されるとき(マスク行を除いた新 Part に置き換わる)です。',
+    tip:'GDPR 対応など「今すぐ見えなくしたい」に最適。頻発させるなら読み時フィルタのコストに注意。'},
+  mutdelete:{sql:"ALTER TABLE events DELETE IN PARTITION '202607' WHERE user_id = 420",cost:5,when:'非同期(mutations_sync で同期化可)',target:'202607(今月)の u420 の行',
+    what:'<b>対象行を含む Part を丸ごと書き換えます。</b>3行消すために数億行の Part を再構築することもある、最も重い操作。Part 名にはミューテーションバージョンが付きます(例: <code>202607_1_1_0_10</code>)。',
+    tip:'公式ベストプラクティスは「avoid mutations」。定期実行するくらいなら設計を見直すサイン。system.mutations で進捗確認。'},
+  mutupdate:{sql:"ALTER TABLE events UPDATE url = '/redacted' IN PARTITION '202607' WHERE user_id = 420",cost:5,when:'非同期',target:'202607(今月)の u420 の行',
+    what:'<b>DELETE mutation と同じく Part を丸ごと再構築</b>して値を書き換えます。更新列だけでなく Part 全体の再圧縮・再書き込みが走ります。',
+    tip:'頻繁な更新が要件なら ReplacingMergeTree や軽量更新への設計変更を検討。'},
+  lwupdate:{sql:"UPDATE events SET url = '/redacted' WHERE toYYYYMM(ts) = 202607 AND user_id = 420 -- 軽量更新",cost:1,when:'即時(見た目上)',target:'202607(今月)の u420 の行',
+    what:'<b>差分だけを持つ小さな patch part を追加</b>し、元の Part は触りません。SELECT は読み時にパッチを当てて返し、物理的な統合はマージ時に行われます。',
+    tip:'SharedMergeTree(Cloud)世代の新方式。mutation の「全書き換え」問題への答え。'},
+  rmt:{sql:"INSERT INTO events VALUES (420, ...) -- ReplacingMergeTree(ver)",cost:2,when:'マージ後に収束(それまでは新旧併存)',target:'u420 の行(新バージョン行は 202607 に入る)',
+    what:'<b>更新を「新バージョン行の INSERT」で表現</b>します。この時点では新旧両方の行が存在し、マージ時に ORDER BY キーが同じ行のうち最新(ver 最大)だけが残ります。',
+    tip:'マージ前に正しい結果が欲しければ SELECT ... FINAL か argMax。書き込みは軽いが読み側に規律が要る、更新の定番パターン。'},
+  ttl:{sql:"ALTER TABLE events MODIFY TTL ts + INTERVAL 1 MONTH",cost:1,when:'バックグラウンド(マージ時)',target:'期限切れの行(この例では 202606 が Part ごと消える)',
+    what:'<b>期限切れデータをマージのついでに削除</b>します。古いパーティション(202606)が対象なら Part ごと消えます。列単位 TTL や、削除でなくストレージ移動も指定可能。',
+    tip:'ログ・イベント系の定番。「溜め続けない」を仕組み化する。'},
+  droppart:{sql:"ALTER TABLE events DROP PARTITION '202606'",cost:1,when:'即時',target:"パーティション '202606' 全体",
+    what:'<b>メタデータ操作のみで、パーティション内の全 Part が即座に消えます。</b>行の走査も書き換えも一切なし。最速・最安の削除です。',
+    tip:'これが効くように削除単位(月・日・テナント)でパーティションを設計しておくのが上級者の定石。'},
+  truncate:{sql:"TRUNCATE TABLE events",cost:1,when:'即時',target:'全パーティション・全 Part',
+    what:'<b>全 Part を削除</b>します。テーブル定義は残ります。DROP PARTITION の全部版。',
+    tip:'テスト環境のリセットや再取込の前処理に。'},
+};
+/* ============================================================
+   TAB A : integrated service map(構造 × 書き込み × MV 統合)
+============================================================ */
+var blockNo=6, tgtNo=1, wkNo=1, udPhase=0, mapSel=null, actTimer=null, ST=null, warnedParts=false;
+function initST(){
+  ST={ ev:{ '202607':[
+      {min:1,max:5,lvl:2,rows:28000,active:true,hasProj:false,dayLo:1,dayHi:15},
+      {min:6,max:6,lvl:0,rows:3100,active:true,hasProj:false,dayLo:22,dayHi:22}],
+    '202606':[
+      {min:1,max:5,lvl:1,rows:41000,active:true,hasProj:false,dayLo:1,dayHi:30}]},
+    tgt:[{name:'all_1_1_0',lvl:1,rows:[{d:'07-21',cnt:9812}]}], wk:[] };
+  blockNo=6; tgtNo=1; wkNo=1; udPhase=0; mapSel=null;
+}
+function fmtB(b){ return b>=1048576 ? (b/1048576).toFixed(1)+' MB' : Math.round(b/1024)+' KB'; }
+function bytesPerRow(){ return (LV>=2 && $('fOb') && $('fOb').value!=='ts') ? 58 : 42; }
+function partName(p,pt){ return p.pn ? p.pn : pt+'_'+p.min+'_'+p.max+'_'+p.lvl+(p.mut?'_10':''); }
+/* 複合キー空間: tenant A/B/C × user 0..999 を 0..2999 に写像。granule は連続範囲 */
+function genGranules(rows){
+  const n=Math.max(1,Math.round(rows/8192));
+  const cuts=[0]; for(let i=1;i<n;i++) cuts.push(Math.round(i*3000/n+(Math.random()*240-120)));
+  cuts.push(3000); cuts.sort((a,b)=>a-b);
+  const gs=[]; for(let i=0;i<n;i++){ const lo=Math.min(2999,Math.max(0,cuts[i])), hi=Math.max(lo,Math.min(2999,cuts[i+1]-1)); gs.push({lo,hi,hasToken:Math.random()<0.35}); }
+  return gs;
+}
+function keyLabel(k){ return 'ABC'[Math.min(2,Math.floor(k/1000))]+(k%1000); }
+function granHit(g,tenants,userOn,pkLen,pk){
+  return tenants.some(t=>{ const b='ABC'.indexOf(t)*1000;
+    const lo=b+((userOn&&pkLen>=2)?pk:0), hi=b+((userOn&&pkLen>=2)?pk:999);
+    return !(hi<g.lo||lo>g.hi); });
+}
+function dayWin(p){ return p.dayLo===p.dayHi ? p.dayLo+'日' : p.dayLo+'〜'+p.dayHi+'日'; }
+function prjOnNow(){ return LV>=5 && $('prjOn') && $('prjOn').checked; }
+function partHasPrj(p){ return prjOnNow() && p.hasProj; }
+function kcount(){ let n=0; Object.values(ST.ev).forEach(a=>n+=a.filter(p=>p.active).length); return n+ST.tgt.length; }
+function eachActive(fn){ Object.keys(ST.ev).forEach(pt=>ST.ev[pt].forEach(p=>{ if(p.active) fn(p,pt); })); }
+let actTag='';
+function ts(){ const t=new Date(); return [t.getHours(),t.getMinutes(),t.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':'); }
+function log(html){ const d=document.createElement('div'); d.innerHTML='<span class="lts">'+ts()+'</span>'+(actTag?'<span class="ltag">'+actTag+'</span>':'')+html; $('mlog').prepend(d); }
+function anatomyHtml(p){
+  return '<div class="anat">'+
+    '<span class="fch" data-n="primaryidx">primary.idx</span>'+
+    '<span class="fch" data-n="bin">tenant_id.bin</span>'+
+    '<span class="fch" data-n="bin">user_id.bin</span>'+
+    '<span class="fch" data-n="mrk">user_id.cmrk2</span>'+
+    (LV>=4?'<span class="fch" data-n="skip">skp_idx_url_text(転置索引)</span><span class="fch" data-n="skip">skp_idx_ts_minmax(要約型)</span>':'')+
+    '<div class="gstrip" data-n="granule" title="クリックでその Granule の詳細">'+Array.from({length:8},(_,i)=>'<i data-gi="'+i+'">G'+i+'</i>').join('')+'</div>'+
+    (partHasPrj(p)&&LV>=5?
+      '<div style="flex-basis:100%;border:1px dashed var(--t10);border-radius:8px;padding:6px 10px;margin-top:6px;font-size:12px;color:var(--muted);font-family:var(--jp)">'+
+      '<span class="fch" data-n="proj">p_url/</span> Part 内の隠しサブディレクトリ = <b style="color:var(--ink)">同じ行を url 順に並べ直したミニ Part</b>。専用の索引・列ファイル・granule 区切りを持ち、どちらを読むかは optimizer が Part ごとに選びます'+
+      '<div style="margin-top:5px"><span class="fch" data-n="proj">primary.idx(url 順)</span><span class="fch" data-n="proj">url.bin</span><span class="fch" data-n="proj">tenant_id.bin ほか全列</span></div>'+
+      '</div>':'')+
+  '</div>';
+}
+function partHtml(p,pt,idx){
+  const key=pt+':'+idx;
+  const cls='pbox'+(p.active?'':' inactive')+(p.lvl>0&&p.active&&!p.cls?' merged':'')+(p.fresh?' new':'')+(p.cls?' '+p.cls:'')+(mapSel===key?' sel':'');
+  const badges=(p.masked?'<span class="pchip pc-warn">+ _row_exists マスク</span>':'')+
+    (p.patch?'<span class="pchip pc-warn">patch part(差分のみ)</span>':'')+
+    (p.badge?'<span class="pchip pc-warn">'+p.badge+'</span>':'')+
+    (partHasPrj(p)&&!p.patch&&LV>=5?'<span class="pchip">projection: p_url/</span>':'');
+  const state=!p.active?'<span class="pchip">引退済み・まもなく削除</span>':'';
+  return '<div class="'+cls+'" data-part="'+key+'"'+(LV>=2&&p.active?' title="クリックで中のファイル構成を開閉"':'')+'>'+(LV>=2?'<span class="pexp">'+(mapSel===key?'▾':'▸')+'</span>':'')+'<span class="pico">📦</span><span class="term" data-g="part" style="font-family:var(--jp);color:var(--muted);margin-right:6px">Part</span><span class="pname" title="Part 名 = パーティションID_最小ブロック_最大ブロック_世代">'+partName(p,pt)+'</span><span class="prows">('+p.rows.toLocaleString()+' 行)</span><span class="plvl" title="マージ世代。大きいほど統合が進んだ Part">'+(p.lvl>0?'マージ世代 L'+p.lvl:'L0')+'</span>'+(LV>=2?'<span class="psize" title="圧縮後サイズ。ORDER BY の並びで圧縮率が変わる(+ts だと似た値が隣接して縮む)">'+fmtB(p.rows*bytesPerRow())+'</span>':'')+'<div>'+state+badges+'</div>'+((LV>=2&&mapSel===key)?anatomyHtml(p):'')+'</div>';
+}
+function renderMap(){
+  ['202607','202606'].forEach(pt=>{
+    const z=$('pz'+pt); z.innerHTML='';
+    ST.ev[pt].forEach((p,idx)=>{ z.insertAdjacentHTML('beforeend',partHtml(p,pt,idx)); p.fresh=false; });
+    if(!ST.ev[pt].length) z.innerHTML='<div style="font-size:11px;color:var(--dim);margin-top:8px">(Part なし)</div>';
+  });
+  if($('tblwk')) $('tblwk').style.display=(LV>=5&&$('mvCas')&&$('mvCas').checked)?'':'none';
+  if($('wkz')){ const wz=$('wkz'); wz.innerHTML='';
+    (ST.wk||[]).forEach(p=>{ wz.insertAdjacentHTML('beforeend','<div class="pbox tgp'+(p.fresh?' new':'')+(p.lvl>0?' merged':'')+'"><span class="pname">'+p.name+'</span><span class="pmeta">L'+p.lvl+'</span><div>'+p.rows.map(r=>'<span class="tgrow">'+r.d+' → cnt '+r.cnt.toLocaleString()+'</span>').join('')+'</div></div>'); p.fresh=false; });
+    if(!(ST.wk||[]).length) wz.innerHTML='<div style="font-size:11px;color:var(--dim);margin-top:8px">(Part なし — MV ON で INSERT すると増える)</div>';
+  }
+  const tz=$('tgz'); tz.innerHTML='';
+  const seen={}; ST.tgt.forEach(p=>p.rows.forEach(r=>{ seen[r.d]=(seen[r.d]||0)+1; }));
+  ST.tgt.forEach(p=>{
+    tz.insertAdjacentHTML('beforeend','<div class="pbox tgp'+(p.fresh?' new':'')+(p.lvl>0?' merged':'')+'"><span class="pname">'+p.name+'</span><span class="pmeta">L'+p.lvl+'</span><div>'+
+      p.rows.map(r=>'<span class="tgrow'+(seen[r.d]>1?' dup':'')+'">'+r.d+' → cnt '+r.cnt.toLocaleString()+'</span>').join('')+'</div></div>');
+    p.fresh=false;
+  });
+  const agg={}; let trows=0; ST.tgt.forEach(p=>p.rows.forEach(r=>{ agg[r.d]=(agg[r.d]||0)+r.cnt; trows++; }));
+  tz.insertAdjacentHTML('beforeend','<div class="tgreadout">SELECT d, sum(cnt) FROM daily_counts GROUP BY d → '+
+    (Object.keys(agg).length?Object.entries(agg).map(([d,c])=>d+': '+c.toLocaleString()).join(' · '):'(0行)')+
+    ' <span style="color:var(--dim)">(読むのは '+trows+' 行だけ'+(Object.values(seen).some(c=>c>1)?'。同じ d の部分集計は sum() で畳む':'')+')</span></div>');
+  $('tblmv').classList.toggle('ghostish', !$('mvOn').checked);
+  // ---- デプロイ形態ごとの物理レイヤー ----
+  const cloud=smtOn();
+  $('as3').style.display=cloud?'block':'none';
+  ['ac1','ac2','ac3'].forEach(id=>$(id).style.display=cloud?'block':'none');
+  $('nd1').style.display=cloud?'none':'block';
+  $('nd2').style.display=cloud?'none':'block';
+  $('nd3').style.display=(cloud||$('an3').classList.contains('ghost'))?'none':'block';
+  if(!cloud){
+    const chips=n2view=>{
+      let out='';
+      ['202607','202606'].forEach(pt=>ST.ev[pt].forEach(p=>{
+        if(n2view&&p.n2===false){ out+='<span class="pgpart pend" title="レプリケーションログ経由で fetch 待ち">'+partName(p,pt)+' ⏳</span>'; return; }
+        out+='<span class="pgpart'+(p.active?'':' dead')+'" data-n="part">'+partName(p,pt)+'</span>';
+      }));
+      ST.tgt.forEach(p=>{
+        if(n2view&&p.n2===false){ out+='<span class="pgpart pend">'+p.name+' ⏳</span>'; return; }
+        out+='<span class="pgpart" data-n="tgtable">'+p.name+'</span>';
+      });
+      return out||'<span style="font-size:10px;color:var(--dim)">(空)</span>';
+    };
+    $('nz1').innerHTML=chips(false);
+    $('nz2').innerHTML=chips(true);
+    if($('nd3').style.display!=='none') $('nz3').innerHTML=ST.n3sync?chips(false):'<span style="font-size:10px;color:var(--orange)">全 Part をコピー中…(データ量に比例)</span>';
+  }
+  const pend=(()=>{let n=0;Object.values(ST.ev).forEach(a=>a.forEach(p=>{if(p.n2===false)n++;}));ST.tgt.forEach(p=>{if(p.n2===false)n++;});return n;})();
+  $('kchip').innerHTML= cloud
+    ? '📋 唯一の真実: active Part <b>'+kcount()+'</b> 件の一覧と場所 / コミット / マージ調整'
+    : '📋 レプリケーションログ: Part の追加・マージ・mutation を記録 / 未同期 <b style="color:'+(pend?'var(--orange)':'var(--green)')+'">'+pend+'</b> 件';
+}
+function playSteps(steps,done,logger){
+  clearInterval(actTimer); let i=0;
+  const tick=()=>{
+    document.querySelectorAll('.glow').forEach(x=>x.classList.remove('glow'));
+    if(i>=steps.length){ clearInterval(actTimer); if(done) done(); return; }
+    const [id,txt]=steps[i];
+    if(typeof id==='function') id(); else if(id){ const el=document.getElementById(id); if(el) el.classList.add('glow'); }
+    if(txt) (logger||log)(txt);
+    i++;
+  };
+  tick(); actTimer=setInterval(tick,1300);
+}
+/* ---- クリック: 選択と深掘り ---- */
+$('svcmap').addEventListener('click',e=>{
+  if(e.target.closest('.term')) return;
+  const md=e.target.closest('[data-modal]');
+  if(md){ $(md.dataset.modal).style.display='flex'; return; }
+  const gi=e.target.closest('.gstrip i');
+  if(gi){ showDetail('granule'); const lo=(+gi.dataset.gi)*8192; $('detail').querySelector('h2').textContent='Granule '+gi.dataset.gi+'(rows '+lo.toLocaleString()+'–'+(lo+8191).toLocaleString()+')'; return; }
+  const f=e.target.closest('.fch,.gstrip');
+  if(f){ if(f.dataset.n) showDetail(f.dataset.n); return; }
+  const n=e.target.closest('[data-n]');
+  if(n){ showDetail(n.dataset.n); return; }
+  const pb=e.target.closest('.pbox');
+  if(pb){
+    if(pb.dataset.part){ mapSel=(mapSel===pb.dataset.part)?null:pb.dataset.part; renderMap(); }
+    else showDetail(pb.closest('#tblwk')?'wktable':'tgtable');
+    return;
+  }
+});
+/* ---- INSERT / 小口 / マージ ---- */
+const MV_URLS=['/home','/item/12','/cart','/checkout','/docs'];
+function mvStepsShow(d,rows){
+  const sample=[]; for(let i=0;i<3;i++) sample.push('2026-'+d+' 09:0'+(i+1)+' · B · u'+(415+Math.floor(Math.random()*10))+' · '+MV_URLS[Math.floor(Math.random()*MV_URLS.length)]);
+  $('mvSteps').style.display='flex';
+  $('mvsBlock').innerHTML=sample.map(r=>'<div>'+r+'</div>').join('')+'<div style="color:var(--dim)">… 計 '+rows.toLocaleString()+' 行</div>';
+  $('mvsOut').innerHTML='<span class="tgrow">'+d+' → cnt '+rows.toLocaleString()+'</span><div style="color:var(--dim);font-size:10.5px;margin-top:6px">'+rows.toLocaleString()+'行 → 1行に縮約(部分集計)</div>';
+}
+$('btnInsert').addEventListener('click',()=>{
+  actTag='INSERT';
+  log('<span style="font-family:var(--mono);color:var(--cyan)">'+insertSql()+'</span>');
+  const pt=$('insPartition').value;
+  blockNo++;
+  const rows=2000+Math.floor(Math.random()*30000);
+  const d= pt==='202607' ? '07-22' : '06-15';
+  const cloud=smtOn(), mv=LV>=5&&$('mvOn').checked;
+  const day=(pt==='202607')?22:15;
+  const p={min:blockNo,max:blockNo,lvl:0,rows,active:true,fresh:true,hasProj:prjOnNow(),dayLo:day,dayHi:day,n2:(LV>=8&&!cloud)?false:undefined};
+  let tp=null;
+  const mkTgt=()=>{ tgtNo++; tp={name:'all_'+tgtNo+'_'+tgtNo+'_0',lvl:0,fresh:true,rows:[{d,cnt:rows}],n2:(LV>=8&&!cloud)?false:undefined}; ST.tgt.push(tp); mvStepsShow(d,rows);
+    if(LV>=5&&$('mvCas').checked){ wkNo++; ST.wk.push({name:'wk_'+wkNo+'_'+wkNo+'_0',lvl:0,fresh:true,rows:[{d:'W30',cnt:rows}]}); log('カスケード: daily_counts への INSERT が <span class="c">mv_weekly</span> を発火 → weekly_counts にも部分集計の Part'); } };
+  if(!mv) $('mvSteps').style.display='none';
+  let steps;
+  if(LV<8){
+    steps=[
+      [null,'① INSERT('+fmt(rows)+'行)を受信し、メモリ上で ORDER BY 順にソートして新しい Part を構築'+(LV>=5?'(p_url projection も一緒に)':'')],
+      [()=>{ ST.ev[pt].push(p); if(mv) mkTgt(); renderMap(); },'② 新 Part をストレージへ書き込み。<b>Part は不変(immutable)</b>。以後書き換えられず、マージで置き換わるだけ'+(mv?'。<span class="y">MV がこのブロックだけに SELECT</span> → daily_counts にも部分集計の新 Part':'')],
+    ];
+  }else if(cloud){
+    steps=[
+      ['an1','① Node 1 が INSERT ブロック('+fmt(rows)+'行)を受信、メモリ上で Part を構築(p_url projection も一緒に)'],
+      [()=>{ ST.ev[pt].push(p); renderMap(); },'② Part を S3 へオブジェクトとして書き込み。データはこの<b>1コピーだけ</b>'],
+      ['akeeper','③ Keeper にメタデータ登録 = ここがコミット(実質クォーラム書き込み)。全ノードから即参照可能で、<b>ノード間のデータ転送はゼロ</b>'],
+    ];
+    if(mv) steps.push([()=>{ mkTgt(); renderMap(); },'④ <span class="y">MV mv_daily がこのブロックだけに SELECT</span> → daily_counts に部分集計の新 Part(1 INSERT = ターゲットにも 1 Part)']);
+  }else{
+    steps=[
+      ['an1','① Node 1 が INSERT ブロック('+fmt(rows)+'行)を受信、<b>自分のローカルディスク</b>に新 Part を書き込み'],
+      [()=>{ ST.ev[pt].push(p); if(mv) mkTgt(); renderMap(); },'② この時点で Part を持つのは Node 1 だけ(Node 2 側は ⏳ fetch 待ち)'+(mv?'。MV も Node 1 で発火し daily_counts の Part を作成':'')],
+      ['akeeper','③ レプリケーションログに「新 Part あり」を記録'],
+      [()=>{ p.n2=true; if(tp) tp.n2=true; renderMap(); },'④ Node 2 がログを購読し、Part を Node 1 から <b>fetch(データ本体のコピー転送)</b>'+(mv?'(daily_counts の Part も同様に複製)':'')+'。SMT ではこの転送そのものが消えます'],
+    ];
+  }
+  playSteps(steps,()=>{
+    if(!warnedParts && ST.ev[pt].filter(x=>x.active).length>=5){
+      warnedParts=true;
+      log('<span style="color:var(--red)">⚠ Part が溜まってきました</span>。この調子で小口 INSERT を重ねるとマージが追いつかず「Too many parts」で INSERT が失敗します');
+      log('対策: ①クライアント側でまとめて挿入(1回 10,000〜100,000 行が目安) ②<span class="c">async_insert = 1</span> でサーバー側バッファに束ねてもらう');
+    }
+  });
+});
+$('btnMerge').addEventListener('click',()=>{
+  actTag='MERGE';
+  log('<span style="font-family:var(--mono);color:var(--cyan)">'+mergeSql+'</span>');
+  const flatMerge=LV<3; // PARTITION BY 宣言前はテーブル全体が1つのマージ対象
+  const actAll=[]; Object.keys(ST.ev).forEach(pt=>ST.ev[pt].forEach(p=>{ if(p.active&&!p.patch) actAll.push([pt,p]); }));
+  const jobs=flatMerge?[]:Object.keys(ST.ev).filter(pt=>ST.ev[pt].filter(p=>p.active).length>=2);
+  const tgtJob=LV>=5&&ST.tgt.length>=2;
+  if((flatMerge?actAll.length<2:!jobs.length)&&!tgtJob){ log('マージ対象なし(active な Part が2つ以上必要)'); return; }
+  const cloud=smtOn(); const merged=[];
+  const applyMerge=()=>{
+    if(flatMerge&&actAll.length>=2){
+      blockNo++;
+      const lv=Math.max(...actAll.map(x=>x[1].lvl))+1;
+      const mr={}; actAll.forEach(([pt,p])=>{ if(p.monthRows) Object.entries(p.monthRows).forEach(([m,r])=>{ mr[m]=(mr[m]||0)+r; }); else mr[pt]=(mr[pt]||0)+p.rows; });
+      const np={pn:'all_1_'+blockNo+'_'+lv,min:1,max:blockNo,lvl:lv,rows:actAll.reduce((s,x)=>s+x[1].rows,0),active:true,fresh:true,hasProj:actAll.every(x=>x[1].hasProj),monthRows:mr,dayLo:Math.min(...actAll.map(x=>x[1].dayLo??1)),dayHi:Math.max(...actAll.map(x=>x[1].dayHi??30))};
+      if(LV>=8&&!cloud) np.n2=false;
+      actAll.forEach(x=>{ x[1].active=false; });
+      ST.ev['202607'].push(np); merged.push(np);
+      log('MERGE(events)→ <span class="y">'+np.pn+'</span> に統合。<b>PARTITION BY が無いのでテーブル全体が1つのマージ対象</b>です(月も混ざる)');
+    }
+    jobs.forEach(pt=>{
+      const act=ST.ev[pt].filter(p=>p.active);
+      const np={min:Math.min(...act.map(p=>p.min)),max:Math.max(...act.map(p=>p.max)),lvl:Math.max(...act.map(p=>p.lvl))+1,rows:act.reduce((s,p)=>s+p.rows,0),active:true,fresh:true,hasProj:act.every(p=>p.hasProj),dayLo:Math.min(...act.map(p=>p.dayLo??1)),dayHi:Math.max(...act.map(p=>p.dayHi??30))};
+      if(LV>=8&&!cloud) np.n2=false;
+      act.forEach(p=>p.active=false); ST.ev[pt].push(np); merged.push(np);
+      log('MERGE(events / '+pt+')→ <span class="y">'+partName(np,pt)+'</span> に統合'+(LV>=5?'。p_url projection も親 Part と一緒にマージ':''));
+    });
+    if(tgtJob){
+      const agg={}; ST.tgt.forEach(p=>p.rows.forEach(r=>{ agg[r.d]=(agg[r.d]||0)+r.cnt; }));
+      const tnp={name:'all_1_'+tgtNo+'_1',lvl:1,fresh:true,rows:Object.entries(agg).map(([d,cnt])=>({d,cnt}))};
+      if(LV>=8&&!cloud) tnp.n2=false;
+      ST.tgt=[tnp]; merged.push(tnp);
+      log('MERGE(daily_counts)→ SummingMergeTree が<span class="y">同じ d の部分集計を合算して1行に</span>畳む');
+    }
+    if(LV>=5&&$('mvCas')&&$('mvCas').checked&&(ST.wk||[]).length>=2){
+      const s=ST.wk.reduce((a,p)=>a+p.rows.reduce((x,r)=>x+r.cnt,0),0);
+      ST.wk=[{name:'wk_1_'+wkNo+'_1',lvl:1,fresh:true,rows:[{d:'W30',cnt:s}]}];
+      log('MERGE(weekly_counts)→ 同じ週の部分集計を合算');
+    }
+    renderMap();
+  };
+  const cleanup=()=>{ setTimeout(()=>{ Object.keys(ST.ev).forEach(pt=>ST.ev[pt]=ST.ev[pt].filter(p=>p.active)); renderMap(); log('<span class="g">cleanup</span>: inactive parts を削除しました'); },2200); };
+  let steps;
+  if(LV<8){
+    steps=[
+      [null,'① バックグラウンドのマージスレッドが対象を選ぶ(同じパーティション内の active な Part。パーティションはまたがない)'],
+      [applyMerge,'② 統合済みの新 Part(レベル +1)が誕生。旧 Part は inactive → あとで削除。<b>「書き換える」のではなく「作り直して置き換える」</b>のが MergeTree 流'],
+    ];
+  }else if(cloud){
+    steps=[
+      ['akeeper','① Keeper の調整で、マージを実行する1ノードが決まる(Node 1)'],
+      ['an1','② Node 1 が対象 Part を読み、マージ済みの新 Part を構築'],
+      [applyMerge,'③ 新 Part を S3 へ書き込み。旧 Part は inactive(あとで削除)'],
+      ['akeeper','④ Keeper のメタデータ差し替え。他ノードは購読で追随し、<b>Part のコピー転送なし</b>'],
+    ];
+  }else{
+    steps=[
+      ['akeeper','① レプリケーションログ上でマージをスケジュール、担当レプリカが決まる(Node 1)'],
+      ['an1','② Node 1 が<b>ローカルで</b>マージを実行'],
+      [applyMerge,'③ 新 Part は Node 1 のディスクに完成。旧 Part は inactive'],
+      [()=>{ merged.forEach(p=>p.n2=true); renderMap(); },'④ Node 2 は merged Part を <b>fetch</b>(または同じマージを自力で再実行)。レプリカの数だけ I/O が重複します'],
+    ];
+  }
+  playSteps(steps,cleanup);
+});
+/* ---- 更新・削除(対象 u420) ---- */
+function showAct(html){ if($('actDesc')) $('actDesc').innerHTML=html; }
+function insertSql(){ const pt=$('insPartition')?$('insPartition').value:'202607'; return "INSERT INTO events (tenant_id, user_id, ts, url) VALUES (…)"+' <span class="cm">-- '+pt+' のイベントを1ブロック追記。1 INSERT = 新しい Part が1つ</span>'; }
+const mergeSql='OPTIMIZE TABLE events <span class="cm">-- 手動でマージを促す(通常はバックグラウンドが自動実行)</span>';
+const actCode=s=>'<code style="color:var(--cyan);font-size:12px">'+s+'</code>';
+function renderUdDesc(){ const M=UD_M[$('udMethod').value]; if(!M) return;
+  showAct(actCode(M.sql)+'<br>対象: <b>'+M.target+'</b> ・ 重さ <span style="letter-spacing:2px">'+'★'.repeat(M.cost)+'☆'.repeat(5-M.cost)+'</span> ・ 反映: '+M.when); }
+$('udMethod').addEventListener('change',renderUdDesc);
+$('udRun').addEventListener('mouseenter',renderUdDesc);
+[['btnInsert',()=>actCode(insertSql())],['btnMerge',()=>actCode(mergeSql)]].forEach(([id,f])=>{
+  $(id).addEventListener('mouseenter',()=>showAct(f()));
+  $(id).addEventListener('focus',()=>showAct(f()));
+});
+$('insPartition').addEventListener('change',()=>showAct(actCode(insertSql())));
+$('mvOn').addEventListener('mouseenter',()=>showAct(actCode(($('mvOn').checked?'DROP VIEW mv_daily <span class="cm">-- OFF にすると(daily_counts は残る)</span>':'CREATE MATERIALIZED VIEW mv_daily TO daily_counts AS SELECT … <span class="cm">-- ON にすると(全文は上の DDL 欄)</span>'))));
+$('prjOn').addEventListener('mouseenter',()=>showAct(actCode(($('prjOn').checked?'ALTER TABLE events DROP PROJECTION p_url <span class="cm">-- OFF にすると</span>':'ALTER TABLE events ADD PROJECTION p_url ( SELECT * ORDER BY url ) <span class="cm">-- ON にすると。既存 Part には作られない(下の MATERIALIZE を参照)</span>'))));
+$('btnPrjMat').addEventListener('mouseenter',()=>showAct(actCode('ALTER TABLE events MATERIALIZE PROJECTION p_url <span class="cm">-- 既存の全 Part にも p_url を構築する1回きりの重いバッチ(実行前の Part は本体経路のまま)</span>')));
+$('btnPrjMat').addEventListener('click',()=>{
+  actTag='ALTER';
+  log('<span style="font-family:var(--mono);color:var(--cyan)">ALTER TABLE events MATERIALIZE PROJECTION p_url</span>');
+  Object.keys(ST.ev).forEach(m=>ST.ev[m].forEach(sp=>{ if(sp.active&&!sp.patch) sp.hasProj=true; }));
+  log('既存の全 Part に p_url を構築しました(新しい Part には INSERT 時に自動で作られます)');
+  renderMap();
+});
+$('prjOn').addEventListener('change',()=>{
+  if(!$('prjOn').checked){ Object.keys(ST.ev).forEach(m=>ST.ev[m].forEach(sp=>{ sp.hasProj=false; })); }
+  if(typeof renderMap==='function') renderMap();
+});
+showAct(actCode(insertSql()));
+$('udRun').addEventListener('click',()=>{
+  const m=$('udMethod').value, M=UD_M[m];
+  actTag={lwdelete:'DELETE',mutdelete:'ALTER DELETE',mutupdate:'ALTER UPDATE',lwupdate:'UPDATE',rmt:'RMT',ttl:'TTL',droppart:'DROP PARTITION',truncate:'TRUNCATE'}[m]||'更新削除';
+  const showV=()=>{ showAct(
+    '<code style="color:var(--cyan);font-size:12px">'+M.sql+'</code>'+
+    '<div style="margin-top:6px">'+M.what+'</div>'+
+    '<div class="udmeta">対象: <b>'+M.target+'</b> ・ 重さ <span style="letter-spacing:2px">'+'★'.repeat(M.cost)+'☆'.repeat(5-M.cost)+'</span> ・ 反映: '+M.when+'</div>'+
+    '<div class="udmeta" style="color:var(--muted)">💡 '+M.tip+'</div>'); };
+  const mvWarn=(LV>=5&&$('mvOn').checked)?'。<span style="color:var(--red)">⚠ MV は発火しない</span>(トリガは INSERT だけ)。daily_counts は古いまま':'';
+  if(m==='lwdelete'){
+    playSteps([['an1','① DELETE FROM を受理。Part は1バイトも書き換えない'],
+      [()=>{ ST.ev['202607'].forEach(p=>{ if(p.active) p.masked=true; }); renderMap(); },'② 202607 の各 Part に _row_exists マスク列を書き足し。u420 の行は読み時に除外(行の物理削除は後のマージで。Part 全体は消えない)'+mvWarn]],showV);
+  } else if(m==='mutdelete'||m==='mutupdate'){
+    playSteps([['an1','① mutation をスケジュール(system.mutations に登録、非同期)'],
+      [()=>{ ST.ev['202607'].forEach(p=>{ if(p.active){ p.mut=true; p.cls='rewrote'; p.badge='⚠ Part 丸ごと再構築'; p.granules=genGranules(p.rows); } }); renderMap(); },'② 202607 の u420 を含む Part を<span style="color:var(--red)">丸ごと再構築</span>。数行のために全行を書き直す(名前に _10 が付く)'],
+      ['akeeper','③ 新 Part へメタデータ差し替え'+(smtOn()?'':'。OSS ではレプリケーションログ経由で<b>全レプリカが同じ書き換えを各自実行</b>')+mvWarn]],showV);
+  } else if(m==='lwupdate'){
+    playSteps([['an1','① UPDATE(軽量更新)を受理'],
+      [()=>{ ST.ev['202607'].push({pn:'patch_1_1_0',min:0,max:0,lvl:0,rows:2,active:true,fresh:true,patch:true}); renderMap(); },'② 差分だけの小さな <span class="y">patch part</span> を追加。元の Part は無変更、SELECT が読み時にパッチを当てる(物理統合はマージ時)']],showV);
+  } else if(m==='rmt'){
+    if(udPhase===0){
+      playSteps([['an1','① 更新を「新バージョン行の INSERT」で表現する(ReplacingMergeTree(ver) の流儀)'],
+        [()=>{ blockNo++; ST.ev['202607'].push({min:blockNo,max:blockNo,lvl:0,rows:1,active:true,fresh:true,hasProj:true,badge:'u420 の新バージョン行(v2)',dayLo:22,dayHi:22}); renderMap(); },'② <span style="color:var(--orange)">いまは新旧両方の u420 が存在</span>。正確に読むには FINAL か argMax が必要。次は同じボタンで「マージを実行」']],
+        ()=>{ udPhase=1; $('udRun').textContent='マージを実行(RMT)'; showV(); });
+    } else {
+      playSteps([['an1','① マージ担当ノードが 202607 の Part を統合'],
+        [()=>{ const act=ST.ev['202607'].filter(p=>p.active);
+          const np={min:Math.min(...act.map(p=>p.min)),max:Math.max(...act.map(p=>p.max)),lvl:Math.max(...act.map(p=>p.lvl))+1,rows:act.reduce((s,p)=>s+p.rows,0)-1,active:true,fresh:true,hasProj:true,badge:'旧バージョンの u420 を置換済み',dayLo:Math.min(...act.map(p=>p.dayLo??1)),dayHi:Math.max(...act.map(p=>p.dayHi??30))};
+          act.forEach(p=>p.active=false); ST.ev['202607'].push(np); renderMap();
+          setTimeout(()=>{ ST.ev['202607']=ST.ev['202607'].filter(p=>p.active); renderMap(); },2000);
+        },'② マージ時に<span class="y">同じ ORDER BY キーの行のうち最新(ver 最大)だけが残る</span>。書き込みは軽い代わりに、読み側に規律が要る'],
+      ],()=>{ udPhase=0; $('udRun').textContent='実行'; });
+    }
+  } else if(m==='ttl'||m==='droppart'){
+    playSteps([[ 'akeeper','① メタデータ操作のみで、行の走査も書き換えも一切なし'],
+      [()=>{ ST.ev['202606'].forEach(p=>p.cls='gone'); renderMap(); setTimeout(()=>{ ST.ev['202606']=[]; renderMap(); },450); },'② PARTITION 202606 の全 Part が即時に消滅'+(m==='ttl'?'(TTL はマージのついでにバックグラウンドで)':'')+mvWarn]],showV);
+  } else if(m==='truncate'){
+    playSteps([[ 'akeeper','① 全 Part を削除(メタデータ操作)。テーブル定義は残る'],
+      [()=>{ Object.keys(ST.ev).forEach(pt=>ST.ev[pt].forEach(p=>p.cls='gone')); renderMap(); setTimeout(()=>{ Object.keys(ST.ev).forEach(pt=>ST.ev[pt]=[]); renderMap(); },450); },'② events は空に。<span style="color:var(--orange)">daily_counts は別テーブルなので残る</span>。MV は過去を知らない一方通行のパイプ']],showV);
+  }
+});
+/* ---- 読み取りシナリオ ---- */
+const SCNR={
+  hit:[['an2','① Node 2 がクエリを受信。メモリ内の primary.idx で読むべき granule を決定'],
+       ['ac2','② 該当する圧縮ブロックがローカル NVMe キャッシュにある → ヒット'],
+       ['an2','③ S3 に一切アクセスせず返却。ウォーム状態ならローカルディスク並みの速度']],
+  cold:[['an2','① Node 2 がクエリを受信。primary.idx で granule を決定(ここまでは同じ)'],
+        ['ac2','② NVMe キャッシュを確認 → ミス'],
+        ['as3','③ S3 へ range GET し、Mark が指す圧縮ブロックの範囲だけを取得(Part 丸ごとではない)'],
+        ['ac2','④ 取得ブロックをキャッシュへ格納。次回からはヒット'],
+        ['an2','⑤ 返却。初回だけ S3 レイテンシが乗る。これがコールドリード']],
+  mvq:[['an2','① 同じ集計の質問を、events 本体でなく <b>daily_counts(MV の宛先)</b>に投げる: SELECT d, sum(cnt) FROM daily_counts GROUP BY d'],
+       ['tblmv','② daily_counts の<b>小さな Part を数個読むだけ</b>。events の granule 群には一切触らない'],
+       ['an2','③ 返却。書き込み時に前払いした集計が読みを桁で減らす。events 本体に聞けば STAGE 1〜6 の枝刈りを経て granule を読むことになる']],
+  scale:[['an3','① Node 3 を起動。ローカルにデータは何もない(ステートレス)'],
+         ['akeeper','② Keeper に購読登録し、メタデータ(Part 一覧と場所)をキャッシュ'],
+         ['as3','③ データは S3 にあるので、コピーもリバランスも不要'],
+         ['ac3','④ ほぼ即座にクエリ処理へ参加。キャッシュはクエリを捌きながら温まる']],
+};
+const SCNR_OSS={
+  hit:[['an2','① Node 2 がクエリを受信。メモリ内の primary.idx で読むべき granule を決定(ここは SMT と同じ)'],
+       ['nd2','② <b>自分のローカルディスク</b>から直接読む。ネットワークを跨がない'],
+       ['an2','③ 返却。読み経路は最短。その代わり<b>データ量 × レプリカ数</b>のディスクを常に抱えます']],
+  scale:[['an3','① Node 3 を追加。まだデータを何も持たない'],
+         ['akeeper','② レプリケーションログに参加を登録'],
+         ['nd3','③ <b>全 Part を既存レプリカからコピー</b>。データ量に比例して時間がかかる(SMT との最大の違い)'],
+         ['an3','④ コピー完了後、ようやくクエリ処理に参加できる']],
+};
+var lastScnTarget='events';
+function syncReadHighlight(){
+  const map=document.getElementById('svcmap'); if(!map) return;
+  const inB=document.getElementById('pB').classList.contains('on')&&LV>=8;
+  map.classList.toggle('readview',inB);
+  if(!inB){ map.querySelectorAll('.pbox.qread').forEach(el=>el.classList.remove('qread')); return; }
+  const selM=[...document.querySelectorAll('.fMonth:checked')].map(c=>c.value);
+  const dateOn=selM.length>0;
+  map.querySelectorAll('.pbox').forEach(el=>{
+    const isTgt=!el.dataset.part;
+    let read=false;
+    if(el.classList.contains('inactive')){ read=false; }
+    else if(lastScnTarget==='mv'){ read=isTgt; }
+    else if(!isTgt){ const m=el.dataset.part.split(':')[0]; read=(!dateOn||selM.includes(m)); }
+    el.classList.toggle('qread',read);
+    if(read) el.title=lastScnTarget==='mv'?'MV シナリオの読み取り対象(daily_counts の Part)':'いまの期間条件で読まれる Part(それ以外は減光)';
+  });
+}
+function scnLine(t){ const el=$('scnLog'); if(!el) return; const dv=document.createElement('div'); dv.innerHTML='<span class="lts">'+ts()+'</span>'+(actTag?'<span class="ltag">'+actTag+'</span>':'')+t; el.prepend(dv); }
+document.querySelectorAll('[data-scn]').forEach(b=>{
+  b.addEventListener('click',()=>{
+    if(b.disabled) return;
+    if(b.dataset.scn==='mvq'&&!$('mvOn').checked){ const m='MV が OFF です。「構造と書き込み」タブで MV mv_daily を ON にして INSERT すると daily_counts に Part ができます'; log(m); scnLine(m); return; }
+    const cloud=smtOn();
+    actTag=b.dataset.scn==='scale'?'SCALE-OUT':'SELECT';
+    lastScnTarget=(b.dataset.scn==='mvq')?'mv':'events';
+    syncReadHighlight();
+    if(b.dataset.scn==='scale'){ $('an3').classList.remove('ghost'); if(!cloud) ST.n3sync=false; renderMap(); }
+    const steps=(cloud?SCNR:SCNR_OSS)[b.dataset.scn]||SCNR[b.dataset.scn];
+    playSteps(steps, (!cloud&&b.dataset.scn==='scale')?()=>{ ST.n3sync=true; renderMap(); log('Node 3 のコピー完了。ここまでがデータ量に比例する待ち時間でした'); scnLine('Node 3 のコピー完了。ここまでがデータ量に比例する待ち時間でした'); }:null, t=>{ log(t); scnLine(t); });
+  });
+});
+/* ---- デプロイ形態の同期 ---- */
+function syncMode(announce){
+  const cloud=smtOn();
+  $('modeLabel').textContent=cloud?'☁️ Cloud(SharedMergeTree)':'🖥 セルフホスト(Replicated)';
+  Object.keys(ST.ev).forEach(pt=>ST.ev[pt].forEach(p=>{ p.n2=true; }));
+  ST.tgt.forEach(p=>{ p.n2=true; });
+  const coldBtn=document.querySelector('[data-scn="cold"]');
+  coldBtn.disabled=!cloud;
+  coldBtn.title=cloud?'':'コールドリードは共有ストレージ(SMT)特有(OSS は常にローカル読み)';
+  document.querySelector('[data-scn="hit"]').textContent=cloud?'▶ キャッシュヒット':'▶ ローカル読み';
+  document.querySelector('[data-scn="scale"]').textContent=cloud?'▶ スケールアウト':'▶ スケールアウト(全コピー)';
+  renderMap();
+  if(typeof qpipe==='function'&&QR) qpipe();
+  if(announce) log(cloud
+    ? '☁️ <b>Cloud(SharedMergeTree)モード</b>: データは S3 に1コピー、ノードはステートレス。ENGINE は MergeTree と書くだけ'
+    : '🖥 <b>セルフホスト(Replicated)モード</b>: 各ノードがローカルディスクに完全コピーを持ち、Part を fetch 転送で複製。ENGINE = ReplicatedMergeTree(zk パス, レプリカ名)+ DDL は ON CLUSTER。INSERT / マージ / スケールアウトの動きが変わったので試してください');
+}
+/* ---- リセットと初期化 ---- */
+$('btnResetAll').addEventListener('click',()=>{
+  clearInterval(actTimer);
+  document.querySelectorAll('.glow').forEach(x=>x.classList.remove('glow'));
+  initST(); warnedParts=false; actTag='';
+  syncMode(false);
+  $('mlog').innerHTML='<div>— ログ —</div>';
+  $('mvSteps').style.display='none'; showAct(actCode(insertSql()));
+  $('udRun').textContent='実行'; $('an3').classList.add('ghost');
+  log('リセットしました。<span class="y">INSERT</span> から流れを追ってみてください');
+});
+$('mvOn').addEventListener('change',()=>{ actTag='MV'; if(!$('mvOn').checked){ $('mvCas').checked=false; } $('mvCas').disabled=!$('mvOn').checked; renderMap(); if(typeof qpipe==='function') qpipe(); log($('mvOn').checked?'MV <span class="c">mv_daily</span> を有効化。以後の INSERT は daily_counts にも Part を作ります':'MV を無効化(DROP VIEW 相当)。daily_counts はそのまま残ります'); });
+$('mvCas').addEventListener('change',()=>{ actTag='MV'; renderMap(); if(typeof qpipe==='function') qpipe(); log($('mvCas').checked?'カスケード MV <span class="c">mv_weekly</span> を有効化。daily_counts への INSERT(mv_daily 経由を含む)が連鎖して weekly_counts に集計を書きます':'mv_weekly を無効化(DROP VIEW 相当)。weekly_counts はそのまま残ります'); });
+$('mvCas').addEventListener('mouseenter',()=>showAct(actCode(($('mvCas').checked?'DROP VIEW mv_weekly <span class="cm">-- OFF にすると</span>':'CREATE MATERIALIZED VIEW mv_weekly TO weekly_counts AS SELECT toStartOfWeek(d) AS w, sum(cnt) FROM daily_counts GROUP BY w <span class="cm">-- ON にすると。トリガは daily_counts への INSERT</span>'))));
+$('mvCas').disabled=!$('mvOn').checked;
+initST();
+document.body.classList.add('smt-on'); // 既定は Cloud(SMT)モード
+syncMode(false);
+showDetail('table',true);
+log('操作デッキの <span class="y">＋ INSERT</span> を押して、Part が生まれる流れを見てください。図の箱はどれもクリックで解説が出ます');
+/* ============================================================
+   TAB B : query execution pipeline(段階統合)
+============================================================ */
+const PRJ_URLS=['/api','/blog','/cart','/checkout','/docs','/home','/item','/login'];
+var QR=null; // var: タブA初期化時の syncMode が参照するため TDZ を避ける
+function qpipe(){
+  const selMonths=LV>=3?[...document.querySelectorAll('.fMonth:checked')].map(c=>c.value):[];
+  const tenants=LV>=2?[...document.querySelectorAll('.fTen:checked')].map(c=>c.value):[];
+  const userOn=LV>=2&&$('cPk').checked;
+  const urlOn=LV>=4&&$('cSkip').checked;
+  const tsOn=LV>=4&&$('cTs').checked;
+  const dateOn=selMonths.length>0, pkOn=tenants.length>0||userOn;
+  const pk=+$('rPk').value, pkLen=+$('fPk').value, obTs=$('fOb').value==='ts';
+  const prjAdd=LV>=5&&$('prjOn').checked;
+  let prjMatOk=prjAdd;
+  Object.keys(ST.ev).forEach(m=>ST.ev[m].forEach(sp=>{ if(sp.active&&!sp.patch&&!sp.hasProj) prjMatOk=false; }));
+  $('vPk').textContent=pk;
+  if($('btnPrjMat')){ $('btnPrjMat').disabled=!prjAdd||prjMatOk; $('btnPrjMat').textContent=(prjAdd&&prjMatOk)?'MATERIALIZE 済み ✓':'MATERIALIZE 実行'; }
+  const pkCols=['tenant_id','user_id'].slice(0,pkLen).join(', ');
+  const obCols=pkCols+(obTs?', ts':'');
+  $('fOb').options[0].textContent='('+pkCols+')';
+  $('fOb').options[1].textContent='('+pkCols+', ts)';
+  // ---- ヘッダ: DDL(左)と DML(右)を現在の設定から再生成 ----
+  const cloudMode=smtOn();
+  const eng=(LV>=8&&!cloudMode)
+    ? "ReplicatedMergeTree('/clickhouse/tables/{shard}/events', '{replica}')"
+    : 'MergeTree'+(LV>=8?' <span class="cm">-- Cloud が SharedMergeTree に自動対応</span>':'');
+  $('ctxDdl').innerHTML=
+    '<span class="kw">CREATE TABLE</span> events (<br>'+
+    '&nbsp;&nbsp;tenant_id LowCardinality(String), user_id UInt32, ts DateTime, url String'+((LV>=4||prjAdd)?',':'')+'<br>'+
+    (LV>=4?'&nbsp;&nbsp;<span class="kw">INDEX</span> <span class="term q-skip" data-g="textindex">url_text</span> url <span class="kw">TYPE</span> text(tokenizer = splitByNonAlpha) <span class="kw term" data-g="idxgran">GRANULARITY</span> 64,<br>'+
+    '&nbsp;&nbsp;<span class="kw">INDEX</span> <span class="term q-skip" data-g="minmax">ts_minmax</span> ts <span class="kw">TYPE</span> minmax <span class="kw term" data-g="idxgran">GRANULARITY</span> 1'+(prjAdd?',':'')+'<br>':'')+
+    (prjAdd?'&nbsp;&nbsp;<span class="kw">PROJECTION</span> <span class="ok term" data-g="projection">p_url</span> ( <span class="kw">SELECT</span> * <span class="kw">ORDER BY</span> url )<br>':'')+
+    ') <span class="kw">ENGINE</span> = '+eng+'<br>'+
+    (LV>=3?'<span class="kw">PARTITION BY</span> <i class="q-part term" data-g="partition" style="font-style:normal" title="担当: STAGE 1 Partition pruning">toYYYYMM(ts)</i><br>':'')+
+    '<span class="kw">PRIMARY KEY</span> <i class="q-pk term" data-g="pk" style="font-style:normal">('+pkCols+')</i>'+
+    (LV>=2?(obTs
+      ?'<br><span class="kw">ORDER BY</span> <span class="ok term" data-g="orderby">('+obCols+')</span>'
+      :'<br><span class="cm">-- ORDER BY 省略: 並びは PRIMARY KEY と同じ</span>')
+    :'')+
+    (prjAdd?'<br><span class="cm">'+(prjMatOk
+      ?'-- ALTER TABLE events MATERIALIZE PROJECTION p_url; 実行済み(既存 Part にも構築)'
+      :'-- MATERIALIZE 前: p_url はこれ以降の新しい Part にだけ作られる')+'</span>':'')+
+    ((LV>=5&&$('mvOn')&&$('mvOn').checked)?
+      '<div style="border-top:1px dashed var(--line-soft);margin-top:8px;padding-top:8px"></div>'+
+      '<span class="kw">CREATE TABLE</span> daily_counts ( d Date, cnt UInt64 )<br>&nbsp;&nbsp;<span class="kw">ENGINE</span> = SummingMergeTree <span class="kw">ORDER BY</span> d;<br>'+
+      '<span class="kw">CREATE MATERIALIZED VIEW</span> <span class="ok term" data-g="mv">mv_daily</span> <span class="kw">TO</span> daily_counts <span class="kw">AS</span><br>'+
+      '&nbsp;&nbsp;<span class="kw">SELECT</span> toDate(ts) <span class="kw">AS</span> d, count() <span class="kw">AS</span> cnt <span class="kw">FROM</span> events <span class="kw">GROUP BY</span> d;'+
+      ((LV>=5&&$('mvCas')&&$('mvCas').checked)?
+        '<br><span class="kw">CREATE TABLE</span> weekly_counts ( w Date, cnt UInt64 )<br>&nbsp;&nbsp;<span class="kw">ENGINE</span> = SummingMergeTree <span class="kw">ORDER BY</span> w;<br>'+
+        '<span class="kw">CREATE MATERIALIZED VIEW</span> <span class="ok term" data-g="mv">mv_weekly</span> <span class="kw">TO</span> weekly_counts <span class="kw">AS</span><br>'+
+        '&nbsp;&nbsp;<span class="kw">SELECT</span> toStartOfWeek(d) <span class="kw">AS</span> w, sum(cnt) <span class="kw">AS</span> cnt <span class="kw">FROM</span> daily_counts <span class="kw">GROUP BY</span> w;<br>'+
+        '<span class="cm">-- MV の宛先への書き込みも「ただの INSERT」なので、そこに張った MV が連鎖発火(カスケード)</span>'
+      :'')
+    :'');
+  const preds=[];
+  if(dateOn) preds.push('<span class="q-part term" data-g="partition" title="担当: STAGE 1 Partition pruning">toYYYYMM(ts) '+(selMonths.length===1?'= '+selMonths[0]:'IN ('+selMonths.join(', ')+')')+'</span>');
+  if(tenants.length) preds.push("<span class=\"q-pk term\" data-g=\"pk\" title=\"担当: STAGE 3 primary.idx\">tenant_id "+(tenants.length===1?"= '"+tenants[0]+"'":"IN ('"+tenants.join("', '")+"')")+"</span>");
+  if(userOn) preds.push('<span class="q-pk term" data-g="pk" title="担当: STAGE 3 primary.idx">user_id = '+pk+'</span>');
+  if(urlOn) preds.push("<span class=\"q-skip term\" data-g=\"textindex\" title=\"担当: STAGE 4 text index\">hasToken(url, 'checkout')</span>");
+  if(tsOn) preds.push('<span class="q-skip term" data-g="minmax" title="担当: STAGE 4 minmax skip index">ts >= \'2026-07-20\'</span>');
+  $('ctxDml').innerHTML=
+    '<span class="kw">SELECT</span> count() <span class="kw">FROM</span> events'+
+    (preds.length?'<br><span class="kw">WHERE</span> '+preds.join('<br>&nbsp;&nbsp;<span class="kw">AND</span> '):'')+
+    (preds.length?'':'<br><span class="cm">'+(LV<2?'-- まだ絞り込みの道具がない: 全 Part・全 granule を読むしかない':'-- 条件なし: 全 Part・全 granule を読む')+'</span>');
+  const ctxOpen=$('ctxbar').classList.contains('open');
+  $('ctxSum').innerHTML='<span class="ctxq"><span style="color:var(--green)">events</span> · <span class="kw">SELECT</span> count()'+
+    (preds.length?' <span class="kw">WHERE</span> '+preds.join(' <span class="kw">AND</span> '):' <span class="cm">(WHERE なし)</span>')+
+    '</span><button class="ctxbtn" id="ctxToggle">DDL / DML 全文 '+(ctxOpen?'▴':'▾')+'</button>';
+  // ---- STAGE 1: partition pruning(構造タブの実 Part 群を評価) ----
+  const stParts=[];
+  Object.keys(ST.ev).sort().forEach(m=>ST.ev[m].forEach(sp=>{
+    if(!sp.active||sp.patch) return;
+    if(!sp.granules) sp.granules=genGranules(sp.rows);
+    if(sp.dayLo==null){ sp.dayLo=1; sp.dayHi=30; }
+    stParts.push({month:m,p:sp,name:partName(sp,m)});
+  }));
+  const total=stParts.reduce((s,x)=>s+x.p.granules.length,0);
+  const parts=stParts.map(x=>({month:x.month,p:x.p,name:x.name,alive:!dateOn||selMonths.includes(x.month)}));
+  const aliveParts=parts.filter(x=>x.alive);
+  // ---- STAGE 2: 経路選択(Projection) ----
+  aliveParts.forEach(x=>{
+    x.hasPrj=prjAdd&&(x.p.hasProj||prjMatOk);
+    x.baseEst=!tenants.length?x.p.granules.length:Math.max(1,x.p.granules.filter(g=>granHit(g,tenants,userOn,pkLen,pk)).length);
+    x.prjEst=urlOn?1:x.p.granules.length;
+    x.path=(x.hasPrj&&x.prjEst<x.baseEst)?'proj':'base';
+  });
+  // ---- STAGE 3: primary.idx ----
+  aliveParts.forEach(x=>{
+    if(x.path==='proj'){ x.s3=new Set([Math.min(3,x.p.granules.length-1)]); }
+    else if(!tenants.length){ x.s3=new Set(x.p.granules.map((_,i)=>i)); } // user_id 単独は接頭辞でないため索引は効かない
+    else { x.s3=new Set(x.p.granules.map((g,i)=>granHit(g,tenants,userOn,pkLen,pk)?i:-1).filter(i=>i>=0)); }
+  });
+  // ---- STAGE 4: skip index(base 経路のみ) ----
+  const tsPass=x=>(x.month>'202607')||(x.month==='202607'&&x.p.dayHi>=20);
+  aliveParts.forEach(x=>{
+    x.s4=new Set([...x.s3].filter(i=>x.path==='proj'||((!urlOn||x.p.granules[i].hasToken)&&(!tsOn||tsPass(x)))));
+  });
+  const n1=aliveParts.reduce((s,x)=>s+x.p.granules.length,0);
+  const n3=aliveParts.reduce((s,x)=>s+x.s3.size,0);
+  const n4=aliveParts.reduce((s,x)=>s+x.s4.size,0);
+  QR={total,n1,n3,n4,parts,aliveParts,dateOn,selMonths,tenants,userOn,pkOn,urlOn,pk,pkLen,prjAdd,prjMatOk};
+  // ---- render ----
+  $('cut0').innerHTML='対象: 全 '+stParts.length+' parts / <b>'+total+'</b> granules(≈'+fmt(total*8192)+' 行)<span class="cm" style="margin-left:8px">構造タブの今の Part がそのまま対象</span>';
+  $('cut1').innerHTML='入 '+total+' → <b>'+n1+'</b> gr';
+  $('arr0').innerHTML='↓ '+total+' granules';
+  const grp={};stParts.forEach(x=>{(grp[x.month]=grp[x.month]||[]).push(x);});
+  $('sb1').innerHTML=Object.keys(grp).sort().map(m=>{
+    const cut=dateOn&&!selMonths.includes(m);
+    return '<div class="pgrp'+(cut?' cutp':'')+'"><span class="pgt">PARTITION '+m+'</span>'+grp[m].map(x=>'<span class="pgpart">'+x.name+'</span>').join('')+'</div>';
+  }).join('')||'<div class="mgrcap">Part がありません。「構造と書き込み」タブで INSERT してください。</div>';
+  $('why1').innerHTML=dateOn?'<b>期間条件がパーティションキー式 toYYYYMM(ts) に一致する</b>ので、チェックした月('+selMonths.join(', ')+')以外は Part を1つも開かずに丸ごと除外。管理用の区切りが枝刈りにも効く瞬間です。':'期間の条件が無いので全パーティションが対象。ここでは何も削れません。';
+  $('arr1').innerHTML='↓ '+n1+' granules('+aliveParts.length+' parts)';
+  // S2
+  $('cut2').innerHTML=aliveParts.filter(x=>x.path==='proj').length?'<b>'+aliveParts.filter(x=>x.path==='proj').length+'</b> parts が p_url 経路':'全 parts 本体経路';
+  $('sb2').innerHTML=aliveParts.map(x=>{
+    const cands='<span class="dcand'+(x.path==='base'?' win':'')+'">本体 est '+x.baseEst+' gr</span>'+
+      (x.hasPrj?'<span class="dcand'+(x.path==='proj'?' win':'')+'">p_url est '+x.prjEst+' gr</span>':(!x.p.hasProj&&prjAdd?'<span class="dcand" style="border-style:dashed;color:var(--orange)">p_url 無し(MATERIALIZE 前)</span>':''))+
+      ' → <span class="dwin">'+(x.path==='proj'?'p_url を読む':'本体を読む')+'</span>';
+    return '<div class="drow"><span>'+x.name+'</span><em style="font-style:normal;color:var(--dim);font-size:10px">'+(x.p.fresh?'新しい Part':(x.p.lvl>0?'マージ済 Part':'既存 Part'))+'</em>'+cands+'</div>';
+  }).join('');
+  $('why2').innerHTML= !prjAdd?'Projection が無いので候補は本体だけ。<b>url だけで探すクエリ(期間と tenant / user_id を外す)にしてから PROJECTION を有効化</b>すると optimizer の判断が変わります。'
+    : aliveParts.some(x=>x.path==='proj')?'<b>「読む granule が最少」の候補を Part ごとに選ぶ</b>のが自動選択の中身。クエリは1文字も変えていません。'
+    : (urlOn&&pkOn?'キー条件(tenant+user)が強いので本体の方が安い。p_url は「使えるが granule 数で負ける」。':'url 条件が無い(または本体で十分)ため、比較するまでもなく本体。');
+  $('arr2').innerHTML='↓ 経路確定(まだ I/O ゼロ)';
+  // S3
+  $('cut3').innerHTML='入 '+n1+' → <b>'+n3+'</b> gr';
+  $('sb3').innerHTML=aliveParts.map(x=>{
+    const lbls=x.path==='proj'?x.p.granules.map((_,i)=>PRJ_URLS[i%PRJ_URLS.length]):x.p.granules.map(g=>keyLabel(g.lo));
+    return '<div class="mgrcap">'+x.name+': '+(x.path==='proj'?'<span class="who">p_url の primary.idx(url)で二分探索</span>':'primary.idx('+pkCols+')で二分探索')+'</div>'+
+      '<div class="mgr">'+lbls.map((l,i)=>'<i class="'+(x.s3.has(i)?'rd':'ck')+'" title="G'+i+'">'+l+'</i>').join('')+'</div>';
+  }).join('');
+  $('why3').innerHTML=
+    (!tenants.length&&userOn)?'<b>user_id 単独では primary.idx は効きません</b>。索引は ORDER BY (tenant_id, user_id, ts) の接頭辞順にしか探索できず、先頭の tenant_id が無い条件は範囲に変換できない(データは並んでいるのに)。tenant を選ぶと一変します。'
+    : (!tenants.length&&!aliveParts.some(x=>x.path==='proj'))?'キー条件が無いので二分探索の出番なし。全 granule が候補のまま。'
+    : (tenants.length&&userOn&&pkLen===1)?'<b>PRIMARY KEY が (tenant_id) だけ</b>なので user_id では絞れず、tenant '+tenants.join(', ')+' の granule 全部が候補に(データは並んでいるのに索引に値が無い)。下の深掘りで「並び」と「索引」の分離を確認できます。'
+    : (tenants.length&&!userOn)?'先頭列 tenant_id の二分探索でテナント '+tenants.join(', ')+' のブロックを即特定。user_id も指定すると接頭辞(tenant → user)としてさらに絞れます。'
+    :'各 granule の<b>先頭行のキー値だけ</b>を持つ疎な索引を二分探索。行は特定できず「含みうる granule 範囲」だけが決まります。メモリ内で完結。';
+  $('arr3').innerHTML='↓ <b>'+n3+'</b> granules';
+  // S4
+  $('cut4').innerHTML='入 '+n3+' → <b>'+n4+'</b> gr';
+  $('sb4').innerHTML=aliveParts.map(x=>{
+    if(x.path==='proj') return '<div class="mgrcap">'+x.name+': <span class="who">対象外(p_url は並びそのものが答え)</span></div>';
+    if(!urlOn&&!tsOn) return '';
+    const posting=x.p.granules.map((g,i)=>g.hasToken?i:-1).filter(i=>i>=0);
+    const lines=[];
+    if(urlOn) lines.push('url_text の転置索引を引く: "checkout" → { '+(posting.length?posting.map(i=>'G'+i).join(', '):'なし')+' }'+(posting.length?'(この一覧に無い granule は token を1行も含まない)':'(この Part に checkout は1行も無い)'));
+    if(tsOn) lines.push('ts_minmax を引く: この Part の ts は '+dayWin(x.p)+' の範囲'+(tsPass(x)?' → 7/20 以降と交差するので消せない':' → 7/20 以降と交差しないので全 granule を消せる'));
+    const why=(i)=>{
+      if(!x.s3.has(i)) return 'G'+i+': STAGE 3 までに除外済み';
+      const r=[];
+      if(urlOn) r.push(x.p.granules[i].hasToken?'"checkout" の一覧に載っている':'"checkout" の一覧に無い → 含まないと確定');
+      if(tsOn) r.push(tsPass(x)?'時間窓が交差':'時間窓が交差しない → 含まないと確定');
+      return 'G'+i+': '+r.join(' / ');
+    };
+    return '<div class="mgrcap">'+x.name+':<br>'+lines.join('<br>')+'</div>'+
+      '<div class="mgr">'+x.p.granules.map((g,i)=>'<i class="'+(x.s3.has(i)?(x.s4.has(i)?'rd':'cs'):'ck')+'" title="'+why(i)+'">'+(x.s3.has(i)?(x.s4.has(i)?'読む':'skip'):'')+'</i>').join('')+'</div>';
+  }).join('')||'<div class="mgrcap">skip index が使える条件(url / ts)が無いのでこのステージは素通り。</div>';
+  $('why4').innerHTML=(urlOn||tsOn)?(tsOn?'<b>ts_minmax は要約型</b>: index granule(GRANULARITY 個の granule、この表では 1 = granule 単位)ごとに ts の min/max だけを控え、「探す範囲を含みえない」と証明できた granule を skip します(偽陽性あり)。ORDER BY が tenant_id 始まりなので granule 内の ts は月全体に散らばり granule 単位では切れず、効くのは <b>Part 自体の書き込み時間窓</b>です。局所性が悪い列に要約型が効かない理由は実験室の「シャッフル」で体験できます。':'')+(urlOn&&tsOn?'<br>':'')+(urlOn?'text index は <b>token → 行 / granule の転置索引</b>。「checkout を含みうる granule」を直接列挙でき、<b>索引自体の偽陽性はゼロ</b>(決定的)。26.2 で GA になり、文字列検索は旧 bloom 型(ngrambf / tokenbf、全文検索用途では非推奨化)からこちらが推奨になりました。選択率が低ければ<b>列を読まずに索引だけで答える direct read</b> も効きます(hasToken / hasAllTokens が主経路)。要約型(minmax / set / bloom)の原理は、「構造と書き込み」タブで Part を開き、skp_idx をクリックすると実験室で体験できます。':''):'url / ts の条件が無いのでこのステージは素通りです。';
+  $('arr4').innerHTML='↓ <b>'+n4+'</b> granules(ここまで I/O ゼロ、ここから先が本番)';
+  // S5
+  $('cut5').innerHTML='読む: <b>'+n4+'</b> gr ≈ '+fmt(n4*8192)+' 行';
+  $('sb5').innerHTML= n4===0?'読む granule は<b>ゼロ</b>。索引と常駐メタデータだけで「該当なし」を証明できたので、ストレージには一切触れません':'生き残った <b>'+n4+' granules(≈'+fmt(n4*8192)+' 行)</b>だけ、Mark(.cmrk2)が指す圧縮ブロックを取得して展開します。読み先: '+(LV>=8?(smtOn()?'<b>ローカル NVMe キャッシュ → ミス時は S3 へ range GET</b>(Cloud/SMT)':'<b>各レプリカのローカルディスクから直読</b>(セルフホスト)'):'ストレージの圧縮ブロック(どこに置かれるかは Lv8 物理レイヤーで)')+'。さらに下の2つの最適化が「読む<b>列</b>」も削ります:';
+  const maskedN=aliveParts.filter(x=>x.p.masked).length;
+  let patchN=0; Object.keys(ST.ev).forEach(m=>{ if(!dateOn||selMonths.includes(m)) ST.ev[m].forEach(sp=>{ if(sp.active&&sp.patch) patchN++; }); });
+  if(n4>0&&(maskedN||patchN)) $('sb5').innerHTML+='<br>'+(maskedN?'<b>'+maskedN+' parts に _row_exists マスク</b>: 読んだ行から削除済みの行をここで除外(軽量削除の読み時コスト)。':'')+(patchN?'<b>patch part '+patchN+' 個</b>を読み時に当てて最新値を返します(軽量更新)。':'');
+  // S6
+  const blocks=Math.max(1,Math.ceil(n4*8192/65409));
+  $('cut6').innerHTML=''+n4+' gr → 処理 Block 約 '+blocks+' 個';
+  $('sb6').innerHTML= n4===0?'<b>結果: 1 granule も読まずに 0 件と確定</b>。実行エンジンの出番すらありません。':'granule を束ねて<b>処理 Block(≤65,409 行)</b>を組み立て、max_threads 本のスレッドでベクトル化実行。<b>結果: 全 '+total+' granules 中 '+n4+' 個('+Math.round(n4/total*100)+'%)だけ読んで同じ答え</b>に到達しました。';
+  // Projection 実験室の連動
+  prjQ=(urlOn&&!tenants.length&&!userOn)?'url':'uid';
+  if(typeof prjRender==='function') prjRender();
+  if(typeof syncReadHighlight==='function') syncReadHighlight();
+}
+['cPk','cSkip','cTs','fPk','fOb','prjOn'].forEach(id=>$(id).addEventListener('change',qpipe));
+const renderMapCore=renderMap;
+renderMap=function(){ renderMapCore(); if(typeof qpipe==='function') qpipe(); };
+document.querySelectorAll('.fMonth,.fTen').forEach(c=>c.addEventListener('change',qpipe));
+function mselInit(boxId,cls,allLabel){
+  const box=$(boxId), btn=box.querySelector('.msel-btn');
+  btn.addEventListener('click',e=>{ e.stopPropagation();
+    document.querySelectorAll('.msel.open').forEach(m=>{ if(m!==box) m.classList.remove('open'); });
+    box.classList.toggle('open'); });
+  const upd=()=>{ const v=[...box.querySelectorAll(cls+':checked')].map(c=>c.parentElement.textContent.trim());
+    btn.textContent=(v.length?v.join(', '):allLabel)+' ▾'; };
+  box.querySelectorAll(cls).forEach(c=>c.addEventListener('change',upd));
+  upd();
+}
+function syncFoldBtn(){ const btn=$('qpipeFoldBtn'); if(!btn) return; const f=document.body.classList.contains('qfold');
+  btn.textContent=(f?'▸ クエリの論理段階(STAGE 0〜6・Lv2〜7 の内容)を開く':'▾ クエリの論理段階を畳んで物理ビューに戻す'); }
+$('qpipeFoldBtn').addEventListener('click',()=>{ document.body.classList.toggle('qfold'); syncFoldBtn(); });
+syncFoldBtn();
+mselInit('mselMonth','.fMonth','すべて');
+mselInit('mselTen','.fTen','指定なし');
+document.addEventListener('click',e=>{ if(!e.target.closest('.msel')) document.querySelectorAll('.msel.open').forEach(m=>m.classList.remove('open')); });
+$('rPk').addEventListener('input',qpipe);
+$('fOb').addEventListener('change',()=>{ if(typeof renderMap==='function') renderMap(); });
+let qTimer=null;
+$('qPlay').addEventListener('click',()=>{
+  qpipe();
+  clearInterval(qTimer);
+  const groups=[['stg0','arr0'],['stg1','arr1'],['stg2','arr2'],['stg3','arr3'],['stg4','arr4'],['stg5','arr5'],['stg6']]
+    .map(g=>g.map(id=>$(id)).filter(el=>el&&getComputedStyle(el).display!=='none'))
+    .filter(g=>g.length);
+  groups.flat().forEach(el=>{ el.style.display='none'; });
+  const smooth=(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)?'auto':'smooth';
+  let k=0;
+  const tick=()=>{
+    if(k>=groups.length){ clearInterval(qTimer); qTimer=null; return; }
+    groups[k].forEach(el=>{ el.style.display=''; el.classList.remove('reveal'); void el.offsetWidth; el.classList.add('reveal'); });
+    const head=groups[k][0];
+    if(head.scrollIntoView) head.scrollIntoView({behavior:smooth,block:'center'});
+    k++;
+  };
+  tick(); qTimer=setInterval(tick,1400);
+});
+qpipe();
+
+/* ---- モーダル共通(✕ / 背景クリック / Esc で閉じる) ---- */
+document.querySelectorAll('.modal').forEach(m=>{
+  m.addEventListener('click',e=>{ if(e.target===m) m.style.display='none'; });
+});
+document.querySelectorAll('.modal-x').forEach(b=>b.addEventListener('click',()=>{ b.closest('.modal').style.display='none'; }));
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.querySelectorAll('.modal').forEach(m=>m.style.display='none'); });
+$('helpBtn').addEventListener('click',()=>{ $('mHelp').style.display='flex'; });
+$('docsBtn').addEventListener('click',()=>{ $('mDocs').style.display='flex'; });
+function applyTheme(t){ if(t==='light') document.documentElement.dataset.theme='light'; else delete document.documentElement.dataset.theme; try{ localStorage.setItem('mtx-theme',t); }catch(e){} }
+$('themeBtn').addEventListener('click',()=>{ applyTheme(document.documentElement.dataset.theme==='light'?'dark':'light'); });
+try{ if(localStorage.getItem('mtx-theme')==='light') applyTheme('light'); }catch(e){}
+const GLOSSARY={
+  part:['Part','INSERT のたびに書き固められる、不変のデータのかたまり。ディスク上の実体で、あとからバックグラウンドの<span class="term" data-g="merge">マージ</span>でより大きな Part にまとめられます。テーブルの中身は Part の集まりです。'],
+  merge:['マージ','バックグラウンドで小さな Part どうしを統合し、1つの大きな Part に置き換える処理。書き換えるのではなく「作り直して置き換える」のが MergeTree 流です。'],
+  pk:['PRIMARY KEY','行を並べる順序と、索引(<span class="term" data-g="primaryidx">primary.idx</span>)に載せる列を決める主キー。RDBMS と違って一意制約ではありません。'],
+  primaryidx:['primary.idx','各 Part が持つ小さな索引ファイル。全行ではなく各 <span class="term" data-g="granule">Granule</span> の先頭行のキー値だけを控える <b>sparse index(疎な索引)</b>で、クエリが「どこを読むか」を絞ります。メモリに常駐します。'],
+  granule:['Granule','Part の中の論理的な区切り(既定では 8192 行ごと)。ClickHouse は行単位ではなく Granule 単位で「読む / 読まない」を決めます。'],
+  orderby:['ORDER BY','ディスク上の並び順を決める句。PRIMARY KEY と同じ列で始まる必要があり(PK が接頭辞)、並びだけ欲しい列(ts など)を後ろに足せます。足した列は索引には載りませんが、似た値が隣接して圧縮と範囲読みに効きます。'],
+  partition:['PARTITION BY','Part を月などの区画に分けて配置する句。主目的は retention の実装で、古い区画は DROP PARTITION により行を走査せずメタデータ操作だけで一括削除できます。期間の絞り込み(partition pruning)は副次効果。'],
+  idxgran:['GRANULARITY(skip index の粒度)','skip index が要約を作る単位。GRANULARITY n は「n 個の granule をまとめて1つの要約(index granule)にする」の意味です。大きいほど索引は小さく済むが読み飛ばしは粗く、小さいほど細かく効く代わりに索引が育ちます。実験室の GRANULARITY セレクトで違いを体験できます。'],
+  minmax:['minmax skip index','granule を <span class="term" data-g="idxgran">GRANULARITY</span> 個まとめた単位(index granule)ごとに、列の最小値と最大値だけを控える要約型 skip index。探す値や範囲を「含みえない」と証明できた granule 群を読み飛ばします(このテーブルは GRANULARITY 1 = granule 単位)。行の位置は分からず、並び(局所性)の悪い列にはほぼ効きません。'],
+  textindex:['text index','キーに入っていない文字列列のための転置索引(token → 行の対応表)。26.2 で GA になり、文字列検索の推奨になりました。'],
+  mv:['Materialized View','ソース表への INSERT をトリガに、変換・集計の結果を別のテーブルへ書き足す仕組み。読む時のコストを書く時に前払いします。'],
+  projection:['Projection','Part の中に持つ「別の並び順のコピー」。クエリを変えなくても optimizer が有利な方を自動選択します。'],
+};
+document.addEventListener('click',e=>{
+  const t=e.target.closest('.term');
+  if(!t||!GLOSSARY[t.dataset.g]) return;
+  const [title,body]=GLOSSARY[t.dataset.g];
+  $('mTermT').textContent=title;
+  $('mTermB').innerHTML=body;
+  $('mTerm').style.display='flex';
+});
+[['scTxt','txt'],['scSum','skp']].forEach(([id,key])=>{
+  $(id).addEventListener('click',()=>{ $('mSlab').style.display='none'; renderFile(key); $('deepFiles').style.display='flex'; });
+});
+/* ============================================================
+   学習レベル(段階的アンロック)— 各定義は将来のガイドツアーの台本を兼ねる
+============================================================ */
+var TOUR=null;
+function tChk(sel,on){ const c=document.querySelector(sel); if(c&&c.checked!==on){ c.checked=on; c.dispatchEvent(new Event('change',{bubbles:true})); } }
+function tTab(pane){ const t=document.querySelector('.tab[data-pane="'+pane+'"]'); if(t&&!t.classList.contains('on')) t.dispatchEvent(new MouseEvent('click',{bubbles:true})); }
+const TOURS={
+ 1:[
+  {el:'#actDesc',tab:'pA',say:'まず足元から。ここには「次に押すボタンが実行する SQL」が常に出ます。いまは INSERT 文が見えています。'},
+  {el:'#btnInsert',say:'INSERT を1回実行します。届いたイベントのブロックが、そのまま新しい Part になります。',do:()=>$('btnInsert').click()},
+  {el:()=>document.querySelector('.pbox.new')||document.querySelector('.pbox[data-part]'),say:'新しい Part が現れました。📦 1つ = 1回の INSERT です。名前とカッコ内の行数も見てください。'},
+  {el:()=>document.querySelector('.pbox[data-part]'),say:'注目してほしいのは、<b>既存の Part が何も変わっていない</b>こと。Part は一度書いたら不変(immutable)です。'},
+  {el:'#insPartition',say:'挿入先を「先月のイベント」に切り替えます(まだ INSERT はしません)。',do:()=>{ $('insPartition').value='202606'; $('insPartition').dispatchEvent(new Event('change',{bubbles:true})); }},
+  {el:'#actDesc',say:'SQL 表示が 202606 のイベントに変わりました。では INSERT します。どこに積まれるか見ていてください。',do:()=>$('btnInsert').click()},
+  {el:()=>document.querySelector('#pz202606 .pbox')||document.querySelector('.pbox[data-part]'),say:'先月分も<b>同じ場所に平置き</b>されました。月の区画が登場するのは Lv3 です。'},
+  {el:'#btnMerge',say:'Part は増える一方なので、マージで小さい Part を統合します(手動トリガは OPTIMIZE TABLE)。',do:()=>$('btnMerge').click()},
+  {el:'#mlog',say:'実況がログに流れました。黄枠 = マージで生まれた世代の Part です。図の Part や破線下線の用語は、クリックすると解説ポップアップが開きます。'}],
+ 2:[
+  {el:()=>document.querySelector('.pbox[data-part]'),tab:'pA',say:'Lv2 では Part を開けるようになりました。クリックして中を見ます。<b>primary.idx</b>(疎な索引)と列ファイルが入っています。',do:()=>{ const pb=document.querySelector('.pbox[data-part]'); if(pb&&!pb.classList.contains('sel')) pb.click(); }},
+  {el:()=>document.querySelector('.anat .gstrip'),say:'この帯が <b>granule</b>(8192 行ごとの目盛り)。ここからのテーマは「クエリの条件をいじると、読む granule がどう絞られるか」です。'},
+  {el:'#cut3',tab:'pB',say:'クエリタブの STAGE 3。いまは<b>条件なし</b>なので「入 = 出」— 全 granule を読むしかありません。'},
+  {el:()=>document.querySelector('.fTen[value="B"]')&&document.querySelector('.fTen[value="B"]').closest('.ctl-inline'),say:'PRIMARY KEY の先頭列、tenant の条件を入れます(B をチェック)。',do:()=>tChk('.fTen[value="B"]',true)},
+  {el:'#stg3',say:'各 Part で <b>B の granule だけ</b>が候補に変わりました(緑)。primary.idx の二分探索が効いています。「入 → 出」の数字も減っています。'},
+  {el:'#cPk',say:'さらに user_id = 420 の条件を足します。',do:()=>tChk('#cPk',true)},
+  {el:'#stg3',say:'接頭辞(tenant → user)が揃ったので、<b>Part ごとに granule 1個</b>まで絞れました。これが点検索の姿です。'},
+  {el:'#rPk',say:'スライダーで user_id の値を変えてみます(420 → 800)。',do:()=>{ $('rPk').value='800'; $('rPk').dispatchEvent(new Event('input',{bubbles:true})); }},
+  {el:'#stg3',say:'当たる granule が<b>別の場所に移りました</b>。granule 境界は Part ごとに違うので、同じ値でも Part によって当たる位置が違います。'},
+  {el:()=>document.querySelector('.fTen[value="B"]')&&document.querySelector('.fTen[value="B"]').closest('.ctl-inline'),say:'今度は tenant を外して user_id だけにします。どうなるでしょう。',do:()=>tChk('.fTen[value="B"]',false)},
+  {el:'#why3',say:'<b>全 granule に逆戻り</b>。索引は ORDER BY の接頭辞順にしか探索できず、先頭の tenant_id が無い条件は範囲に変換できません(データは並んでいるのに)。'},
+  {el:'#fPk',tab:'pA',say:'最後にテーブル設計側の因果。tenant を戻した上で、PRIMARY KEY を (tenant_id) だけに縮めます。',do:()=>{ tChk('.fTen[value="B"]',true); $('fPk').value='1'; $('fPk').dispatchEvent(new Event('change',{bubbles:true})); }},
+  {el:'#stg3',tab:'pB',say:'条件は同じでも、<b>索引に user_id が載っていない</b>ので絞りは tenant 止まり。「並び」と「索引」は別物です。設計と条件を戻します。',do:()=>{ $('fPk').value='2'; $('fPk').dispatchEvent(new Event('change',{bubbles:true})); tChk('.fTen[value="B"]',false); tChk('#cPk',false); $('rPk').value='420'; $('rPk').dispatchEvent(new Event('input',{bubbles:true})); }}],
+ 3:[
+  {el:()=>document.querySelector('#pz202607')&&document.querySelector('#pz202607').closest('.b-partition'),tab:'pA',say:'PARTITION BY の宣言で<b>月ごとの区画</b>が現れました。Lv2 まで平置きだった Part が、今月の区画に収まっています。'},
+  {el:'#insPartition',say:'先月のイベントを INSERT してみます。今度はどこに入るでしょうか。',do:()=>{ $('insPartition').value='202606'; $('insPartition').dispatchEvent(new Event('change',{bubbles:true})); $('btnInsert').click(); }},
+  {el:()=>document.querySelector('#pz202606')&&document.querySelector('#pz202606').closest('.b-partition'),say:'<b>先月の区画</b>に入りました。パーティション = Part の入れ物で、マージもこの箱の中でしか起きません。'},
+  {el:'#mselMonth',tab:'pB',say:'クエリ側に移ります。期間フィルタで 2026-07 だけをチェックします。',do:()=>tChk('.fMonth[value="202607"]',true)},
+  {el:'#stg1',say:'STAGE 1 で 202606 の区画が <b>Part を1つも開かずに</b>丸ごと除外されました。これが partition pruning です。'},
+  {el:'#mselMonth',say:'2026-06 も追加でチェックすると、条件は IN に変わります。',do:()=>tChk('.fMonth[value="202606"]',true)},
+  {el:'#ctxbar',say:'ヘッダの WHERE が toYYYYMM(ts) IN (202606, 202607) になっています。条件とステージは常に連動します。'},
+  {el:'#mselMonth',say:'チェックを外して全開に戻します。なお区画の主目的は枝刈りではなく<b>管理</b>(DROP PARTITION / TTL での一括削除)です。',do:()=>{ tChk('.fMonth[value="202606"]',false); tChk('.fMonth[value="202607"]',false); }}],
+ 4:[
+  {el:'#cSkip',tab:'pB',say:'キーに載っていない url の検索です。「url に checkout」を ON にします。',do:()=>tChk('#cSkip',true)},
+  {el:'#stg4',say:'STAGE 4 に <b>text index(転置索引)</b>が登場。"checkout" のポスティングリスト { G… } に載っていない granule は「1行も含まない」と<b>確定</b>して skip されます。'},
+  {el:'#cut4',say:'右上の「入 → 出」で、この段でいくつ削れたかが読めます。セルにホバーすると granule ごとの理由も出ます。'},
+  {el:'#cTs',say:'もう1系統、要約型の minmax。「ts 7/20 以降」を ON にします。',do:()=>tChk('#cTs',true)},
+  {el:'#stg4',say:'ts_minmax は <b>Part の書き込み時間窓との交差</b>で判定します。転置 = 含む場所を直接指す / 要約型 = 含みえないことを証明する。この対比が Lv4 の核心です。'},
+  {el:()=>document.querySelector('.pbox[data-part]'),tab:'pA',say:'仕組みをもっと触りたければ、Part を開いて skp_idx をクリックすると実験室(minmax / set / bloom の原理)が開きます。条件は戻しておきます。',do:()=>{ tChk('#cSkip',false); tChk('#cTs',false); }}],
+ 5:[
+  {el:'#mvOn',tab:'pA',say:'<b>MV mv_daily</b>。INSERT に連動して daily_counts へ日次集計を書き足します。ON を確認して進みます。',do:()=>tChk('#mvOn',true)},
+  {el:'#btnInsert',say:'INSERT を実行します。MV が何をするか見ていてください。',do:()=>$('btnInsert').click()},
+  {el:'#mvSteps',say:'発火の図です。MV はテーブル全体ではなく<b>挿入されたブロックだけ</b>に SELECT を実行し、結果を宛先へ書き足します。'},
+  {el:'#tblmv',say:'宛先の daily_counts に部分集計の Part ができました。これもただの SummingMergeTree テーブルです。'},
+  {el:'#mvCas',say:'ここからが CH の見せ場、<b>カスケード</b>。mv_weekly を ON にします。',do:()=>tChk('#mvCas',true)},
+  {el:'#btnInsert',say:'もう1回 INSERT。daily_counts への書き込みが、さらに次の MV を発火させます。',do:()=>$('btnInsert').click()},
+  {el:'#tblwk',say:'weekly_counts にも Part ができました。events → daily → weekly が、それぞれ「ただの INSERT」で連鎖しています。'},
+  {el:'#prjOn',say:'もう1つの主役 <b>Projection</b>。DDL に p_url の定義はありますが、既存の Part はまだ持っていません。'},
+  {el:'#btnPrjMat',say:'MATERIALIZE を実行して、既存の全 Part に p_url を構築します。',do:()=>{ if(!$('btnPrjMat').disabled) $('btnPrjMat').click(); }},
+  {el:'#cSkip',tab:'pB',say:'url だけの条件にして、optimizer の判断を見ます。',do:()=>tChk('#cSkip',true)},
+  {el:'#stg2',say:'STAGE 2 で Part ごとに「本体 vs p_url」の読む量を見積もり比較し、<b>勝手に有利な方を選びました</b>。クエリは1文字も変えていません。',do:()=>tChk('#cSkip',false)}],
+ 6:[
+  {el:'#stg5',tab:'pB',say:'枝刈りで「読む granule」は決まりました。Lv6 は<b>読む列と回数</b>まで削る実行時の最適化です。'},
+  {el:'#pwOn',say:'まず PREWHERE。いったん OFF にして、無い世界を見ます。',do:()=>tChk('#pwOn',false)},
+  {el:'#pwViz',say:'全列を同じ範囲だけ読んでからフィルタしています。url のような重い列も全域読む無駄が見えます。'},
+  {el:'#pwOn',say:'ON に戻します。条件列 user_id だけを先に読み、生き残った範囲だけ他の列を読む形に変わります。',do:()=>tChk('#pwOn',true)},
+  {el:'#lmOn',say:'Lazy materialization も同じ思想です。いったん OFF に。',do:()=>tChk('#lmOn',false)},
+  {el:'#lmViz',say:'ORDER BY + LIMIT で全列を読んでからソートしています。ON に戻すと、重い列は上位3行が確定してから読むようになります。',do:()=>tChk('#lmOn',true)},
+  {el:'#stg6',say:'仕上げは処理 Block(≤65,409 行)への束ねと並列実行、そして2種類のキャッシュ。ここまでが「読む量を削る」技術の全景です。'}],
+ 7:[
+  {el:'#udMethod',tab:'pA',say:'更新・削除は「不変の Part をどう書き換えずに済ませるか」の戦略選びです。まず軽量削除(DELETE FROM)を選びます。',do:()=>{ $('udMethod').value='lwdelete'; $('udMethod').dispatchEvent(new Event('change',{bubbles:true})); }},
+  {el:'#actDesc',say:'実行前にここで SQL・対象・重さ(★2)・反映タイミングを確認できます。'},
+  {el:'#udRun',say:'実行します。',do:()=>$('udRun').click()},
+  {el:'#pz202607',say:'202607 の Part に <b>_row_exists マスク</b>のチップが付きました。Part 本体は無変更のまま、削除行は読み時に除外されます。'},
+  {el:'#udMethod',say:'対照的な mutation(ALTER TABLE DELETE)を選びます。',do:()=>{ $('udMethod').value='mutdelete'; $('udMethod').dispatchEvent(new Event('change',{bubbles:true})); }},
+  {el:'#actDesc',say:'重さ★5・非同期。数行のために Part を丸ごと再構築します。実行します。',do:()=>$('udRun').click()},
+  {el:'#pz202607',say:'赤枠 = 全行を書き直した Part(名前に _10)。公式が「avoid mutations」と言う理由が見た目で分かります。'},
+  {el:'#udMethod',say:'他の6方式(patch part・ReplacingMergeTree・TTL・DROP PARTITION…)も同じ流れで試せます。リセットして戻します。',do:()=>$('btnResetAll').click()}],
+ 8:[
+  {el:'#smtToggle',tab:'pA',say:'Lv8 は物理レイヤー。いまは <b>Cloud(SharedMergeTree)</b>で、データは S3 に1コピー、ノードはステートレスです。'},
+  {el:()=>document.querySelector('[data-scn="hit"]'),tab:'pB',say:'読み取りシナリオで読み経路を追います。まずキャッシュヒット。',do:()=>document.querySelector('[data-scn="hit"]').click()},
+  {el:'#scnLog',say:'実況: primary.idx で読む granule を決め、ローカル NVMe キャッシュにあれば <b>S3 に触らず</b>返します。'},
+  {el:'#svcmap',say:'すぐ下の図では該当ノードが光り、<b>読まれる Part がシアン枠</b>でハイライトされています(期間条件にも追従)。'},
+  {el:()=>document.querySelector('[data-scn="mvq"]'),say:'同じ質問を MV の宛先に投げると物理はどう変わるか。daily_counts に聞いてみます。',do:()=>{ tChk('#mvOn',true); document.querySelector('[data-scn="mvq"]').click(); }},
+  {el:'#svcmap',say:'ハイライトが daily_counts 側へ移りました。<b>小さな Part を数個読むだけ</b>で、events の granule 群には触りません。'},
+  {el:'#smtToggle',say:'セルフホスト(Replicated)に切り替えます。各ノードがローカルディスクに完全コピーを持つ世界です。',do:()=>$('smtToggle').click()},
+  {el:()=>document.querySelector('[data-scn="scale"]'),say:'この構成でスケールアウトすると<b>全 Part のコピー転送</b>が要ります(SMT との最大の違い)。実行します。',do:()=>document.querySelector('[data-scn="scale"]').click()},
+  {el:'#scnLog',say:'データ量に比例する待ち時間が発生しました。Cloud に戻して比べると、転送そのものが消えます。',do:()=>{ if(!document.body.classList.contains('smt-on')) $('smtToggle').click(); }}],
+};
+function tourEl(sel){ return typeof sel==='function'?sel():document.querySelector(sel); }
+function tourShow(){
+  document.querySelectorAll('.tourHl').forEach(e=>e.classList.remove('tourHl'));
+  if(!TOUR){ return; }
+  const s=TOUR.steps[TOUR.i];
+  if(!s){ tourEnd(); return; }
+  if(s.tab) tTab(s.tab);
+  const el=tourEl(s.el);
+  if(el){ el.classList.add('tourHl'); try{ el.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){} }
+  const p=$('tourPanel');
+  $('tourText').innerHTML='<b>'+(TOUR.i+1)+'/'+TOUR.steps.length+'</b>　'+s.say;
+  $('tourNext').textContent=(TOUR.i+1>=TOUR.steps.length)?'閉じる':(s.do?'実行して次へ':'次へ');
+  p.style.display='flex'; p.style.visibility='hidden';
+  const place=()=>{
+    if(!TOUR||p.style.display==='none') return;
+    // body{zoom} 使用時: style 座標は zoom 前、rect は zoom 後なので換算する
+    const z=parseFloat(getComputedStyle(document.body).zoom)||1;
+    const pw=p.offsetWidth, ph=p.offsetHeight, vw=window.innerWidth/z, vh=window.innerHeight/z;
+    let top,left;
+    const cur=tourEl(s.el);
+    if(cur){ const r=cur.getBoundingClientRect();
+      top=r.bottom/z+12; left=r.left/z;
+    } else { top=90; left=(vw-pw)/2; }
+    top=Math.min(Math.max(8,top),vh-ph-8);
+    left=Math.min(Math.max(8,left),vw-pw-8);
+    p.style.top=top+'px'; p.style.left=left+'px'; p.style.visibility='visible';
+  };
+  TOUR.place=place;
+  requestAnimationFrame(place);
+  setTimeout(place,400); setTimeout(place,900);
+}
+function tourStart(){ const t=TOURS[LV]; if(!t){ return; }
+  const wrap={el:'.lvbar',say:(LV<8
+    ? 'Lv'+LV+' のツアーはここまで。ここから <b>Lv'+(LV+1)+'</b> に進むと、いま見た構造の上に次の要素が積み上がります。もちろんこのレベルに留まって自由に触ってもかまいません。'
+    : '全レベルのツアーを踏破しました。モードスイッチ・デッキ・ポップアップを自由に触って、気になったところから復習してください。')};
+  TOUR={steps:t.concat([wrap]),i:0};
+  TOUR.tick=setInterval(()=>{ if(TOUR&&TOUR.place) TOUR.place(); },500); tourShow(); }
+function tourEnd(){ if(TOUR&&TOUR.tick) clearInterval(TOUR.tick); TOUR=null; $('tourPanel').style.display='none'; document.querySelectorAll('.tourHl').forEach(e=>e.classList.remove('tourHl')); }
+$('tourNext').addEventListener('click',()=>{
+  if(!TOUR) return;
+  const s=TOUR.steps[TOUR.i];
+  if(s&&s.do){ try{ s.do(); }catch(e){} }
+  TOUR.i++;
+  setTimeout(tourShow,250);
+});
+$('tourStop').addEventListener('click',tourEnd);
+window.addEventListener('scroll',()=>{ if(TOUR&&TOUR.place) TOUR.place(); },{passive:true});
+window.addEventListener('resize',()=>{ if(TOUR&&TOUR.place) TOUR.place(); });
+const LEVELS=[null,
+ {t:'まず INSERT してみる',d:'下の「＋ INSERT」を押すと、図に箱がひとつ増えます。それが <b class="term" data-g="part">Part</b>(行を <b class="term" data-g="pk">PRIMARY KEY</b> の順に並べ替えて書き固めた、不変のかたまり)。テーブルの実体はこの Part の集まり。放っておくと増える一方なので、バックグラウンドの<span class="term" data-g="merge">マージ</span>が小さな Part を順次まとめていきます。',try:'「＋ INSERT」を2〜3回 → 「⇄ マージ」で統合を見届ける。挿入先を「先月のイベント」に変えても、いまはまだ同じ場所に積まれるだけなことも確認(Lv3 で変わる)'},
+ {t:'Part を開く(Granule と primary.idx)',d:'Lv1 の INSERT でも、Part の中ではソート・Granule 分割・索引の書き出しが毎回起きていました。ここからはそれが見えるようになります(挙動は変わらず、解像度が上がるだけ)。Part は <b class="term" data-g="granule">Granule</b>(既定では 8192 行ごとの区切り)に分けられ、primary.idx は各 Granule の先頭行のキーだけを控えた <b class="term" data-g="primaryidx">sparse index(疎な索引)</b>で、これが「読む範囲」を決めます。並び順だけ欲しい列(ts)は <b class="term" data-g="orderby">ORDER BY</b> に足します(索引には載らず、効果は Part の圧縮サイズに出ます)。「クエリと読み取り」タブが解禁。',try:'「クエリと読み取り」で tenant と user_id の条件を ON にしてから、このタブの「テーブル設計」で PRIMARY KEY を (tenant_id) にすると user_id の絞りが消える。ORDER BY から ts を外すと Part サイズ(圧縮)が悪化する'},
+ {t:'Partition(データのライフサイクル管理)',d:'ここまでは先月のイベントを INSERT しても、区別なく同じテーブルに積まれるだけでした。<span class="term" data-g="partition">PARTITION BY</span> を宣言すると Part は月ごとの区画に分かれます。主目的は <b>retention(保持期限)の実装</b>: 古い月を DROP PARTITION で一括削除でき、行を走査せずメタデータ操作だけで済みます(TTL の削除単位でもある)。クエリの月絞り込み(partition pruning)は副次効果です。',try:'「クエリと読み取り」タブで期間の 07月 にチェック → 05月 も追加(IN になる)→ 全部外す、で STAGE 1 の切られ方を見る'},
+ {t:'Skip index(キー外の列で絞る)',d:'キーに入っていない列は skip index が絞ります。url のような文字列は <b class="term" data-g="textindex">text index</b>(転置索引、26.2 で GA)が token → 行の対応で granule を直接特定(従来の bloom 型は全文検索では非推奨化)。ts の範囲条件は <b class="term" data-g="minmax">minmax</b>(要約型)が「含みえない」Part を読み飛ばします。',try:'「クエリと読み取り」タブで url 条件と「ts 7/20 以降」を ON/OFF し、転置(行を特定)と要約型(含みえないを証明)の違いを STAGE 4 で見比べる'},
+ {t:'MV と Projection(書き込み時に読みを速くする)',d:'<b>MV</b> は INSERT をトリガに別テーブルへ集計を書き足し、<b>Projection</b> は Part の中に別の並びを持って optimizer が自動選択します。',try:'MV トグルを ON にして INSERT(daily_counts に部分集計)。「クエリと読み取り」タブで期間と tenant+user を外して url だけにし、STAGE 2 の経路が p_url に変わるのを見る'},
+ {t:'実行時の最適化(読む列と回数も削る)',d:'枝刈りで granule を絞った後も、<b>PREWHERE / lazy materialization</b> が読む<b>列</b>を削り、<b>2種類のキャッシュ</b>が次回の読みを丸ごと省きます。仕上げは処理 Block への束ねと並列実行。',try:'STAGE 5 の PREWHERE / 遅延読み込みトグルを OFF にして、読むバイト量のバーが跳ね上がるのを見る'},
+ {t:'更新と削除(不変な Part をどう書き換えるか)',d:'Part は不変なので、更新・削除は「書き換えをどう回避 / 局所化するか」の<b>戦略選び</b>になります。8方式を同じ Part 群で比べられます。',try:'デッキの「更新・削除」で DELETE FROM(軽量削除)→ ALTER TABLE DELETE(mutation)を実行し、重さの差を見る'},
+ {t:'物理レイヤー(Cloud とセルフホスト)',d:'ここまでの論理構造は、実際には<b>どこに置かれ、誰が動かすのか</b>。Cloud は S3 に1コピー+ステートレスノード、セルフホストはレプリカごとに完全コピーです。',try:'右上のスイッチで 🖥 セルフホストに切替 → INSERT で fetch 転送(⏳)を見る → ☁️ Cloud に戻して同じ INSERT(転送が消える)'},
+];
+function setLevel(n){
+  LV=Math.max(1,Math.min(8,n));
+  ['L1','L2','L3','L4','L5','L6','L7','L8'].forEach(c=>document.body.classList.remove(c));
+  document.body.classList.add('L'+LV);
+  try{ localStorage.setItem('mtx-lv',LV); }catch(e){}
+  document.querySelectorAll('.lvchip').forEach(c=>{
+    const k=+c.dataset.lv;
+    c.classList.toggle('on',k===LV);
+    c.classList.toggle('done',k<LV);
+  });
+  const L=LEVELS[LV];
+  $('lvIntro').innerHTML='<div class="lvhead"><b>Lv'+LV+'</b> '+L.t+'</div>'+
+    '<div class="lvbody"><div style="flex:2;min-width:280px">'+L.d+'</div>'+
+    '<div class="try" style="display:flex;align-items:center"><button class="btn primary" id="lvTourBtn">▶ このレベルをツアーで体験</button></div></div>';
+  const tb=$('lvTourBtn'); if(tb) tb.onclick=()=>{ if(typeof tourStart==='function') tourStart(); };
+  if(typeof tourEnd==='function'&&typeof TOUR!=='undefined'&&TOUR) tourEnd();
+
+  if(LV>=3&&typeof ST!=='undefined'&&ST&&ST.ev){
+    const spanning=[];
+    Object.keys(ST.ev).forEach(pt=>ST.ev[pt].forEach(p=>{ if(p.active&&p.monthRows&&Object.keys(p.monthRows).length>1) spanning.push([pt,p]); }));
+    if(spanning.length){
+      spanning.forEach(([pt,p])=>{
+        p.active=false; ST.ev[pt]=ST.ev[pt].filter(x=>x!==p);
+        Object.entries(p.monthRows).forEach(([m,r])=>{ blockNo++; ST.ev[m].push({min:blockNo,max:blockNo,lvl:p.lvl,rows:r,active:true,hasProj:p.hasProj,dayLo:1,dayHi:30}); });
+      });
+      if(typeof log==='function') log('PARTITION BY の宣言に合わせて、月が混在していた Part を月ごとの区画に分割しました');
+    }
+  }
+  renderMap();
+  if(typeof qpipe==='function') qpipe();
+  if(typeof dockMap==='function') dockMap();
+  document.body.classList.toggle('qfold', LV>=8);
+  if(typeof syncFoldBtn==='function') syncFoldBtn();
+}
+$('ctxbar').addEventListener('click',e=>{
+  if(e.target.id!=='ctxToggle') return;
+  const open=$('ctxbar').classList.toggle('open');
+  try{ localStorage.setItem('mtx-ctx',open?'1':'0'); }catch(e2){}
+  qpipe();
+});
+try{ if(localStorage.getItem('mtx-ctx')==='1') $('ctxbar').classList.add('open'); }catch(e){}
+document.querySelectorAll('.lvchip').forEach(c=>c.addEventListener('click',()=>setLevel(+c.dataset.lv)));
+document.body.style.zoom=1.3; // 表示倍率は固定(切替 UI は廃止)
+$('qUnlock').addEventListener('click',()=>setLevel(2));
+(function(){
+  const m=location.hash.match(/lv=(\d)/);
+  let n=1;
+  if(m) n=+m[1];
+  else { try{ n=parseInt(localStorage.getItem('mtx-lv'))||1; }catch(e){} }
+  setLevel(n);
+})();
+</script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 const fs = require('fs');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
-const html = fs.readFileSync(require('path').join(__dirname, 'index.html'), 'utf8');
+const html = fs.readFileSync(require('path').join(__dirname, 'ja/index.html'), 'utf8');
 const vc = new VirtualConsole();
 const errors = [];
 vc.on('jsdomError', e => errors.push('jsdomError: ' + e.message));
