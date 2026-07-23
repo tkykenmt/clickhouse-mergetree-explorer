@@ -13,3 +13,6 @@ jobs:
           node-version: 22
       - run: npm i --no-save jsdom
       - run: node test-dom.js
+      - name: EN build is up to date
+        run: node tools/build_en.js && git diff --exit-code en/index.html
+      - run: node tools/test-en.js

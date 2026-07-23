@@ -3,7 +3,7 @@
 An interactive, single-file playground for learning how ClickHouse® MergeTree works on the inside — Parts, granules, sparse primary index, partitions, skip indexes, materialized views, projections, and the SharedMergeTree physical layer.
 
 - **日本語版 (Japanese)**: https://tkykenmt.github.io/clickhouse-mergetree-explorer/
-- English version: coming soon
+- **English version**: https://tkykenmt.github.io/clickhouse-mergetree-explorer/en/
 
 ## What it does
 
