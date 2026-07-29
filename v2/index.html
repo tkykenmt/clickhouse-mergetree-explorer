@@ -64,13 +64,14 @@ canvas{display:block}
     </span>
     <button class="btn" id="bSel">▶ SELECT</button>
     <button class="btn" id="bAmb">▶ 自動再生</button>
+    <button class="btn" id="bReset" title="最初からやり直す">⟳</button>
   </span>
   <div id="sqlbar"></div>
   <div id="steps">
     <span class="step" data-s="1">① 索引分析(二分探索)</span><i>→</i>
     <span class="step" data-s="2">② 対象 granule だけ読む</span><i>→</i>
     <span class="step" data-s="3">③ レーン並列処理(SIMD)</span><i>→</i>
-    <span class="step" data-s="4">④ 部分集計をマージ</span>
+    <span class="step" data-s="4">④ マージして結果を返す</span>
   </div>
 </div>
 <canvas id="cv"></canvas>
@@ -102,7 +103,7 @@ const GAP=3;                        // 値セルの間隔
 const GPR=4;                        // granule あたりの値の数(8192 行の縮尺)
 
 /* ---- 状態 ---- */
-let seq=0, parts=[], fly=[], lanes=[], ambTimer=null, ambN=0, busy=false;
+let seq=0, parts=[], fly=[], lanes=[], result=null, busy=false;
 const LANES=3; // max_threads の縮尺
 const LANE_COL=['#6fe3ff','#ffb46f','#c9a2ff']; // granule↔レーン(CPU コア)の対応色
 function partsBottom(){ return parts.reduce((m,p)=>Math.max(m,p.ty+partH(p)),INS_Y+108); }
@@ -155,7 +156,7 @@ function tick(){
 /* ---- 操作: INSERT(飛来 → ソート → granule 積み込み → 索引構築) ---- */
 function doInsert(){
   if(busy){ toast('実行中です','warn'); return; }
-  busy=true;
+  busy=true; clearQueryView();
   const n=8+Math.floor(Math.random()*5);
   const vals=Array.from({length:n},()=>Math.floor(Math.random()*1000));
   const ord=vals.map((_,i)=>i).sort((a,b)=>vals[a]-vals[b]);
@@ -215,7 +216,7 @@ function doMerge(){
   if(busy){ toast('実行中です','warn'); return; }
   const act=parts.filter(p=>!p.dying);
   if(act.length<2){ toast('マージ対象なし(Part が2つ以上必要)','warn'); return; }
-  busy=true;
+  busy=true; clearQueryView();
   const vals=act.flatMap(p=>p.granules.flat()).sort((x,y)=>x-y);
   showSql('OPTIMIZE TABLE events  -- '+act.length+' 個の Part をマージソートで1つに併合');
   act.forEach(p=>{ p.dying=true; });
@@ -234,14 +235,20 @@ function doMerge(){
 
 /* ---- 操作: SELECT(索引スキャン → 枝刈り) ---- */
 let PRED=600;
+const BUCKET=200; // GROUP BY intDiv(user_id, 200)*200
+function SQLQ(){ return 'SELECT intDiv(user_id, '+BUCKET+')*'+BUCKET+' AS bucket, count() FROM events WHERE user_id >= '+PRED+' GROUP BY bucket ORDER BY bucket'; }
+function clearQueryView(){ // 結果テーブルと枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
+  result=null; setStage(0);
+  parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.probe=undefined; p.scanG=undefined; });
+}
 function hiOf(p,i){ return (i+1<p.granules.length)?p.granules[i+1][0]:1000; }
 function doSelect(){
   if(busy){ toast('実行中です','warn'); return; }
   const act=parts.filter(p=>!p.dying);
   if(!act.length){ toast('Part がありません。まず INSERT を','warn'); return; }
-  busy=true;
+  busy=true; clearQueryView();
   setStage(1);
-  showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ① 各 Part の primary.idx を二分探索');
+  showSql(SQLQ()+'  -- ① 各 Part の primary.idx を二分探索');
   toast('① 索引分析: 各 Part の primary.idx 上で「user_id ≧ '+PRED+' を含みうる最初の granule」を二分探索。触るのは索引エントリだけで、値の行はまだ読まない');
   const st=act.map(p=>{
     const n=p.granules.length;
@@ -282,17 +289,18 @@ function startRead(act,kept,total){
   setStage(2);
   const ranges=act.filter(p=>p.rangeK<p.granules.length)
     .map(p=>'g'+(p.rangeK+1)+(p.rangeK+1<p.granules.length?'〜g'+p.granules.length:''));
-  showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ② 読むのは '+kept.length+' / '+total+' granule('+(ranges.join(', ')||'なし')+')');
+  showSql(SQLQ()+'  -- ② 読むのは '+kept.length+' / '+total+' granule('+(ranges.join(', ')||'なし')+')');
   toast('② 読み取り: 生き残った granule は<b>連続した range</b>('+(ranges.join(' / ')||'なし')+')としてまとめて読む。✂ の '+(total-kept.length)+' granule には一切触れない');
   if(!kept.length){
     setTimeout(()=>{
-      showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- count() = 0(索引だけで証明、読み取りゼロ)');
-      toast('該当しうる granule がゼロ。ストレージに一切触れず count() = 0 を確定');
-      setTimeout(()=>{ act.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.assign=null; }); setStage(0); busy=false; },4200);
+      showSql(SQLQ()+'  -- 0 行(索引だけで証明、読み取りゼロ)');
+      toast('該当しうる granule がゼロ。ストレージに一切触れず「結果 0 行」を確定してクライアントへ返す');
+      result={rows:[]};
+      setTimeout(()=>{ busy=false; },1800);
     },600);
     return;
   }
-  lanes=Array.from({length:LANES},(_,i)=>({i,queue:[],cur:null,simd:0,partial:0,fed:0}));
+  lanes=Array.from({length:LANES},(_,i)=>({i,queue:[],cur:null,simd:0,partial:{},fed:0}));
   let arrived=0;
   kept.forEach((k,idx)=>{
     const lane=lanes.reduce((a,b)=>a.fed<=b.fed?a:b); // 動的配分(空いているレーンへ)
@@ -310,28 +318,38 @@ function startRead(act,kept,total){
 function startProcess(act,keptN,total){
   // ③ ベクトル化実行: レーンごとに granule を SIMD で一括評価し、部分集計を積む
   setStage(3);
-  showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ③ '+LANES+' レーンが並列にベクトル化実行(SIMD)');
+  showSql(SQLQ()+'  -- ③ '+LANES+' レーンが並列にベクトル化実行(SIMD)');
   toast('③ 並列処理: granule は '+LANES+' 本のレーン(= max_threads、それぞれ CPU コア上のスレッド)へ動的に配分。色が granule とレーンの対応。各レーンは束を SIMD で一括評価し、自分の部分集計を持つ');
   const proc=setInterval(()=>{
     let active=false;
     lanes.forEach(l=>{
       if(l.simd>0){ active=true; return; }           // 評価アニメ中
-      if(l.cur){ // 評価完了 → 部分集計へ
-        const m=l.cur.cells.filter(v=>v>=PRED).length;
-        const add=Math.round(m/GPR*8192);
-        l.partial+=add;
-        l.lastAdd={v:add,t:1};
+      if(l.cur){ // 評価完了 → bucket ごとの部分集計へ
+        const hits=l.cur.cells.filter(v=>v>=PRED);
+        hits.forEach(v=>{ const b=Math.floor(v/BUCKET)*BUCKET; l.partial[b]=(l.partial[b]||0)+8192/GPR; });
+        if(hits.length) l.lastAdd={v:hits.length*8192/GPR,t:1};
         l.cur=null;
       }
       if(l.queue.length){ l.cur=l.queue.shift(); l.simd=1; active=true; }
     });
     if(!active&&fly.every(f=>f.kind!=='gran')){
       clearInterval(proc);
-      const cnt=lanes.reduce((s,l)=>s+l.partial,0);
+      const merged={};
+      lanes.forEach(l=>Object.keys(l.partial).forEach(b=>{ merged[b]=(merged[b]||0)+l.partial[b]; }));
+      const rows=Object.keys(merged).map(Number).sort((a,b)=>a-b).map(b=>[b,merged[b]]);
+      const cnt=rows.reduce((s,r)=>s+r[1],0);
       setStage(4);
-      showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ④ 部分集計をマージ → count() = '+cnt.toLocaleString());
-      toast('④ 各レーンの部分集計をマージして完成: count() = '+cnt.toLocaleString()+'。全 '+total+' granule('+(total*8192).toLocaleString()+' 行)のうち読んだのは '+keptN+' granule だけ');
-      setTimeout(()=>{ lanes=[]; act.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; }); setStage(0); busy=false; },6000);
+      showSql(SQLQ()+'  -- ④ 部分集計をマージ → '+rows.length+' 行の結果を返す');
+      toast('④ 各レーンの bucket ごとの部分集計をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule、count 合計 '+cnt.toLocaleString());
+      let got=0;
+      lanes.forEach(l=>{
+        const g=laneGeom(l.i);
+        const sum=Object.keys(l.partial).reduce((s,b)=>s+l.partial[b],0);
+        fly.push({kind:'chip', col:LANE_COL[l.i], txt:sum.toLocaleString(),
+          fx:g.x+g.w*0.87, fy:g.y+g.h/2, txp:W/2, typ:resY(rows.length)+10, t:0, dt:0.028,
+          done:()=>{ got++; if(got===LANES){ result={rows}; lanes=[]; } }});
+      });
+      setTimeout(()=>{ busy=false; },2500); // 結果テーブルと枝刈り表示は次の操作まで残す
     }
   },380);
 }
@@ -441,13 +459,22 @@ function drawLanes(){
         ctx.fillText(String(v),cxp+(cw-3)/2,cy2+CELLH/2+4); ctx.textAlign='left';
       });
     }
-    // ③ 部分集計(レーンローカル)
-    const py=zoneY+zoneH/2+5;
-    ctx.fillStyle='#7dffb2'; ctx.font='700 13px '+MONO(); ctx.textAlign='center';
-    ctx.fillText(l.partial.toLocaleString(), z3x+z3w/2, py);
-    if(l.lastAdd){ ctx.globalAlpha=Math.max(0,l.lastAdd.t); ctx.fillStyle='#7dffb2'; ctx.font='11px '+MONO();
-      ctx.fillText('+'+l.lastAdd.v.toLocaleString(), z3x+z3w/2, py-14*(1-l.lastAdd.t)-12); ctx.globalAlpha=1; }
-    ctx.textAlign='left';
+    // ③ 部分集計(bucket ごと・レーンローカル)
+    const ents=Object.keys(l.partial).map(Number).sort((a,b)=>a-b);
+    if(!ents.length){
+      ctx.fillStyle='#3f664f'; ctx.font='700 12px '+MONO(); ctx.textAlign='center';
+      ctx.fillText('—', z3x+z3w/2, zoneY+zoneH/2+4); ctx.textAlign='left';
+    }else{
+      const maxL=Math.max(1,Math.floor((zoneH-4)/11));
+      ctx.textAlign='left'; ctx.font='9px '+MONO();
+      ents.slice(0,maxL).forEach((b,ei)=>{
+        ctx.fillStyle='#7dffb2';
+        ctx.fillText(b+'→'+l.partial[b].toLocaleString(), z3x+5, zoneY+11+ei*11);
+      });
+      if(ents.length>maxL){ ctx.fillStyle='#5f8a6f'; ctx.fillText('+'+(ents.length-maxL), z3x+z3w-16, zoneY+zoneH-3); }
+    }
+    if(l.lastAdd){ ctx.globalAlpha=Math.max(0,l.lastAdd.t); ctx.fillStyle='#7dffb2'; ctx.font='700 11px '+MONO(); ctx.textAlign='center';
+      ctx.fillText('+'+l.lastAdd.v.toLocaleString(), z3x+z3w/2, zoneY+zoneH/2+4-10*(1-l.lastAdd.t)); ctx.globalAlpha=1; ctx.textAlign='left'; }
     // ゾーンのキャプションと矢印
     ctx.fillStyle='#5a6478'; ctx.font='9px '+JP();
     ctx.fillText('受取待ち', z1x+2, g.y+g.h-8);
@@ -460,6 +487,34 @@ function drawLanes(){
     ctx.fillText('→', z3x-9, zoneY+zoneH/2+4);
   });
 }
+function resY(n){
+  const hgt=46+Math.max(1,n)*17;
+  const yFree=MOB?partsBottom()+14:laneGeom(0).y+4; // モバイルはレーン枠でなく Parts 直下
+  return Math.min(yFree, H-hgt-40);
+}
+function drawResult(){
+  if(!result) return;
+  result.a=Math.min(1,(result.a??0)+0.05);
+  const rows=result.rows, w=MOB?210:250, rh=17;
+  const hgt=46+Math.max(1,rows.length)*rh;
+  const x=W/2-w/2, y=resY(rows.length);
+  ctx.globalAlpha=result.a;
+  ctx.fillStyle='#101a13'; ctx.strokeStyle='#2f5c41';
+  ctx.beginPath(); ctx.roundRect(x,y,w,hgt,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#7dffb2'; ctx.font='700 11px '+JP(); ctx.textAlign='center';
+  ctx.fillText('結果テーブル → クライアントへ', x+w/2, y+16);
+  ctx.font='700 10px '+MONO(); ctx.fillStyle='#5f8a6f';
+  ctx.textAlign='left'; ctx.fillText('bucket', x+18, y+32);
+  ctx.textAlign='right'; ctx.fillText('count()', x+w-18, y+32);
+  ctx.strokeStyle='#24402f'; ctx.beginPath(); ctx.moveTo(x+10,y+37.5); ctx.lineTo(x+w-10,y+37.5); ctx.stroke();
+  if(!rows.length){ ctx.fillStyle='#5f8a6f'; ctx.font='10px '+MONO(); ctx.textAlign='center'; ctx.fillText('(0 行)', x+w/2, y+52); }
+  rows.forEach((r,ri)=>{
+    ctx.fillStyle='#d5f6c9'; ctx.font='11px '+MONO();
+    ctx.textAlign='left'; ctx.fillText(String(r[0]), x+18, y+52+ri*rh);
+    ctx.textAlign='right'; ctx.fillText(r[1].toLocaleString(), x+w-18, y+52+ri*rh);
+  });
+  ctx.textAlign='left'; ctx.globalAlpha=1;
+}
 function render(){
   ctx.clearRect(0,0,W,H);
   ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
@@ -468,7 +523,16 @@ function render(){
   ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 18, INS_Y+14);
   parts.forEach(drawPart);
   drawLanes();
+  drawResult();
   fly.forEach(f=>{
+    if(f.kind==='chip'){
+      ctx.font='700 11px '+MONO();
+      const tw=ctx.measureText(f.txt).width+18;
+      ctx.fillStyle='#101a13'; ctx.strokeStyle=f.col;
+      ctx.beginPath(); ctx.roundRect(f.x-tw/2,f.y-11,tw,22,11); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#7dffb2'; ctx.textAlign='center'; ctx.fillText(f.txt,f.x,f.y+4); ctx.textAlign='left';
+      return;
+    }
     if(f.kind==='gran'){
       f.cells.forEach((v,ci)=>{
         ctx.fillStyle='#1b2c3a'; ctx.strokeStyle=f.col||'#3d8ba3';
@@ -512,26 +576,36 @@ document.getElementById('bIns').addEventListener('click',doInsert);
 document.getElementById('bMerge').addEventListener('click',doMerge);
 document.getElementById('bSel').addEventListener('click',doSelect);
 document.getElementById('predR').addEventListener('input',()=>{ PRED=+document.getElementById('predR').value; document.getElementById('predV').textContent=PRED; });
+let demoT=null, demoSteps=null;
+function stopDemo(){ if(demoT){ clearInterval(demoT); demoT=null; demoSteps=null; document.getElementById('bAmb').textContent='▶ 自動再生'; } }
 document.getElementById('bAmb').addEventListener('click',()=>{
-  const b=document.getElementById('bAmb');
-  if(ambTimer){ clearInterval(ambTimer); ambTimer=null; b.textContent='▶ 自動再生'; return; }
-  b.textContent='⏹ 自動再生中';
-  ambTimer=setInterval(()=>{
+  if(demoT){ stopDemo(); return; }
+  demoSteps=['insert','insert','merge','select'];
+  document.getElementById('bAmb').textContent='⏹ 停止';
+  demoT=setInterval(()=>{
+    if(demoSteps.length===0){ if(result) stopDemo(); return; } // 結果テーブルが出たら終了
     if(busy) return;
-    ambN++;
-    const act=parts.filter(p=>!p.dying);
-    const totalG=act.reduce((s,p)=>s+p.granules.length,0);
-    if(ambN%4===0){ doSelect(); return; }
-    if(totalG>=14||act.length>=5){ doMerge(); return; }
-    doInsert();
-  },5200);
+    const s=demoSteps.shift();
+    if(s==='insert') doInsert(); else if(s==='merge') doMerge(); else doSelect();
+  },900);
+});
+document.getElementById('bReset').addEventListener('click',()=>{
+  if(busy){ toast('実行中です。終わってからリセットを','warn'); return; }
+  stopDemo();
+  parts=[]; fly=[]; lanes=[]; result=null; seq=0; setStage(0);
+  seedParts(); layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
+  showSql('CREATE TABLE events (user_id UInt32, …) ENGINE = MergeTree ORDER BY user_id;');
+  toast('初期状態に戻した。INSERT → マージ → SELECT をもう一度最初から試せる');
 });
 
 /* ---- 初期状態(ブログの例と同じ気分の値) ---- */
-(function init(){
+function seedParts(){
   const mk=(vals,lvl,name)=>{ seq++; const p={id:seq,name,granules:mkGranules(vals.sort((a,b)=>a-b)),lvl,flash:0,x:null,y:null,merged:lvl>0}; parts.push(p); };
   mk([40,100,400,40,700,400,40,500,900,50,300,600],2,'202607_1_5_2');
   mk([60,300,600,60,500,900,60,900,620],0,'202607_6_6_0');
+}
+(function init(){
+  seedParts();
   window.__ready=true; updateTop();
   new ResizeObserver(()=>{ updateTop(); layout(); }).observe(document.getElementById('hud'));
   layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
