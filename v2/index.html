@@ -84,7 +84,7 @@ canvas{display:block;touch-action:none}
 </div>
 <canvas id="cv"></canvas>
 <div id="toast"></div>
-<div id="lvlhint">🔍 スクロール / ピンチ = シームレスズーム ／ ドラッグ = 移動 ／ ▶ SELECT でクエリの一生(クライアント→granule→クライアント)を自動追跡</div>
+<div id="lvlhint">🔍 スクロール / ピンチ = 粒度を自由に切り替え(操作中もカメラは奪わない) ／ ▶ 自動再生 = カメラ付きツアー</div>
 
 <script>
 'use strict';
@@ -169,6 +169,8 @@ const GPR=4;                        // granule あたりの値の数(8192 行の
 
 /* ---- 状態 ---- */
 let seq=0, parts=[], fly=[], lanes=[], result=null, busy=false;
+let cine=false;   // true = 自動再生ツアー中だけカメラが物語を追う
+let pulse=0;      // 要約カードの実行中表示の鼓動
 const LANES=3; // max_threads の縮尺
 const LANE_COL=['#6fe3ff','#ffb46f','#c9a2ff']; // granule↔レーン(CPU コア)の対応色
 function partsBottom(){ return parts.reduce((m,p)=>Math.max(m,p.ty+partH(p)),INS_Y+108); }
@@ -206,6 +208,7 @@ function tick(){
     camClamp();
   }
   crumbSync();
+  pulse=(pulse+0.04)%1;
   parts.forEach(p=>{
     p.x+=(p.tx-p.x)*0.12; p.y+=(p.ty-p.y)*0.12;
     if(p.flash>0) p.flash=Math.max(0,p.flash-0.02);
@@ -310,8 +313,7 @@ let PRED=600;
 const BUCKET=200; // GROUP BY intDiv(user_id, 200)*200
 function SQLQ(){ return 'SELECT intDiv(user_id, '+BUCKET+')*'+BUCKET+' AS bucket, count() FROM events WHERE user_id >= '+PRED+' GROUP BY bucket ORDER BY bucket'; }
 function clearQueryView(){ // 結果テーブル・レーン・枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
-  camGo(0,0,1); // 操作の実物はテーブル粒度にある(SELECT は直後に旅の起点へ上書き)
-  result=null; lanes=[]; setStage(0);
+  result=null; lanes=[]; setStage(0); // カメラは動かさない(粒度はユーザーのもの)
   parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.probe=undefined; p.scanG=undefined; });
 }
 function hiOf(p,i){ return (i+1<p.granules.length)?p.granules[i+1][0]:1000; }
@@ -320,16 +322,17 @@ function doSelect(){
   const act=parts.filter(p=>!p.dying);
   if(!act.length){ toast('Part がありません。まず INSERT を','warn'); return; }
   busy=true; clearQueryView();
-  // ⓪ クエリの一生はクライアントから始まる
-  camGoLevel(0,true);
+  // ⓪ クエリの一生はクライアントから始まる(カメラを動かすのはツアー時のみ)
+  if(cine) camGoLevel(0,true);
   showSql(SQLQ()+'  -- ⓪ クライアントが送信 → node-1 が受付');
-  toast('⓪ クライアントが SQL を送信。ここから結果が返るまで、クエリの一生をカメラで追う');
+  toast('⓪ クライアントから SQL が届く。ここから結果が返るまでがクエリの一生'+(cine?'(カメラが追いかける)':''));
   const cp=clientPos();
-  setTimeout(()=>{ // カメラが引き切ってから、クライアント→node-1 の飛行を見せる
+  const d0=cine?900:0;
+  setTimeout(()=>{
     fly.push({kind:'chip', lin:true, col:'#6fe3ff', txt:'SELECT …', fx:cp.x+220, fy:cp.y+52, txp:W*0.5, typ:INS_Y+30, t:0, dt:0.007});
-  },900);
-  setTimeout(()=>camGoLevel(2,true), 2900);
-  setTimeout(()=>selExec(act), 3900);
+  },d0);
+  if(cine) setTimeout(()=>camGoLevel(2,true), 2900);
+  setTimeout(()=>selExec(act), d0+2600);
 }
 function selExec(act){
   setStage(1);
@@ -434,15 +437,15 @@ function startProcess(act,keptN,total){
           fx:g.x+g.w*0.87, fy:g.y+g.h/2, txp:W/2, typ:resY(rows.length)+10, t:0, dt:0.028,
           done:()=>{ got++; if(got===LANES){ result={rows}; } }});
       });
-      setTimeout(()=>{ // 結果はクライアントへ帰る(カメラも引く)。表示は次の操作まで残る
-        camGoLevel(0,true);
+      setTimeout(()=>{ // 結果はクライアントへ帰る。カメラの引きはツアー時のみ
+        if(cine) camGoLevel(0,true);
         const cp=clientPos();
-        setTimeout(()=>{ // 引き切ってから、結果の帰宅を見せる
+        setTimeout(()=>{
           fly.push({kind:'chip', lin:true, col:'#7dffb2', txt:rows.length+' 行の結果', fx:W*0.5, fy:resY(rows.length)+10, txp:cp.x+220, typ:cp.y+52, t:0, dt:0.007,
             done:()=>{ toast('結果がクライアントに到着。クライアント → ノード → 索引 → granule → レーン → マージ → クライアント、がクエリの一生'); }});
-        },1000);
-        setTimeout(()=>{ camGo(0,0,1,0.05); busy=false; },5600);
-      },2600);
+        },cine?1000:300);
+        setTimeout(()=>{ if(cine) camGo(0,0,1,0.05); busy=false; },cine?5600:2200);
+      },cine?2600:1400);
     }
   },380);
 }
@@ -704,6 +707,14 @@ function drawNodeSummary(){
     ctx.fillStyle='#98a0b3'; ctx.font='700 '+fz(9)+'px '+MONO(); ctx.textAlign='center';
     ctx.fillText(p.granules.length+' g', x+fz(14)+i*(bw+gp)+bw/2, y+fz(60)+bh/2+fz(3)); ctx.textAlign='left';
   });
+  if(busy&&curStage>0){
+    const names=['','① 索引分析(二分探索)','② 対象 granule だけ読み取り','③ レーン(CPU コア)で並列処理','④ 部分集計をマージ → 結果を返却'];
+    const gA=0.55+0.45*Math.sin(pulse*Math.PI*2);
+    ctx.strokeStyle='rgba(250,255,105,'+(gA*a).toFixed(3)+')';
+    ctx.beginPath(); ctx.roundRect(x,y,w,hh,fz(8)); ctx.stroke();
+    ctx.fillStyle='#faff69'; ctx.font='700 '+fz(12)+'px '+JP();
+    ctx.fillText('実行中: '+names[curStage], x+fz(14), y+hh-fz(34));
+  }
   ctx.fillStyle='#6fe3ff'; ctx.font='700 '+fz(10)+'px '+JP();
   ctx.fillText('▶ ズームイン(またはダブルクリック)で Part / granule の実物へ', x+fz(14), y+hh-fz(12));
   ctx.globalAlpha=1;
@@ -800,7 +811,9 @@ function loop(){ tick(); render(); requestAnimationFrame(loop); }
 const sqlEl=document.getElementById('sqlbar'), toastEl=document.getElementById('toast');
 let toastT=null;
 function showSql(s){ sqlEl.textContent=s; }
+let curStage=0;
 function setStage(n){ // 0 = 非表示
+  curStage=n;
   const box=document.getElementById('steps');
   if(n===0){ box.classList.remove('show'); return; }
   box.classList.add('show');
@@ -818,13 +831,14 @@ document.getElementById('bMerge').addEventListener('click',doMerge);
 document.getElementById('bSel').addEventListener('click',doSelect);
 document.getElementById('predR').addEventListener('input',()=>{ PRED=+document.getElementById('predR').value; document.getElementById('predV').textContent=PRED; });
 let demoT=null, demoSteps=null;
-function stopDemo(){ if(demoT){ clearInterval(demoT); demoT=null; demoSteps=null; document.getElementById('bAmb').textContent='▶ 自動再生'; } }
+function stopDemo(){ if(demoT){ clearInterval(demoT); demoT=null; demoSteps=null; cine=false; document.getElementById('bAmb').textContent='▶ 自動再生'; } }
 document.getElementById('bAmb').addEventListener('click',()=>{
   if(demoT){ stopDemo(); return; }
   demoSteps=['insert','insert','merge','select'];
+  cine=true; // ツアー中だけカメラが物語を追う
   document.getElementById('bAmb').textContent='⏹ 停止';
   demoT=setInterval(()=>{
-    if(demoSteps.length===0){ if(result) stopDemo(); return; } // 結果テーブルが出たら終了
+    if(demoSteps.length===0){ if(result&&!busy) stopDemo(); return; } // 帰還まで見届けて終了
     if(busy) return;
     const s=demoSteps.shift();
     if(s==='insert') doInsert(); else if(s==='merge') doMerge(); else doSelect();
