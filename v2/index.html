@@ -37,7 +37,12 @@ canvas{display:block}
   <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
     <button class="btn primary" id="bIns">＋ INSERT</button>
     <button class="btn" id="bMerge">⇄ マージ</button>
-    <button class="btn" id="bSel">▶ SELECT user_id ≧ 600</button>
+    <span style="display:flex;gap:8px;align-items:center;background:#191c23;border:1px solid var(--line);border-radius:9px;padding:4px 12px;font-size:12.5px">
+      <span style="font-family:var(--mono);color:var(--muted)">WHERE user_id ≧</span>
+      <input type="range" id="predR" min="0" max="1000" step="10" value="600" style="width:110px;accent-color:#6fe3ff">
+      <b id="predV" style="font-family:var(--mono);color:var(--cyan);min-width:34px">600</b>
+    </span>
+    <button class="btn" id="bSel">▶ SELECT</button>
     <button class="btn" id="bAmb">▶ 自動再生</button>
   </span>
   <div id="sqlbar"></div>
@@ -77,7 +82,7 @@ function laneGeom(i){
 function granRowPos(p,gi){ return {x:p.x+24, y:p.y+30+gi*(CELLH+GAP)}; }
 function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.push(vals.slice(i,i+GPR)); return gs; }
 function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12+58; }
-function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+26)+42; }
+function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+36)+42; }
 function layout(){
   const y0=182, x0=24, maxW=W-24;
   let x=x0, y=y0, rowH=0;
@@ -162,40 +167,63 @@ function doMerge(){
 }
 
 /* ---- 操作: SELECT(索引スキャン → 枝刈り) ---- */
-const PRED=600;
+let PRED=600;
+function hiOf(p,i){ return (i+1<p.granules.length)?p.granules[i+1][0]:1000; }
 function doSelect(){
   if(busy){ toast('実行中です','warn'); return; }
   const act=parts.filter(p=>!p.dying);
   if(!act.length){ toast('Part がありません。まず INSERT を','warn'); return; }
   busy=true;
-  showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ① 索引分析: 各 Part の primary.idx を走査');
-  toast('① 索引分析: primary.idx(各 granule の先頭値のカード)だけをメモリ内で見る。値の行にはまだ触らない');
-  let step=0;
-  const scan=setInterval(()=>{
-    let advanced=false;
-    act.forEach(p=>{
-      if(step<p.granules.length){
-        p.scanG=step; advanced=true;
-        const hi=(step+1<p.granules.length)?p.granules[step+1][0]:1000;
-        p.verdict=p.verdict||[];
-        p.verdict[step]=(hi>=PRED);
-      } else p.scanG=undefined;
+  showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ① 各 Part の primary.idx を二分探索');
+  toast('① 索引分析: 各 Part の primary.idx 上で「user_id ≧ '+PRED+' を含みうる最初の granule」を二分探索。触るのは索引エントリだけで、値の行はまだ読まない');
+  const st=act.map(p=>{
+    const n=p.granules.length;
+    const s={p,lo:0,hi:n-1,done:false};
+    if(n<=1){ s.k=(hiOf(p,0)>=PRED)?0:n; s.done=true; }
+    return s;
+  });
+  const iv=setInterval(()=>{
+    let any=false;
+    st.forEach(s=>{
+      if(s.done){ s.p.probe=undefined; return; }
+      any=true;
+      const mid=(s.lo+s.hi)>>1;
+      s.p.probe=mid;
+      if(hiOf(s.p,mid)>=PRED) s.hi=mid; else s.lo=mid+1;
+      if(s.lo>=s.hi){
+        s.k=(hiOf(s.p,s.lo)>=PRED)?s.lo:s.p.granules.length;
+        s.done=true;
+      }
     });
-    step++;
-    if(!advanced){
-      clearInterval(scan);
-      act.forEach(p=>{ p.scanG=undefined; p.showVerdict=1; });
+    if(!any){
+      clearInterval(iv);
       const kept=[];
-      act.forEach(p=>p.granules.forEach((g,gi)=>{ if(p.verdict[gi]) kept.push({g,p,gi}); }));
-      const total=act.reduce((s,p)=>s+p.granules.length,0);
+      st.forEach(s=>{
+        const p=s.p, n=p.granules.length, k=s.k;
+        p.probe=undefined;
+        p.verdict=Array.from({length:n},(_,i)=>i>=k);
+        p.rangeK=k; p.showVerdict=1;
+        p.granules.forEach((g,gi)=>{ if(gi>=k) kept.push({g,p,gi}); });
+      });
+      const total=act.reduce((s2,p)=>s2+p.granules.length,0);
       startRead(act,kept,total);
     }
-  },520);
+  },700);
 }
 function startRead(act,kept,total){
   // ② 対象 granule だけをストレージから読む(✂ は読まれない)
-  showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ② 読むのは '+kept.length+' / '+total+' granule だけ');
-  toast('② 読み取り: 索引が「含みうる」と判定した '+kept.length+' granule だけをストレージから読む。✂ の '+(total-kept.length)+' granule には一切触れない');
+  const ranges=act.filter(p=>p.rangeK<p.granules.length)
+    .map(p=>'g'+(p.rangeK+1)+(p.rangeK+1<p.granules.length?'〜g'+p.granules.length:''));
+  showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ② 読むのは '+kept.length+' / '+total+' granule('+(ranges.join(', ')||'なし')+')');
+  toast('② 読み取り: 生き残った granule は<b>連続した range</b>('+(ranges.join(' / ')||'なし')+')としてまとめて読む。✂ の '+(total-kept.length)+' granule には一切触れない');
+  if(!kept.length){
+    setTimeout(()=>{
+      showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- count() = 0(索引だけで証明、読み取りゼロ)');
+      toast('該当しうる granule がゼロ。ストレージに一切触れず count() = 0 を確定');
+      setTimeout(()=>{ act.forEach(p=>{ p.showVerdict=0; p.verdict=null; }); busy=false; },4200);
+    },600);
+    return;
+  }
   lanes=Array.from({length:LANES},(_,i)=>({i,queue:[],cur:null,simd:0,partial:0,fed:0}));
   let arrived=0;
   kept.forEach((k,idx)=>{
@@ -229,7 +257,7 @@ function startProcess(act,keptN,total){
       const cnt=lanes.reduce((s,l)=>s+l.partial,0);
       showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ④ 部分集計をマージ → count() = '+cnt.toLocaleString());
       toast('④ 各レーンの部分集計をマージして完成: count() = '+cnt.toLocaleString()+'。全 '+total+' granule('+(total*8192).toLocaleString()+' 行)のうち読んだのは '+keptN+' granule だけ');
-      setTimeout(()=>{ lanes=[]; act.forEach(p=>{ p.showVerdict=0; p.verdict=null; }); busy=false; },6000);
+      setTimeout(()=>{ lanes=[]; act.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; }); busy=false; },6000);
     }
   },620);
 }
@@ -270,16 +298,24 @@ function drawPart(p){
     ctx.fillText(pruned?'✂ 8,192行':'…8,192行', gx+GPR*(CELL+GAP)+2, ry+15);
   });
   const ix=gx+GPR*(CELL+GAP)+56, iy=p.y+30;
-  const ih=p.granules.length*16+24;
+  const ih=p.granules.length*16+34;
   ctx.fillStyle='#1a1c10'; ctx.strokeStyle='#8a8f3a';
   ctx.beginPath(); ctx.roundRect(ix,iy,IDXW,ih,6); ctx.fill(); ctx.stroke();
   ctx.fillStyle='#faff69'; ctx.font='700 10px '+MONO();
   ctx.fillText('primary.idx', ix+8, iy+14);
   p.granules.forEach((g,gi)=>{
-    const scanned=p.scanG===gi;
-    ctx.fillStyle=scanned?'#faff69':'#b9bd7a'; ctx.font=(scanned?'700 ':'')+'10px '+MONO();
-    ctx.fillText('g'+(gi+1)+' → '+g[0], ix+8, iy+28+gi*16);
+    const probing=p.probe===gi;
+    const inRange=p.showVerdict&&p.verdict&&p.verdict[gi];
+    if(probing){ ctx.fillStyle='rgba(250,255,105,.18)'; ctx.fillRect(ix+3,iy+18+gi*16,IDXW-6,14); }
+    if(inRange){ ctx.fillStyle='#7dffb2'; ctx.fillRect(ix+3,iy+18+gi*16,2,14); }
+    ctx.fillStyle=probing?'#faff69':(inRange?'#d5f6c9':'#b9bd7a');
+    ctx.font=(probing?'700 ':'')+'10px '+MONO();
+    ctx.fillText('g'+(gi+1)+' → '+g[0]+(probing?' ?':''), ix+8, iy+28+gi*16);
   });
+  if(p.showVerdict&&p.rangeK!=null&&p.rangeK<p.granules.length){
+    ctx.fillStyle='#6fe3ff'; ctx.font='700 9px '+MONO();
+    ctx.fillText('range: g'+(p.rangeK+1)+'〜g'+p.granules.length, ix+8, iy+ih-6);
+  }
   ctx.globalAlpha=1;
 }
 function drawLanes(){
@@ -342,6 +378,7 @@ function toast(s,warn){ toastEl.textContent=s; toastEl.className=warn?'on warn':
 document.getElementById('bIns').addEventListener('click',doInsert);
 document.getElementById('bMerge').addEventListener('click',doMerge);
 document.getElementById('bSel').addEventListener('click',doSelect);
+document.getElementById('predR').addEventListener('input',()=>{ PRED=+document.getElementById('predR').value; document.getElementById('predV').textContent=PRED; });
 document.getElementById('bAmb').addEventListener('click',()=>{
   const b=document.getElementById('bAmb');
   if(ambTimer){ clearInterval(ambTimer); ambTimer=null; b.textContent='▶ 自動再生'; return; }
