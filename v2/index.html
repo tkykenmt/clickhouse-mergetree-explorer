@@ -71,6 +71,7 @@ canvas{display:block;touch-action:none}
     <button class="btn primary" id="bIns">＋ INSERT</button>
     <button class="btn" id="bMerge">⇄ マージ</button>
     <button class="btn" id="bDel">🗑 DELETE</button>
+    <button class="btn" id="bProj">⚡ PROJECTION</button>
     <span style="display:flex;gap:8px;align-items:center;background:#191c23;border:1px solid var(--line);border-radius:9px;padding:4px 12px;font-size:12.5px">
       <span style="font-family:var(--mono);color:var(--muted)">WHERE ts ≧</span>
       <input type="range" id="predR" min="0" max="960" step="15" value="600" style="width:110px;accent-color:#6fe3ff">
@@ -185,7 +186,9 @@ const GPR=4;                        // granule あたりの値の数(8192 行の
 
 /* ---- 状態 ---- */
 let seq=0, parts=[], fly=[], lanes=[], result=null, busy=false, simT=640;
-let mv={}, mvFlash=0; // MATERIALIZED VIEW hourly_counts(書き込み時に集計)
+let mv={}, mvFlash=0;   // MV hourly_counts(書き込み時に集計)
+let mv2={}, mv2Flash=0; // MV daily_counts(hourly からのカスケード)
+let projOn=false;       // ADD PROJECTION 済みか
 let cine=false;   // true = 自動再生ツアー中だけカメラが物語を追う
 let pulse=0;      // 要約カードの実行中表示の鼓動
 const LANES=3; // max_threads の縮尺
@@ -236,6 +239,7 @@ function tick(){
   parts=parts.filter(p=>!p.dead);
   if(parts.length!==before) layout();
   if(mvFlash>0) mvFlash=Math.max(0,mvFlash-0.03);
+  if(mv2Flash>0) mv2Flash=Math.max(0,mv2Flash-0.03);
   lanes.forEach(l=>{ if(l.simd>0) l.simd=Math.max(0,l.simd-0.09); if(l.lastAdd) { l.lastAdd.t-=0.02; if(l.lastAdd.t<=0) l.lastAdd=null; } });
   const dones=[]; // done の中で fly.push しても消えないよう、filter 後に実行
   fly=fly.filter(f=>{
@@ -277,7 +281,7 @@ function doInsert(){
   },1500);
   setTimeout(()=>{ // ③ 8,192 行ごとに granule として Part へ積む
     seq++;
-    const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,granules:mkGranules(sorted),lvl:0,flash:0,
+    const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,hasProj:projOn,granules:mkGranules(sorted),lvl:0,flash:0,
       x:null,y:null,building:true,shown:[],idxReveal:0};
     parts.push(p); layout();
     p.x=p.tx; p.y=p.ty; // 確定スロットの位置でそのまま組み立てる(既存 Part と重ねない)
@@ -306,7 +310,10 @@ function doInsert(){
               { const mg=mvGeom(); // MV はクエリ時ではなく書き込み時に集計が走る
                 fly.push({kind:'chip', col:'#c9a2ff', txt:'→ MV へも自動集計', fx:p.x+170, fy:p.y+10, txp:mg.x+mg.w/2, typ:mg.y+16, t:0, dt:0.02,
                   done:()=>{ sorted.forEach(v=>{ const b=Math.floor(v/BUCKET)*BUCKET; mv[b]=(mv[b]||0)+8192/GPR; }); mvFlash=1;
-                    toast('MV hourly_counts: INSERT と同時に集計済みの行が積まれた。SELECT のたびに数え直さなくてよくなる'); }});
+                    toast('MV hourly_counts: INSERT と同時に集計済みの行が積まれた。SELECT のたびに数え直さなくてよくなる');
+                    const gm=mvGeom(), g2=mv2Geom(), tot=sorted.length*(8192/GPR);
+                    fly.push({kind:'chip', col:'#c9a2ff', txt:'カスケード → daily', fx:gm.x+gm.w/2, fy:g2.y-14, txp:g2.x+g2.w/2, typ:g2.y+14, t:0, dt:0.03,
+                      done:()=>{ mv2[TODAY]=(mv2[TODAY]||0)+tot; mv2Flash=1; }}); }});
               }
               busy=false;
               setTimeout(()=>{ if(!busy) showDefaultResult(); },2800);
@@ -592,6 +599,8 @@ function drawPart(p){
     ctx.fillStyle='#6fe3ff'; ctx.font='700 9px '+MONO();
     ctx.fillText('range: g'+(p.rangeK+1)+'〜g'+p.granules.length, ix+8, iy+ih-6);
   }
+  if(p.hasProj){ ctx.fillStyle='#c9a2ff'; ctx.font='700 8px '+MONO();
+    ctx.fillText('⚡proj: ORDER BY service のコピーを内蔵', p.x+8, p.y+partH(p)-8); }
   // skip idx カード(service 列の副次索引): set は中身、bloom はビット列
   const kx2=ix+IDXW+10;
   ctx.fillStyle='#1a1420'; ctx.strokeStyle='#8a6fb0';
@@ -790,11 +799,13 @@ function mvGeom(){
   const px=24+partW(null)+36;
   return {x:px, y:INS_Y+76+3*132+14, w:Math.min(520, W-px-24)};
 }
+function mvHgt(){ return 52+Math.max(1,Math.min(6,Object.keys(mv).length))*13+8; }
+function mv2Geom(){ const g=mvGeom(); return {x:g.x, y:g.y+mvHgt()+10, w:g.w}; }
 function drawMV(){
   const g=mvGeom();
   const ents=Object.keys(mv).map(Number).sort((a,b)=>a-b);
   const shown=ents.slice(0,6);
-  const hgt=52+Math.max(1,shown.length)*13+8;
+  const hgt=mvHgt();
   ctx.fillStyle='#12151c'; ctx.strokeStyle=mvFlash>0?'rgba(125,255,178,'+(0.3+mvFlash*0.7)+')':'#2a3242';
   ctx.beginPath(); ctx.roundRect(g.x,g.y,g.w,hgt,10); ctx.fill(); ctx.stroke();
   ctx.fillStyle='#c9a2ff'; ctx.font='700 11px '+JP(); ctx.textAlign='left';
@@ -811,6 +822,19 @@ function drawMV(){
       ctx.fillText(fmtT(b)+'〜  '+mv[b].toLocaleString(), g.x+16, g.y+48+i*13);
     });
     if(ents.length>shown.length){ ctx.fillStyle='#57617a'; ctx.fillText('+'+(ents.length-shown.length)+' 行', g.x+16, g.y+48+shown.length*13); }
+  }
+  // カスケード先: daily_counts(MV から MV へ)
+  const g2=mv2Geom(), days=Object.keys(mv2).sort();
+  const hgt2=40+Math.max(1,days.length)*13+6;
+  ctx.fillStyle='#12151c'; ctx.strokeStyle=mv2Flash>0?'rgba(201,162,255,'+(0.3+mv2Flash*0.7)+')':'#2a3242';
+  ctx.beginPath(); ctx.roundRect(g2.x,g2.y,g2.w,hgt2,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#c9a2ff'; ctx.font='700 11px '+JP(); ctx.textAlign='left';
+  ctx.fillText('MV daily_counts ← hourly_counts(カスケード)', g2.x+12, g2.y+17);
+  if(!days.length){ ctx.fillStyle='#57617a'; ctx.font='10px '+JP();
+    ctx.fillText('(MV の結果を別の MV がさらに集計できる)', g2.x+12, g2.y+34);
+  }else{
+    ctx.font='10px '+MONO();
+    days.forEach((d,i)=>{ ctx.fillStyle='#d5f6c9'; ctx.fillText(d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'  '+mv2[d].toLocaleString(), g2.x+16, g2.y+34+i*13); });
   }
 }
 function drawNodeSummary(){
@@ -970,6 +994,15 @@ function toast(s,warn){ toastEl.textContent=s; toastEl.className=warn?'on warn':
 document.getElementById('bIns').addEventListener('click',doInsert);
 document.getElementById('bMerge').addEventListener('click',doMerge);
 document.getElementById('bDel').addEventListener('click',doDelete);
+document.getElementById('bProj').addEventListener('click',()=>{
+  if(busy){ toast('実行中です','warn'); return; }
+  if(projOn){ toast('projection は追加済み。以後の INSERT には自動で入る(⚡proj バッジ)'); return; }
+  projOn=true;
+  showSql("ALTER TABLE otel_events ADD PROJECTION p_svc (SELECT * ORDER BY service); ALTER TABLE otel_events MATERIALIZE PROJECTION p_svc;");
+  parts.filter(p=>!p.dying).forEach(p=>{ p.hasProj=true; p.flash=1; });
+  toast('MATERIALIZE PROJECTION: 各 Part の中に service 順に並べ直したコピーができた(ワンショットの一括処理)。以後の INSERT では書き込み時に自動生成される');
+  showMsg('Ok. projection p_svc を追加し、既存 '+parts.filter(p=>!p.dying).length+' Part を MATERIALIZE');
+});
 document.getElementById('bSel').addEventListener('click',doSelect);
 let SVCF='';
 document.getElementById('svcSel').addEventListener('change',e=>{ SVCF=e.target.value; });
@@ -992,7 +1025,7 @@ document.getElementById('bAmb').addEventListener('click',()=>{
 document.getElementById('bReset').addEventListener('click',()=>{
   if(busy){ toast('実行中です。終わってからリセットを','warn'); return; }
   stopDemo();
-  parts=[]; fly=[]; lanes=[]; result=null; seq=0; mv={}; setStage(0);
+  parts=[]; fly=[]; lanes=[]; result=null; seq=0; mv={}; mv2={}; projOn=false; setStage(0);
   seedParts(); layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
   showDefaultResult();
   toast('初期状態に戻した。INSERT → マージ → SELECT をもう一度最初から試せる');
