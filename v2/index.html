@@ -335,18 +335,11 @@ function doSelect(){
   const act=parts.filter(p=>!p.dying);
   if(!act.length){ toast('Part がありません。まず INSERT を','warn'); return; }
   busy=true; clearQueryView();
-  // ⓪ クエリの一生はクライアントから始まる(カメラを動かすのはツアー時のみ)
-  if(cine) camGoLevel(0,true);
-  showSql(SQLQ()+'  -- ⓪ クライアントが送信 → node-1 が受付');
-  toast('⓪ クライアントから SQL が届く。ここから結果が返るまでがクエリの一生'+(cine?'(カメラが追いかける)':''));
+  // 上の SQL ペインがクライアントそのもの。飛来演出は不要になった
+  showSql(SQLQ()+';');
   showMsg('実行中…');
-  const cp=clientPos();
-  const d0=cine?900:0;
-  setTimeout(()=>{
-    fly.push({kind:'chip', lin:true, col:'#6fe3ff', txt:'SELECT …', fx:W/2, fy:cp.y+96, txp:W/2, typ:INS_Y+30, t:0, dt:cine?0.007:0.014});
-  },d0);
-  if(cine) setTimeout(()=>camGoLevel(2,true), 2900);
-  setTimeout(()=>selExec(act), d0+(cine?2600:1300));
+  if(cine){ camGoLevel(0,true); setTimeout(()=>camGoLevel(2,true),2200); setTimeout(()=>selExec(act),3200); }
+  else setTimeout(()=>selExec(act),250);
 }
 function selExec(act){
   setStage(1);
@@ -445,26 +438,22 @@ function startProcess(act,keptN,total){
       showSql(SQLQ()+'  -- ④ 部分集計をマージ → '+rows.length+' 行の結果を返す');
       toast('④ 各レーンの部分集計(user_id を '+BUCKET+' 刻みの帯 = bucket ごとの件数)をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule');
       let got=0;
-      const mx=W/2, my=INS_Y+30; // ノード上端の合流点(ここでマージしてから返す)
+      const mx=W/2, my=INS_Y+30; // ノード上端の合流点(マージが済んだ瞬間、上の結果ペインが埋まる)
       lanes.forEach(l=>{
         const g=laneGeom(l.i);
         const sum=Object.keys(l.partial).reduce((s,b)=>s+l.partial[b],0);
         fly.push({kind:'chip', col:LANE_COL[l.i], txt:sum.toLocaleString(),
           fx:g.x+g.w*0.87, fy:g.y+g.h/2, txp:mx, typ:my, t:0, dt:0.028,
-          done:()=>{ got++; if(got===LANES){ result={rows}; } }});
+          done:()=>{ got++; if(got===LANES){
+            result={rows};
+            showResult(['user_id 帯(bucket)','count()'], rows.map(r=>[r[0]+'〜'+(r[0]+BUCKET-1), r[1].toLocaleString()]), rows.length+' rows');
+            toast('④ 部分集計をマージ → 結果は上の結果ペイン(=クライアント)へ。SQL → 索引 → granule → レーン → マージ → 結果、がクエリの一生');
+          } }});
       });
-      setTimeout(()=>{ // 結果は上のクライアント(結果ペイン)へ帰る。カメラの引きはツアー時のみ
-        if(cine) camGoLevel(0,true);
-        const cp=clientPos();
-        setTimeout(()=>{
-          fly.push({kind:'chip', lin:true, col:'#7dffb2', txt:rows.length+' 行の結果', fx:W/2, fy:INS_Y+30, txp:W/2, typ:cp.y+60, t:0, dt:cine?0.007:0.014,
-            done:()=>{
-              showResult(['user_id 帯(bucket)','count()'], rows.map(r=>[r[0]+'〜'+(r[0]+BUCKET-1), r[1].toLocaleString()]), rows.length+' rows');
-              toast('結果が上の結果ペインに到着。クライアント → ノード → 索引 → granule → レーン → マージ → クライアント、がクエリの一生');
-            }});
-        },cine?1000:300);
-        setTimeout(()=>{ if(cine) camGo(0,0,1,0.05); busy=false; },cine?5600:2200);
-      },cine?2600:1400);
+      setTimeout(()=>{
+        if(cine){ camGoLevel(0,true); setTimeout(()=>{ camGo(0,0,1,0.05); busy=false; },4600); }
+        else busy=false;
+      },cine?2200:1800);
     }
   },380);
 }
