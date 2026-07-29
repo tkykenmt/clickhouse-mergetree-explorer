@@ -104,10 +104,13 @@ const GPR=4;                        // granule あたりの値の数(8192 行の
 /* ---- 状態 ---- */
 let seq=0, parts=[], fly=[], lanes=[], ambTimer=null, ambN=0, busy=false;
 const LANES=3; // max_threads の縮尺
+const LANE_COL=['#6fe3ff','#ffb46f','#c9a2ff']; // granule↔レーン(CPU コア)の対応色
+function partsBottom(){ return parts.reduce((m,p)=>Math.max(m,p.ty+partH(p)),INS_Y+108); }
 function laneGeom(i){
   if(MOB){
     const w=Math.min(420,W-20), h=80;
-    return {x:(W-w)/2, y:H-64-(LANES-i)*(h+8), w, h};
+    const yTop=Math.min(H-64-(h+8)*LANES, partsBottom()+14);
+    return {x:(W-w)/2, y:yTop+i*(h+8), w, h};
   }
   const w=Math.min(380,(W-60)/LANES-12);
   return {x:(W-(w+14)*LANES)/2+i*(w+14)+7, y:H-186, w, h:132};
@@ -141,40 +144,70 @@ function tick(){
   lanes.forEach(l=>{ if(l.simd>0) l.simd=Math.max(0,l.simd-0.09); if(l.lastAdd) { l.lastAdd.t-=0.02; if(l.lastAdd.t<=0) l.lastAdd=null; } });
   fly=fly.filter(f=>{
     f.t+=f.dt||0.02;
-    const e=1-Math.pow(1-Math.min(1,f.t),3);
-    f.x=f.fx+(f.txp-f.fx)*e; f.y=f.fy+(f.typ-f.fy)*e;
-    if(f.t>=1){ if(f.done){ const fn=f.done; f.done=null; fn(); } return false; }
+    const tt=Math.min(1,f.t);
+    const e=1-Math.pow(1-tt,3);
+    f.x=f.fx+(f.txp-f.fx)*e; f.y=f.fy+(f.typ-f.fy)*e-(f.arc?Math.sin(Math.PI*tt)*f.arc:0);
+    if(f.t>=1){ if(f.done){ const fn=f.done; f.done=null; fn(); } return !!f.hold; }
     return true;
   });
 }
 
-/* ---- 操作: INSERT(飛来 → ソート → Part 化) ---- */
+/* ---- 操作: INSERT(飛来 → ソート → granule 積み込み → 索引構築) ---- */
 function doInsert(){
   if(busy){ toast('実行中です','warn'); return; }
   busy=true;
   const n=8+Math.floor(Math.random()*5);
   const vals=Array.from({length:n},()=>Math.floor(Math.random()*1000));
-  const sorted=[...vals].sort((a,b)=>a-b);
+  const ord=vals.map((_,i)=>i).sort((a,b)=>vals[a]-vals[b]);
+  const rank=[]; ord.forEach((oi,pos)=>rank[oi]=pos);
+  const sorted=ord.map(i=>vals[i]);
   const gN=Math.ceil(n/GPR);
   showSql('INSERT INTO events (user_id, …) VALUES '+vals.slice(0,4).map(v=>'('+v+', …)').join(' ')+' …  -- '+(gN*8192).toLocaleString()+' 行(セルは代表値)');
+  toast('① INSERT ブロックが届いた順のまま到着。並びはまだバラバラ');
   const cx=Math.max(8,W/2-(n*(CELL+GAP))/2), cy=INS_Y+12;
   vals.forEach((v,i)=>{
-    fly.push({v, fx:W/2+(Math.random()*500-250), fy:-50-Math.random()*90,
-      txp:cx+i*(CELL+GAP), typ:cy, t:0, dt:0.024, kind:'raw'});
+    fly.push({v, oi:i, fx:W/2+(Math.random()*500-250), fy:-50-Math.random()*90,
+      txp:cx+i*(CELL+GAP), typ:cy, t:0, dt:0.024, kind:'raw', hold:true});
   });
-  setTimeout(()=>{
-    toast('ORDER BY 順にソートし、8,192 行ごとに granule に区切る。図のセルは各 granule の代表値で、1行 = 8,192 行の窓');
-    fly.forEach(f=>{ if(f.kind==='raw'){ f.fx=f.x; f.fy=f.y; f.txp=cx+sorted.indexOf(f.v)*(CELL+GAP); f.typ=cy; f.t=0; f.kind='sorting'; } });
-    setTimeout(()=>{
-      seq++;
-      const p={id:seq,name:'202607_'+seq+'_'+seq+'_0',granules:mkGranules(sorted),lvl:0,flash:1,x:null,y:null};
-      parts.push(p); layout();
-      p.x=W/2-partW(p)/2; p.y=cy-6;
-      fly=fly.filter(f=>f.kind!=='sorting');
-      showSql('-- 新しい Part '+p.name+'(granule ×'+p.granules.length+' + primary.idx)');
-      busy=false;
-    },1200);
-  },1400);
+  setTimeout(()=>{ // ② ソート(弧を描いて入れ替わる)
+    toast('② ORDER BY user_id で並べ替え。ソート済みで書き込むから、あとで索引が効く');
+    fly.forEach(f=>{ if(f.kind!=='raw') return;
+      f.fx=f.x; f.fy=f.y; f.txp=cx+rank[f.oi]*(CELL+GAP); f.typ=cy; f.t=0; f.dt=0.02; f.kind='sorting';
+      f.arc=(rank[f.oi]===f.oi)?0:((rank[f.oi]%2?-1:1)*(14+Math.random()*16));
+    });
+  },1500);
+  setTimeout(()=>{ // ③ 8,192 行ごとに granule として Part へ積む
+    seq++;
+    const p={id:seq,name:'202607_'+seq+'_'+seq+'_0',granules:mkGranules(sorted),lvl:0,flash:0,
+      x:null,y:null,building:true,shown:[],idxReveal:0};
+    parts.push(p); layout();
+    p.x=p.tx; p.y=p.ty; // 確定スロットの位置でそのまま組み立てる(既存 Part と重ねない)
+    toast('③ 8,192 行ごとに区切り、granule として Part に積む(セルは各 granule の代表値)');
+    let loaded=0;
+    fly.forEach(f=>{ if(f.kind!=='sorting') return;
+      const pos=rank[f.oi], gi=(pos/GPR)|0, ci=pos%GPR;
+      setTimeout(()=>{
+        f.fx=f.x; f.fy=f.y; f.arc=0;
+        f.txp=p.x+24+ci*(CELL+GAP); f.typ=p.y+30+gi*(CELLH+GAP); f.t=0; f.dt=0.05; f.kind='load'; f.hold=false;
+        f.done=()=>{ p.shown[pos]=true; loaded++; if(loaded===n) buildIdx(p); };
+      },pos*80);
+    });
+  },3100);
+  function buildIdx(p){ // ④ 各 granule の先頭値 → primary.idx
+    toast('④ 各 granule の先頭値だけを primary.idx に記録。行ごとではなく granule ごと1エントリの疎な索引');
+    const ix=p.x+24+GPR*(CELL+GAP)+56;
+    p.granules.forEach((g,gi)=>{
+      setTimeout(()=>{
+        fly.push({v:g[0], fx:p.x+24+CELL/2, fy:p.y+30+gi*(CELLH+GAP)+4, txp:ix+8, typ:p.y+48+gi*16, t:0, dt:0.05, kind:'idxv',
+          done:()=>{ p.idxReveal=gi+1;
+            if(gi===p.granules.length-1){
+              p.building=false; p.flash=1; layout();
+              showSql('-- 新しい Part '+p.name+'(granule ×'+p.granules.length+' + primary.idx)');
+              busy=false;
+            } }});
+      },gi*300);
+    });
+  }
 }
 
 /* ---- 操作: マージ ---- */
@@ -255,7 +288,7 @@ function startRead(act,kept,total){
     setTimeout(()=>{
       showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- count() = 0(索引だけで証明、読み取りゼロ)');
       toast('該当しうる granule がゼロ。ストレージに一切触れず count() = 0 を確定');
-      setTimeout(()=>{ act.forEach(p=>{ p.showVerdict=0; p.verdict=null; }); setStage(0); busy=false; },4200);
+      setTimeout(()=>{ act.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.assign=null; }); setStage(0); busy=false; },4200);
     },600);
     return;
   }
@@ -264,10 +297,12 @@ function startRead(act,kept,total){
   kept.forEach((k,idx)=>{
     const lane=lanes.reduce((a,b)=>a.fed<=b.fed?a:b); // 動的配分(空いているレーンへ)
     lane.fed++;
+    if(!k.p.assign) k.p.assign={};
+    k.p.assign[k.gi]=lane.i;
     const src=granRowPos(k.p,k.gi);
     const lg=laneGeom(lane.i);
     setTimeout(()=>{
-      fly.push({cells:k.g, fx:src.x, fy:src.y, txp:lg.x+12, typ:lg.y+34, t:0, dt:0.022, kind:'gran',
+      fly.push({cells:k.g, col:LANE_COL[lane.i], fx:src.x, fy:src.y, txp:lg.x+12, typ:lg.y+34, t:0, dt:0.022, kind:'gran',
         done:()=>{ lane.queue.push({cells:k.g}); arrived++; if(arrived===kept.length) startProcess(act,kept.length,total); }});
     }, idx*90);
   });
@@ -276,7 +311,7 @@ function startProcess(act,keptN,total){
   // ③ ベクトル化実行: レーンごとに granule を SIMD で一括評価し、部分集計を積む
   setStage(3);
   showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ③ '+LANES+' レーンが並列にベクトル化実行(SIMD)');
-  toast('③ 並列処理: granule は '+LANES+' 本のレーン(= max_threads)へ動的に配分。各レーンは行の束を SIMD で一括評価し、自分の部分集計を持つ');
+  toast('③ 並列処理: granule は '+LANES+' 本のレーン(= max_threads、それぞれ CPU コア上のスレッド)へ動的に配分。色が granule とレーンの対応。各レーンは束を SIMD で一括評価し、自分の部分集計を持つ');
   const proc=setInterval(()=>{
     let active=false;
     lanes.forEach(l=>{
@@ -296,7 +331,7 @@ function startProcess(act,keptN,total){
       setStage(4);
       showSql('SELECT count() FROM events WHERE user_id >= '+PRED+'  -- ④ 部分集計をマージ → count() = '+cnt.toLocaleString());
       toast('④ 各レーンの部分集計をマージして完成: count() = '+cnt.toLocaleString()+'。全 '+total+' granule('+(total*8192).toLocaleString()+' 行)のうち読んだのは '+keptN+' granule だけ');
-      setTimeout(()=>{ lanes=[]; act.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; }); setStage(0); busy=false; },6000);
+      setTimeout(()=>{ lanes=[]; act.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; }); setStage(0); busy=false; },6000);
     }
   },380);
 }
@@ -315,10 +350,16 @@ function drawPart(p){
   p.granules.forEach((g,gi)=>{
     const ry=gy+gi*(CELLH+GAP);
     const scanned=p.scanG===gi;
-    ctx.fillStyle=scanned?'#faff69':'#707a8c'; ctx.font='10px '+MONO();
+    const laneNo=p.assign?p.assign[gi]:null;
+    if(laneNo!=null){ ctx.fillStyle=LANE_COL[laneNo]; ctx.fillRect(p.x+2,ry+2,3,CELLH-4); }
+    ctx.fillStyle=scanned?'#faff69':(laneNo!=null?LANE_COL[laneNo]:'#707a8c'); ctx.font='10px '+MONO();
     ctx.fillText('g'+(gi+1), p.x+6, ry+15);
     g.forEach((v,ci)=>{
       const cxp=gx+ci*(CELL+GAP);
+      if(p.building&&!p.shown[gi*GPR+ci]){
+        ctx.strokeStyle='#232733'; ctx.setLineDash([3,3]);
+        ctx.strokeRect(cxp+0.5,ry+0.5,CELL-1,CELLH-1); ctx.setLineDash([]); return;
+      }
       let fill=cellColor(v), tcol='#e8eaf0', dead=false;
       if(p.showVerdict&&p.verdict){
         if(!p.verdict[gi]){ fill='#141519'; tcol='#494f5e'; dead=true; }
@@ -343,6 +384,7 @@ function drawPart(p){
   ctx.fillStyle='#faff69'; ctx.font='700 10px '+MONO();
   ctx.fillText('primary.idx', ix+8, iy+14);
   p.granules.forEach((g,gi)=>{
+    if(p.building&&gi>=p.idxReveal) return;
     const probing=p.probe===gi;
     const inRange=p.showVerdict&&p.verdict&&p.verdict[gi];
     if(probing){ ctx.fillStyle='rgba(250,255,105,.18)'; ctx.fillRect(ix+3,iy+18+gi*16,IDXW-6,14); }
@@ -363,14 +405,15 @@ function drawLanes(){
     const g=laneGeom(l.i);
     ctx.fillStyle='#111319'; ctx.strokeStyle='#262a33';
     ctx.beginPath(); ctx.roundRect(g.x,g.y,g.w,g.h,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=LANE_COL[l.i]; ctx.beginPath(); ctx.arc(g.x+14,g.y+13,4,0,7); ctx.fill();
     ctx.fillStyle='#98a0b3'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
-    ctx.fillText('processing lane '+(l.i+1), g.x+10, g.y+17);
+    ctx.fillText('processing lane '+(l.i+1)+' = CPU コア', g.x+24, g.y+17);
     // 3工程のゾーン: 受取待ち | SIMD 一括評価 | 部分集計
     const zoneY=g.y+24, zoneH=g.h-46;
     const z1w=g.w*0.24, z2w=g.w*0.44, z3w=g.w*0.26;
     const z1x=g.x+8, z2x=z1x+z1w+10, z3x=z2x+z2w+10;
     // ゾーン枠
-    [[z1x,z1w,'#262a33'],[z2x,z2w,l.simd>0?'#3d8ba3':'#262a33'],[z3x,z3w,'#2f5c41']].forEach(([zx,zw,col])=>{
+    [[z1x,z1w,'#262a33'],[z2x,z2w,l.simd>0?LANE_COL[l.i]:'#262a33'],[z3x,z3w,'#2f5c41']].forEach(([zx,zw,col])=>{
       ctx.strokeStyle=col; ctx.setLineDash([3,3]);
       ctx.strokeRect(zx,zoneY,zw,zoneH); ctx.setLineDash([]);
     });
@@ -378,8 +421,9 @@ function drawLanes(){
     l.queue.slice(0,MOB?2:3).forEach((q,qi)=>{
       const my=zoneY+5+qi*12;
       q.cells.forEach((v,ci)=>{
-        ctx.fillStyle='#1b2c3a';
+        ctx.globalAlpha=0.35; ctx.fillStyle=LANE_COL[l.i];
         ctx.fillRect(z1x+5+ci*((z1w-14)/GPR), my, (z1w-14)/GPR-2, 9);
+        ctx.globalAlpha=1;
       });
     });
     const qShown=MOB?2:3;
@@ -392,6 +436,7 @@ function drawLanes(){
         const hit=v>=PRED;
         ctx.fillStyle=l.simd>0?(hit?'rgba(125,255,178,'+(0.35+l.simd*0.6)+')':'rgba(111,227,255,'+(0.2+l.simd*0.5)+')'):(hit?'#153a2a':'#1b2431');
         ctx.beginPath(); ctx.roundRect(cxp,cy2,cw-3,CELLH,4); ctx.fill();
+        ctx.strokeStyle=LANE_COL[l.i]; ctx.globalAlpha=0.5; ctx.stroke(); ctx.globalAlpha=1;
         ctx.fillStyle=hit?'#7dffb2':'#c7cede'; ctx.font='10px '+MONO(); ctx.textAlign='center';
         ctx.fillText(String(v),cxp+(cw-3)/2,cy2+CELLH/2+4); ctx.textAlign='left';
       });
@@ -426,13 +471,19 @@ function render(){
   fly.forEach(f=>{
     if(f.kind==='gran'){
       f.cells.forEach((v,ci)=>{
-        ctx.fillStyle='#1b2c3a'; ctx.strokeStyle='#3d8ba3';
+        ctx.fillStyle='#1b2c3a'; ctx.strokeStyle=f.col||'#3d8ba3';
         ctx.beginPath(); ctx.roundRect(f.x+ci*(CELL*0.7),f.y,CELL*0.65,CELLH*0.8,3); ctx.fill(); ctx.stroke();
       });
       return;
     }
-    ctx.fillStyle=f.kind==='sorting'?'#153a2a':'#1b2431';
-    ctx.strokeStyle=f.kind==='sorting'?'#7dffb2':'#3a4152';
+    if(f.kind==='idxv'){
+      ctx.fillStyle='#faff69'; ctx.font='700 10px '+MONO(); ctx.textAlign='left';
+      ctx.fillText(String(f.v), f.x, f.y+10);
+      return;
+    }
+    const srt=f.kind==='sorting'||f.kind==='load';
+    ctx.fillStyle=srt?'#153a2a':'#1b2431';
+    ctx.strokeStyle=srt?'#7dffb2':'#3a4152';
     ctx.beginPath(); ctx.roundRect(f.x,f.y,CELL,CELLH,4); ctx.fill(); ctx.stroke();
     ctx.fillStyle='#e8eaf0'; ctx.font='11px '+MONO(); ctx.textAlign='center';
     ctx.fillText(String(f.v), f.x+CELL/2, f.y+16); ctx.textAlign='left';
