@@ -121,7 +121,7 @@ function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.pus
 function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12+58; }
 function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+36)+42; }
 function layout(){
-  const y0=INS_Y+72, x0=MOB?10:24, maxW=W-(MOB?10:24);
+  const y0=INS_Y+(MOB?84:76), x0=MOB?10:24, maxW=W-(MOB?10:24);
   let x=x0, y=y0, rowH=0;
   parts.forEach(p=>{
     const w=partW(p), h=partH(p);
@@ -340,7 +340,7 @@ function startProcess(act,keptN,total){
       const cnt=rows.reduce((s,r)=>s+r[1],0);
       setStage(4);
       showSql(SQLQ()+'  -- ④ 部分集計をマージ → '+rows.length+' 行の結果を返す');
-      toast('④ 各レーンの bucket ごとの部分集計をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule、count 合計 '+cnt.toLocaleString());
+      toast('④ 各レーンの部分集計(user_id を '+BUCKET+' 刻みの帯 = bucket ごとの件数)をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule');
       let got=0;
       lanes.forEach(l=>{
         const g=laneGeom(l.i);
@@ -365,6 +365,8 @@ function drawPart(p){
   ctx.fillStyle='#98a0b3'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
   ctx.fillText('Part '+p.name+' ('+(p.granules.length*8192).toLocaleString()+' 行)'+(p.lvl>0?'  マージ産':''), p.x+10, p.y+17);
   const gx=p.x+24, gy=p.y+30;
+  ctx.fillStyle='#4d5563'; ctx.font='8px '+MONO();
+  ctx.fillText('user_id', gx+2, p.y+27);
   p.granules.forEach((g,gi)=>{
     const ry=gy+gi*(CELLH+GAP);
     const scanned=p.scanG===gi;
@@ -469,7 +471,7 @@ function drawLanes(){
       ctx.textAlign='left'; ctx.font='9px '+MONO();
       ents.slice(0,maxL).forEach((b,ei)=>{
         ctx.fillStyle='#7dffb2';
-        ctx.fillText(b+'→'+l.partial[b].toLocaleString(), z3x+5, zoneY+11+ei*11);
+        ctx.fillText(b+'〜'+(b+BUCKET-1)+' '+l.partial[b].toLocaleString(), z3x+5, zoneY+11+ei*11);
       });
       if(ents.length>maxL){ ctx.fillStyle='#5f8a6f'; ctx.fillText('+'+(ents.length-maxL), z3x+z3w-16, zoneY+zoneH-3); }
     }
@@ -489,8 +491,7 @@ function drawLanes(){
 }
 function resY(n){
   const hgt=46+Math.max(1,n)*17;
-  const yFree=MOB?partsBottom()+14:laneGeom(0).y+4; // モバイルはレーン枠でなく Parts 直下
-  return Math.min(yFree, H-hgt-40);
+  return Math.min(partsBottom()+14, H-hgt-40); // Parts の直下(画面下端には張り付けない)
 }
 function drawResult(){
   if(!result) return;
@@ -504,13 +505,13 @@ function drawResult(){
   ctx.fillStyle='#7dffb2'; ctx.font='700 11px '+JP(); ctx.textAlign='center';
   ctx.fillText('結果テーブル → クライアントへ', x+w/2, y+16);
   ctx.font='700 10px '+MONO(); ctx.fillStyle='#5f8a6f';
-  ctx.textAlign='left'; ctx.fillText('bucket', x+18, y+32);
+  ctx.textAlign='left'; ctx.fillText('user_id 帯(bucket)', x+18, y+32);
   ctx.textAlign='right'; ctx.fillText('count()', x+w-18, y+32);
   ctx.strokeStyle='#24402f'; ctx.beginPath(); ctx.moveTo(x+10,y+37.5); ctx.lineTo(x+w-10,y+37.5); ctx.stroke();
   if(!rows.length){ ctx.fillStyle='#5f8a6f'; ctx.font='10px '+MONO(); ctx.textAlign='center'; ctx.fillText('(0 行)', x+w/2, y+52); }
   rows.forEach((r,ri)=>{
     ctx.fillStyle='#d5f6c9'; ctx.font='11px '+MONO();
-    ctx.textAlign='left'; ctx.fillText(String(r[0]), x+18, y+52+ri*rh);
+    ctx.textAlign='left'; ctx.fillText(r[0]+'〜'+(r[0]+BUCKET-1), x+18, y+52+ri*rh);
     ctx.textAlign='right'; ctx.fillText(r[1].toLocaleString(), x+w-18, y+52+ri*rh);
   });
   ctx.textAlign='left'; ctx.globalAlpha=1;
@@ -521,6 +522,17 @@ function render(){
   ctx.strokeRect(12,INS_Y,W-24,48); ctx.setLineDash([]);
   ctx.fillStyle='#5a6478'; ctx.font='10px '+JP(); ctx.textAlign='left';
   ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 18, INS_Y+14);
+  if(MOB){
+    ctx.fillStyle='#8b93a5'; ctx.font='700 9px '+MONO();
+    ctx.fillText('events(user_id UInt32, …) ORDER BY user_id', 12, INS_Y+60);
+    ctx.fillStyle='#5a6478'; ctx.font='9px '+JP();
+    ctx.fillText('セルの数字 = user_id。1行 = granule = 8,192 行の窓', 12, INS_Y+72);
+  }else{
+    ctx.fillStyle='#8b93a5'; ctx.font='700 11px '+MONO();
+    ctx.fillText('events(user_id UInt32, …) ORDER BY user_id', 18, INS_Y+62);
+    ctx.fillStyle='#5a6478'; ctx.font='10px '+JP();
+    ctx.fillText('セルの数字 = user_id。1行 = granule = 8,192 行の窓', 350, INS_Y+62);
+  }
   parts.forEach(drawPart);
   drawLanes();
   drawResult();
