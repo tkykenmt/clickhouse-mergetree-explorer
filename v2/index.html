@@ -268,7 +268,7 @@ function doInsert(){
   },1500);
   setTimeout(()=>{ // ③ 8,192 行ごとに granule として Part へ積む
     seq++;
-    const p={id:seq,name:'202607_'+seq+'_'+seq+'_0',granules:mkGranules(sorted),lvl:0,flash:0,
+    const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,granules:mkGranules(sorted),lvl:0,flash:0,
       x:null,y:null,building:true,shown:[],idxReveal:0};
     parts.push(p); layout();
     p.x=p.tx; p.y=p.ty; // 確定スロットの位置でそのまま組み立てる(既存 Part と重ねない)
@@ -305,18 +305,21 @@ function doInsert(){
 /* ---- 操作: マージ ---- */
 function doMerge(){
   if(busy){ toast('実行中です','warn'); return; }
-  const act=parts.filter(p=>!p.dying);
-  if(act.length<2){ toast('マージ対象なし(Part が2つ以上必要)','warn'); return; }
+  const byDay={};
+  parts.filter(p=>!p.dying).forEach(p=>(byDay[p.day]=byDay[p.day]||[]).push(p));
+  const day=Object.keys(byDay).sort((a,b)=>byDay[b].length-byDay[a].length)[0];
+  const act=byDay[day]||[];
+  if(act.length<2){ toast('マージ対象なし(同じパーティション内に Part が2つ以上必要)','warn'); return; }
   busy=true; clearQueryView();
   const vals=act.flatMap(p=>p.granules.flat()).sort((x,y)=>x-y);
-  showSql('OPTIMIZE TABLE events  -- '+act.length+' 個の Part をマージソートで1つに併合');
+  showSql('OPTIMIZE TABLE otel_events PARTITION \''+day+'\'  -- '+act.length+' 個の Part を併合(パーティションは跨がない)');
   showMsg('OPTIMIZE 実行中…');
   act.forEach(p=>{ p.dying=true; });
   const gBefore=act.reduce((s,p)=>s+p.granules.length,0);
   const ids=act.map(p=>p.id), lvl=Math.max(...act.map(p=>p.lvl))+1;
   setTimeout(()=>{
     seq++;
-    const p={id:seq,name:'202607_'+Math.min(...ids)+'_'+Math.max(...ids)+'_'+lvl,
+    const p={id:seq,name:day+'_'+Math.min(...ids)+'_'+Math.max(...ids)+'_'+lvl,day,
       granules:mkGranules(vals),lvl,flash:1,x:null,y:null,merged:true};
     parts.unshift(p); layout();
     const gAfter=p.granules.length;
@@ -329,14 +332,15 @@ function doMerge(){
 
 /* ---- 操作: SELECT(索引スキャン → 枝刈り) ---- */
 let PRED=600;
+const TODAY='20260729', YDAY='20260728'; // PARTITION BY toDate(ts)
 const BUCKET=60; // 1時間の帯(値 = 8:00 からの経過分)
 function fmtT(v){ return (8+Math.floor(v/60))+':'+String(v%60).padStart(2,'0'); }
 const SVC=['frontend','checkout','cart','auth','search'];
 const svcOf=v=>SVC[v%SVC.length];
-function SQLQ(){ return "SELECT toStartOfHour(ts) AS h, count() FROM otel_events WHERE ts >= '"+fmtT(PRED)+"'"+(SVCF?" AND service = '"+SVCF+"'":'')+" GROUP BY h ORDER BY h"; }
+function SQLQ(){ return "SELECT toStartOfHour(ts) AS h, count() FROM otel_events WHERE ts >= '2026-07-29 "+fmtT(PRED)+"'"+(SVCF?" AND service = '"+SVCF+"'":'')+" GROUP BY h ORDER BY h"; }
 function clearQueryView(){ // 結果テーブル・レーン・枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
   result=null; lanes=[]; setStage(0); // カメラは動かさない(粒度はユーザーのもの)
-  parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.skipx=null; p.probe=undefined; p.scanG=undefined; });
+  parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.skipx=null; p.partPruned=0; p.probe=undefined; p.scanG=undefined; });
 }
 function hiOf(p,i){ return (i+1<p.granules.length)?p.granules[i+1][0]:960; }
 function doSelect(){
@@ -352,8 +356,12 @@ function doSelect(){
 }
 function selExec(act){
   setStage(1);
-  showSql(SQLQ()+'  -- ① 各 Part の primary.idx を二分探索');
-  toast('① 索引分析: 各 Part の primary.idx 上で「ts ≧ '+fmtT(PRED)+' を含みうる最初の granule」を二分探索。触るのは索引エントリだけで、値の行はまだ読まない');
+  // まずパーティション枝刈り: 日付条件に合わない partition は索引すら見ない
+  const pp=act.filter(p=>p.day!==TODAY);
+  pp.forEach(p=>{ p.partPruned=1; p.showVerdict=1; p.verdict=p.granules.map(()=>false); p.rangeK=p.granules.length; });
+  act=act.filter(p=>p.day===TODAY);
+  showSql(SQLQ()+'  -- ① partition 枝刈り → 各 Part の primary.idx を二分探索');
+  toast('① 索引分析: まず minmax(toDate(ts)) でパーティションを枝刈り'+(pp.length?'('+YDAY+' は丸ごと対象外)':'')+'。残った Part の primary.idx で「ts ≧ '+fmtT(PRED)+'」を二分探索');
   const st=act.map(p=>{
     const n=p.granules.length;
     const s={p,lo:0,hi:n-1,done:false};
@@ -476,13 +484,15 @@ function startProcess(act,keptN,total){
 function cellColor(v){ return 'hsl('+(205+v/1000*35)+' 16% 20%)'; }
 function drawPart(p){
   const w=partW(p), h=partH(p);
-  ctx.globalAlpha=p.alpha??1;
+  ctx.globalAlpha=(p.alpha??1)*(p.partPruned?0.45:1);
   ctx.fillStyle='#14161b';
   ctx.strokeStyle=p.merged?'#faff69':'#262a33';
   ctx.beginPath(); ctx.roundRect(p.x,p.y,w,h,10); ctx.fill(); ctx.stroke();
   if(p.flash>0){ ctx.fillStyle='rgba(125,255,178,'+(p.flash*0.25)+')'; ctx.beginPath(); ctx.roundRect(p.x,p.y,w,h,10); ctx.fill(); }
   ctx.fillStyle='#98a0b3'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
   ctx.fillText('Part '+p.name+' ('+(p.granules.length*8192).toLocaleString()+' 行)'+(p.lvl>0?'  マージ産':''), p.x+10, p.y+17);
+  if(p.partPruned){ ctx.fillStyle='#ff7d7d'; ctx.font='700 9px '+MONO(); ctx.textAlign='right';
+    ctx.fillText('✂ partition', p.x+w-8, p.y+17); ctx.textAlign='left'; }
   const gx=p.x+24, gy=p.y+30;
   ctx.fillStyle='#4d5563'; ctx.font='8px '+MONO();
   ctx.fillText('ts', gx+2, p.y+27);
@@ -515,7 +525,7 @@ function drawPart(p){
     const pruned=p.showVerdict&&p.verdict&&!p.verdict[gi];
     const bySkip=pruned&&p.skipx&&p.skipx[gi];
     ctx.fillStyle=bySkip?'#ffb46f':(pruned?'#ff7d7d':'#4d5563'); ctx.font='9px '+MONO();
-    ctx.fillText(bySkip?'✂ skip idx':(pruned?'✂ 8,192行':'…8,192行'), gx+GPR*(CELL+GAP)+2, ry+15);
+    ctx.fillText(p.partPruned?'✂ partition':(bySkip?'✂ skip idx':(pruned?'✂ 8,192行':'…8,192行')), gx+GPR*(CELL+GAP)+2, ry+15);
   });
   const ix=gx+GPR*(CELL+GAP)+56, iy=p.y+30;
   const ih=p.granules.length*16+34;
@@ -784,14 +794,14 @@ function render(){
   ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 18, INS_Y+14);
   if(MOB){
     ctx.fillStyle='#8b93a5'; ctx.font='700 9px '+MONO();
-    ctx.fillText('otel_events(ts DateTime, service, …) ORDER BY ts', 12, INS_Y+60);
+    ctx.fillText('otel_events(ts, service, …) PARTITION BY toDate(ts) ORDER BY ts', 12, INS_Y+60);
     ctx.fillStyle='#5a6478'; ctx.font='9px '+JP();
     ctx.fillText('セルは ts(時刻)。1行 = granule = 8,192 イベントの窓', 12, INS_Y+72);
   }else{
     ctx.fillStyle='#8b93a5'; ctx.font='700 11px '+MONO();
-    ctx.fillText('otel_events(ts DateTime, service, …) ORDER BY ts', 18, INS_Y+62);
+    ctx.fillText('otel_events(ts, service, …) PARTITION BY toDate(ts) ORDER BY ts', 18, INS_Y+62);
     ctx.fillStyle='#5a6478'; ctx.font='10px '+JP();
-    ctx.fillText('セルは ts(時刻)。1行 = granule = 8,192 イベントの窓', 350, INS_Y+62);
+    ctx.fillText('セルは ts(時刻)。1行 = granule = 8,192 イベントの窓', 480, INS_Y+62);
   }
   parts.forEach(drawPart);
   drawLanes();
@@ -893,9 +903,10 @@ document.getElementById('bReset').addEventListener('click',()=>{
 
 /* ---- 初期状態(ブログの例と同じ気分の値) ---- */
 function seedParts(){
-  const mk=(vals,lvl,name)=>{ seq++; const p={id:seq,name,granules:mkGranules(vals.sort((a,b)=>a-b)),lvl,flash:0,x:null,y:null,merged:lvl>0}; parts.push(p); };
-  mk([40,100,400,40,700,400,40,500,900,50,300,600],2,'202607_1_5_2');
-  mk([60,300,600,60,500,900,60,900,620],0,'202607_6_6_0');
+  const mk=(vals,lvl,name,day)=>{ seq++; const p={id:seq,name,day,granules:mkGranules(vals.sort((a,b)=>a-b)),lvl,flash:0,x:null,y:null,merged:lvl>0}; parts.push(p); };
+  mk([60,180,600,120,500,880,60,900,700,240],1,YDAY+'_1_3_1',YDAY);
+  mk([40,100,400,40,700,400,40,500,900,50,300,600],2,TODAY+'_1_5_2',TODAY);
+  mk([61,300,600,62,500,901,63,902,620],0,TODAY+'_6_6_0',TODAY);
 }
 (function init(){
   seedParts();
