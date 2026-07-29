@@ -17,10 +17,10 @@ canvas{display:block;cursor:grab}
 canvas.drag{cursor:grabbing}
 #hud{position:fixed;top:0;left:0;right:0;display:flex;gap:14px;align-items:center;padding:12px 18px;background:linear-gradient(#0c0d10f0,#0c0d1000);z-index:10;pointer-events:none}
 #hud>*{pointer-events:auto}
-#hud h1{font-size:18px;margin:0;letter-spacing:.02em}
+#hud h1{font-size:18px;margin:0;letter-spacing:.02em;white-space:nowrap}
 #hud h1 b{color:var(--yellow)}
 #hud .cap{font-size:12px;color:var(--muted)}
-.btn{background:#191c23;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp)}
+.btn{background:#191c23;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp);white-space:nowrap}
 .btn:hover{border-color:var(--cyan)}
 .btn.primary{background:var(--yellow);border-color:var(--yellow);color:#1c1c05}
 select{background:#191c23;color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-family:var(--mono);font-size:12.5px}
@@ -38,10 +38,12 @@ select{background:#191c23;color:var(--ink);border:1px solid var(--line);border-r
 <body>
 <div id="hud">
   <h1>MergeTree <b>Explorer</b> <span style="font-size:11px;border:1px solid var(--yellow);color:var(--yellow);border-radius:99px;padding:2px 8px;vertical-align:middle">V2 SPIKE</span></h1>
-  <span class="cap">倉庫 = ClickHouse のストレージ / フロア = テーブル / ベイ = パーティション / 木箱 = Part。<b style="color:var(--ink)">木箱を別の木箱へドラッグするとマージ</b></span>
+  <span class="cap">倉庫 = ClickHouse のストレージ / フロア = テーブル / ベイ = パーティション / <b style="color:var(--ink)">棚 = Part / 箱 = granule</b></span>
   <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
     <select id="selBay"><option value="202607">今月のイベント(2026-07)</option><option value="202606">先月のイベント(2026-06)</option></select>
     <button class="btn primary" id="bIns">＋ INSERT</button>
+    <button class="btn" id="bMerge">⇄ マージ</button>
+    <button class="btn" id="bView" title="ヨー45° / 俯角50% / ズーム標準に戻す">視点リセット</button>
     <button class="btn" id="bAmb">▶ 自動再生</button>
   </span>
 </div>
@@ -49,13 +51,15 @@ select{background:#191c23;color:var(--ink);border:1px solid var(--line);border-r
 <div id="sql"></div>
 <div id="toast"></div>
 <div id="tip"></div>
-<div id="legend"><b>さわり方</b><br>木箱ホバー = 名前と行数 / <b>ドラッグ→別の木箱に重ねる = マージ</b><br>ベイをまたぐマージはできない(実物と同じ)</div>
+<div id="legend"><b>さわり方</b><br>棚(Part)をドラッグ → 別の棚に重ねる = マージ(ベイをまたげない)<br><b>床の空きをドラッグ = 視点ぐりぐり</b>(横 = 回転 / 縦 = 俯角)、ホイール = ズーム</div>
 
 <script>
 'use strict';
 /* ============================================================
-   V2 スパイク: 書き込み経路(INSERT → Part → マージ)を
-   アイソメトリック倉庫として描く。直接操作 = ドラッグでマージ。
+   V2 スパイク: 書き込み経路をアイソメトリック倉庫として描く。
+   カメラはヨー(回転)+チルト(俯角)+ズームの連続パラメータで、
+   斜めも真上も同じ投影の特殊ケース(床ドラッグでぐりぐり)。
+   INSERT は搬入口の仕分けトレイで「ソートしてから箱詰め」を見せる。
 ============================================================ */
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
 let W=0,H=0,DPR=1;
@@ -63,37 +67,55 @@ function resize(){ DPR=window.devicePixelRatio||1; W=window.innerWidth; H=window
   cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+'px'; cv.style.height=H+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); }
 window.addEventListener('resize',resize); resize();
 
-const TW=64, TH=32;                 // タイル寸法
-const ORIGIN=()=>({x:W/2, y:190});  // ワールド原点(スクリーン)
-function iso(wx,wy){ const o=ORIGIN(); return {x:o.x+(wx-wy)*TW/2, y:o.y+(wx+wy)*TH/2}; }
+/* ---- カメラ ---- */
+const CAM0={yaw:Math.PI/4, tilt:0.5, k:45};
+let cam={...CAM0};
+const ORIGIN=()=>({x:W/2, y:255});
+function proj(wx,wy){
+  const o=ORIGIN(), c=Math.cos(cam.yaw), s=Math.sin(cam.yaw);
+  const rx=wx*c-wy*s, ry=wx*s+wy*c;
+  return {x:o.x+rx*cam.k, y:o.y+ry*cam.k*cam.tilt, d:ry};
+}
+function unproj(mx,my){
+  const o=ORIGIN(), c=Math.cos(cam.yaw), s=Math.sin(cam.yaw);
+  const rx=(mx-o.x)/cam.k, ry=(my-o.y)/(cam.k*cam.tilt);
+  return {wx:rx*c+ry*s, wy:-rx*s+ry*c};
+}
+function hpx(h){ return h*cam.k*1.9*(1-cam.tilt)+h*8; } // 俯角を上げるほど低く見える
 
-/* ---- ベイ(パーティション) ---- */
+/* ---- ベイ(パーティション)と搬入口 ---- */
 const BAYS=[
- {id:'202607',label:'PARTITION 202607(今月)',ox:-6.8,oy:1.2,cols:3,rows:3},
- {id:'202606',label:'PARTITION 202606(先月)',ox:0.8,oy:1.2,cols:3,rows:3},
+ {id:'202607',label:'PARTITION 202607(今月)',ox:-6.8,oy:-2.8,cols:3,rows:3},
+ {id:'202606',label:'PARTITION 202606(先月)',ox:0.8,oy:-2.8,cols:3,rows:3},
 ];
+const DOCK={wx:-11.5, wy:4.2}; // 仕分けトレイの中心
 const bay=id=>BAYS.find(b=>b.id===id);
 function slotPos(b,slot){ const c=slot%b.cols, r=Math.floor(slot/b.cols); return {wx:b.ox+c*2+1, wy:b.oy+r*2+1}; }
 
 /* ---- 状態 ---- */
-let seq=0, parts=[], anims=[], ambTimer=null, ambN=0;
+let seq=0, parts=[], anims=[], sortJobs=[], ambTimer=null, ambN=0;
 function freeSlot(b){ const used=new Set(parts.filter(p=>p.bay===b.id&&!p.dead).map(p=>p.slot)); for(let i=0;i<b.cols*b.rows;i++) if(!used.has(i)) return i; return null; }
 function partName(p){ return p.bay+'_'+p.min+'_'+p.max+'_'+p.lvl; }
-function crateSize(rows){ return Math.min(1.6, 0.85+Math.log10(Math.max(1,rows/3000))*0.5); }
+function granCount(rows){ return Math.max(1,Math.min(8,Math.round(rows/8192))); }
+function shelfDims(p){
+  const g=granCount(p.rows), perRow=Math.min(g,4), rows2=g>4?2:1;
+  return {g,perRow,rows2,sx:0.5+perRow*0.44,sy:0.5+rows2*0.44};
+}
 
 function addPart(bid,rows,opts){
   const b=bay(bid); const slot=freeSlot(b);
-  if(slot==null){ toast('ベイが満杯です。マージで木箱をまとめてください','warn'); return null; }
+  if(slot==null){ toast('ベイが満杯です。マージで棚をまとめてください','warn'); return null; }
   seq++;
   const t=slotPos(b,slot);
+  const still=opts&&opts.still;
   const p={id:seq,bay:bid,min:seq,max:seq,lvl:0,rows,slot,
-    wx:(opts&&opts.fromX!=null)?opts.fromX:t.wx-9, wy:t.wy, tx:t.wx, ty:t.wy,
-    scale:1, flash:1, dead:false};
+    wx:still?t.wx:DOCK.wx, wy:still?t.wy:DOCK.wy, tx:t.wx, ty:t.wy,
+    scale:1, flash:still?0:1, dead:false};
   parts.push(p);
   return p;
 }
 
-/* ---- アニメーション(毎フレーム lerp) ---- */
+/* ---- アニメーション ---- */
 function tick(){
   parts.forEach(p=>{
     p.wx+=(p.tx-p.wx)*0.12; p.wy+=(p.ty-p.wy)*0.12;
@@ -103,106 +125,184 @@ function tick(){
   });
   parts=parts.filter(p=>!p.dead);
   anims=anims.filter(a=>{ a.t+=a.dt; if(a.t>=1){ if(a.done) a.done(); return false; } return true; });
+  sortJobs=sortJobs.filter(j=>{ j.t+=0.012; if(j.t>=1){ j.done(); return false; } return true; });
 }
 
-/* ---- 操作: INSERT ---- */
+/* ---- 操作: INSERT(仕分け → 箱詰め) ---- */
 function doInsert(bid){
+  const b=bay(bid);
+  if(freeSlot(b)==null){ toast('ベイが満杯です。マージで棚をまとめてください','warn'); return; }
   const rows=3000+Math.floor(Math.random()*27000);
-  const p=addPart(bid,rows);
-  if(!p) return;
-  showSql("INSERT INTO events (tenant_id, user_id, ts, url) VALUES (…)  -- "+rows.toLocaleString()+" 行 → 新しい Part "+partName(p));
-  toast('搬入: 届いたブロックはソートされ、そのまま新しい木箱(Part)に。既存の木箱には触れません');
+  // 仕分けトレイ: バラバラに届いた荷物がキー順に並び直る
+  const n=7, tiles=[];
+  const order=[...Array(n).keys()];
+  for(let i=order.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [order[i],order[j]]=[order[j],order[i]]; }
+  for(let i=0;i<n;i++){
+    tiles.push({v:order[i], fx:DOCK.wx-1.6+i*0.55, fy:DOCK.wy+(Math.random()*1.6-0.8), // 届いた位置(乱雑)
+                tx:DOCK.wx-1.6+order[i]*0.55, ty:DOCK.wy});                              // ソート後の位置
+  }
+  sortJobs.push({t:0,tiles,done:()=>{
+    const p=addPart(bid,rows);
+    if(p) showSql("INSERT INTO events (tenant_id, user_id, ts, url) VALUES (…)  -- "+rows.toLocaleString()+" 行 → 新しい Part "+partName(p));
+  }});
+  toast('仕分け: 届いたブロックを ORDER BY 順に並べ替え、8192 行ごとの箱(granule)に詰めて新しい棚(Part)へ。既存の棚には触れません');
 }
-
-/* ---- 操作: マージ(2つ指定 or ベイ全部) ---- */
+function spawnMerged(bd,slot,np){
+  anims.push({t:0,dt:0.045,done:()=>{
+    seq++;
+    const t=slotPos(bd,slot);
+    parts.push({id:seq,bay:bd.id,min:np.min,max:np.max,lvl:np.lvl,rows:np.rows,slot,
+      wx:t.wx,wy:t.wy,tx:t.wx,ty:t.wy,scale:0.2,flash:1,dead:false,merged:true});
+  }});
+}
 function doMerge(a,b){
   if(a.bay!==b.bay){ toast('パーティションをまたぐマージはできません(実物と同じ)','warn'); return false; }
   const bd=bay(a.bay);
-  const mid=slotPos(bd, Math.min(a.slot,b.slot));
+  const slot=Math.min(a.slot,b.slot);
+  const mid=slotPos(bd,slot);
   a.tx=mid.wx; a.ty=mid.wy; b.tx=mid.wx; b.ty=mid.wy;
   a.dying=true; b.dying=true;
-  const np={rows:a.rows+b.rows,min:Math.min(a.min,b.min),max:Math.max(a.max,b.max),lvl:Math.max(a.lvl,b.lvl)+1};
-  anims.push({t:0,dt:0.045,done:()=>{
-    seq++;
-    const slot=Math.min(a.slot,b.slot);
-    const t=slotPos(bd,slot);
-    parts.push({id:seq,bay:a.bay,min:np.min,max:np.max,lvl:np.lvl,rows:np.rows,slot,
-      wx:t.wx,wy:t.wy,tx:t.wx,ty:t.wy,scale:0.2,flash:1,dead:false,merged:true});
-  }});
+  spawnMerged(bd,slot,{rows:a.rows+b.rows,min:Math.min(a.min,b.min),max:Math.max(a.max,b.max),lvl:Math.max(a.lvl,b.lvl)+1});
   showSql("OPTIMIZE TABLE events PARTITION '"+a.bay+"'  -- 手動でマージを促す(通常はバックグラウンド)");
-  toast('マージ: 2つの木箱を作り直して1つに置き換え。元の木箱は書き換えず引退');
+  toast('マージ: 2つの棚の箱をマージソートで積み直し、新しい棚に置き換え。元の棚は書き換えず引退');
   return true;
+}
+function doMergeAll(bid){
+  const bd=bay(bid);
+  const act=parts.filter(p=>p.bay===bid&&!p.dying);
+  if(act.length<2){ toast('マージ対象なし(このベイに棚が2つ以上必要)','warn'); return; }
+  const slot=Math.min(...act.map(p=>p.slot));
+  const mid=slotPos(bd,slot);
+  act.forEach(p=>{ p.tx=mid.wx; p.ty=mid.wy; p.dying=true; });
+  spawnMerged(bd,slot,{rows:act.reduce((s,p)=>s+p.rows,0),min:Math.min(...act.map(p=>p.min)),max:Math.max(...act.map(p=>p.max)),lvl:Math.max(...act.map(p=>p.lvl))+1});
+  showSql("OPTIMIZE TABLE events PARTITION '"+bid+"'  -- ベイの木箱を作り直して1つに");
+  toast('マージ: '+act.length+' 本の棚を1本に置き換え。元の棚は書き換えず引退');
 }
 
 /* ---- 描画 ---- */
+function shade(hex,k){
+  const n=parseInt(hex.slice(1),16);
+  return 'rgb('+Math.round(((n>>16)&255)*k)+','+Math.round(((n>>8)&255)*k)+','+Math.round((n&255)*k)+')';
+}
+const LIGHT={x:-0.55,y:-0.83};
 function drawFloor(){
-  // table events のフロア(両ベイを囲む)
-  {
+  { // table events のフロア(両ベイを囲む)
     const x0=BAYS[0].ox-1.1, y0=BAYS[0].oy-1.1;
     const x1=BAYS[1].ox+BAYS[1].cols*2+1.1, y1=BAYS[1].oy+BAYS[1].rows*2+1.1;
-    const c=[iso(x0,y0),iso(x1,y0),iso(x1,y1),iso(x0,y1)];
+    const c=[proj(x0,y0),proj(x1,y0),proj(x1,y1),proj(x0,y1)];
     ctx.setLineDash([6,5]);
     ctx.beginPath(); ctx.moveTo(c[0].x,c[0].y); c.slice(1).forEach(q=>ctx.lineTo(q.x,q.y)); ctx.closePath();
     ctx.strokeStyle='#2c3446'; ctx.stroke(); ctx.setLineDash([]);
-    const lp=iso(x1,y0);
+    const topY=Math.min(...c.map(q=>q.y));
     ctx.fillStyle='#98a0b3'; ctx.font='700 14px '+getComputedStyle(document.body).getPropertyValue('--mono');
     ctx.textAlign='center';
-    ctx.fillText('📄 table events', (c[0].x+c[1].x)/2, Math.min(c[0].y,c[1].y)-14);
+    ctx.fillText('📄 table events', (c[0].x+c[2].x)/2, topY-12);
   }
   BAYS.forEach(b=>{
     for(let c=0;c<b.cols*2;c++) for(let r=0;r<b.rows*2;r++){
-      const p0=iso(b.ox+c,b.oy+r), p1=iso(b.ox+c+1,b.oy+r), p2=iso(b.ox+c+1,b.oy+r+1), p3=iso(b.ox+c,b.oy+r+1);
+      const p0=proj(b.ox+c,b.oy+r), p1=proj(b.ox+c+1,b.oy+r), p2=proj(b.ox+c+1,b.oy+r+1), p3=proj(b.ox+c,b.oy+r+1);
       ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.lineTo(p3.x,p3.y); ctx.closePath();
       ctx.fillStyle=((c+r)%2)?'#131722':'#151a26'; ctx.fill();
       ctx.strokeStyle='#1d2331'; ctx.stroke();
     }
-    const lp=iso(b.ox+b.cols, b.oy+b.rows*2+1.0);
+    const corners=[proj(b.ox,b.oy),proj(b.ox+b.cols*2,b.oy),proj(b.ox+b.cols*2,b.oy+b.rows*2),proj(b.ox,b.oy+b.rows*2)];
+    const botY=Math.max(...corners.map(q=>q.y));
     ctx.fillStyle='#98a0b3'; ctx.font='700 13px '+getComputedStyle(document.body).getPropertyValue('--mono');
-    ctx.textAlign='center'; ctx.fillText('🗓 '+b.label, lp.x, lp.y+14);
+    ctx.textAlign='center'; ctx.fillText('🗓 '+b.label, (corners[0].x+corners[2].x)/2, botY+22);
   });
-  // 搬入コンベア
-  const a=iso(-12.5,5), bpt=iso(-9,5);
-  ctx.strokeStyle='#2a3140'; ctx.lineWidth=10; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(bpt.x,bpt.y); ctx.stroke(); ctx.lineWidth=1;
-  ctx.fillStyle='#5a6478'; ctx.font='11px '+getComputedStyle(document.body).getPropertyValue('--jp');
-  ctx.fillText('INSERT 搬入口', (a.x+bpt.x)/2, a.y-12);
+  // 仕分けトレイ(搬入口)
+  {
+    const c=[proj(DOCK.wx-2.1,DOCK.wy-1.1),proj(DOCK.wx+2.1,DOCK.wy-1.1),proj(DOCK.wx+2.1,DOCK.wy+1.1),proj(DOCK.wx-2.1,DOCK.wy+1.1)];
+    ctx.beginPath(); ctx.moveTo(c[0].x,c[0].y); c.slice(1).forEach(q=>ctx.lineTo(q.x,q.y)); ctx.closePath();
+    ctx.fillStyle='#10141d'; ctx.fill(); ctx.strokeStyle='#2a3140'; ctx.stroke();
+    const botY=Math.max(...c.map(q=>q.y));
+    ctx.fillStyle='#5a6478'; ctx.font='11px '+getComputedStyle(document.body).getPropertyValue('--jp');
+    ctx.textAlign='center'; ctx.fillText('INSERT 搬入口(仕分けトレイ)', (c[0].x+c[2].x)/2, botY+16);
+  }
 }
-function crateFaces(p){
-  const s=crateSize(p.rows)*p.scale;
-  const h=(0.55+Math.min(0.85,p.rows/40000))*p.scale;
-  const cx=p.wx, cy=p.wy;
-  const c=[iso(cx-s/2,cy-s/2), iso(cx+s/2,cy-s/2), iso(cx+s/2,cy+s/2), iso(cx-s/2,cy+s/2)];
-  const up=pt=>({x:pt.x,y:pt.y-h*TH});
-  return {s,h,base:c,top:c.map(up)};
+function drawSortJobs(){
+  sortJobs.forEach(j=>{
+    const e=Math.min(1, j.t*1.6);                 // 前半で並び替え
+    const ease=e<1 ? 1-Math.pow(1-e,3) : 1;
+    j.tiles.forEach(tl=>{
+      const wx=tl.fx+(tl.tx-tl.fx)*ease, wy=tl.fy+(tl.ty-tl.fy)*ease;
+      const p=proj(wx,wy);
+      const hue=105+tl.v*14;
+      ctx.fillStyle='hsl('+hue+' 55% '+(38+tl.v*4)+'%)';
+      ctx.strokeStyle='rgba(0,0,0,.4)';
+      ctx.beginPath(); ctx.roundRect(p.x-7,p.y-7,14,14,3); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='rgba(0,0,0,.55)'; ctx.font='9px '+getComputedStyle(document.body).getPropertyValue('--mono');
+      ctx.textAlign='center'; ctx.fillText(String(tl.v),p.x,p.y+3);
+    });
+    if(e>=1){ // 後半: 「ソート済み」の帯
+      const p=proj(DOCK.wx,DOCK.wy-1.5);
+      ctx.fillStyle='#7dffb2'; ctx.font='700 11px '+getComputedStyle(document.body).getPropertyValue('--jp');
+      ctx.textAlign='center'; ctx.fillText('ソート済み → 8192 行ごとに箱詰め',p.x,p.y);
+    }
+  });
+}
+function crateGeom(p){ // ヒットテスト用の外形(棚全体)
+  const d=shelfDims(p);
+  const sx=d.sx*p.scale, sy=d.sy*p.scale;
+  const base=[proj(p.wx-sx/2,p.wy-sy/2),proj(p.wx+sx/2,p.wy-sy/2),proj(p.wx+sx/2,p.wy+sy/2),proj(p.wx-sx/2,p.wy+sy/2)];
+  const hh=(hpx(0.16)+hpx(0.5))*p.scale;
+  const top=base.map(q=>({x:q.x,y:q.y-hh}));
+  return {base,top};
+}
+function isoBox(wx,wy,sx,sy,hh,yOff,colTop,colSide,flash,edge){
+  const base=[proj(wx-sx/2,wy-sy/2),proj(wx+sx/2,wy-sy/2),proj(wx+sx/2,wy+sy/2),proj(wx-sx/2,wy+sy/2)]
+    .map(q=>({x:q.x,y:q.y-yOff}));
+  const top=base.map(q=>({x:q.x,y:q.y-hh}));
+  const gcx=base.reduce((a,q)=>a+q.x,0)/4, gcy=base.reduce((a,q)=>a+q.y,0)/4;
+  const faces=[];
+  for(let i=0;i<4;i++){
+    const j=(i+1)%4;
+    const cx=(base[i].x+base[j].x)/2, cy=(base[i].y+base[j].y)/2;
+    const ex=base[j].x-base[i].x, ey=base[j].y-base[i].y;
+    const len=Math.hypot(ex,ey)||1;
+    let nx=ey/len, ny=-ex/len;
+    if((cx-gcx)*nx+(cy-gcy)*ny<0){ nx=-nx; ny=-ny; }
+    faces.push({i,j,depth:cy,lum:0.55+0.45*Math.max(0,nx*LIGHT.x+ny*LIGHT.y)});
+  }
+  faces.sort((a,b)=>a.depth-b.depth);
+  faces.forEach(f=>{
+    const q0=top[f.i], q1=top[f.j], q2=base[f.j], q3=base[f.i];
+    ctx.beginPath(); ctx.moveTo(q0.x,q0.y); ctx.lineTo(q1.x,q1.y); ctx.lineTo(q2.x,q2.y); ctx.lineTo(q3.x,q3.y); ctx.closePath();
+    ctx.fillStyle=shade(colSide,f.lum); ctx.fill();
+    if(flash>0){ ctx.fillStyle='rgba(125,255,178,'+(flash*0.5)+')'; ctx.fill(); }
+  });
+  ctx.beginPath(); ctx.moveTo(top[0].x,top[0].y); top.slice(1).forEach(q=>ctx.lineTo(q.x,q.y)); ctx.closePath();
+  ctx.fillStyle=colTop; ctx.fill();
+  if(flash>0){ ctx.fillStyle='rgba(125,255,178,'+(flash*0.5)+')'; ctx.fill(); }
+  ctx.strokeStyle=edge||'rgba(0,0,0,.35)'; ctx.lineWidth=edge&&edge!=='rgba(0,0,0,.35)'?2:1; ctx.stroke(); ctx.lineWidth=1;
+  return {base,top};
 }
 function drawCrate(p,hover,dragging){
-  const {base,top}=crateFaces(p);
+  const d=shelfDims(p);
   const alpha=p.dying?Math.max(0.15,p.scale):1;
   ctx.globalAlpha=alpha;
   // 影
+  const {base}=crateGeom(p);
   ctx.beginPath(); ctx.moveTo(base[0].x,base[0].y); base.slice(1).forEach(q=>ctx.lineTo(q.x,q.y)); ctx.closePath();
   ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fill();
-  const wood=p.merged?['#d7b364','#b08b46','#8f6d33']:['#c9a969','#a8844e','#8a6a3c'];
-  const flash=p.flash>0?`rgba(125,255,178,${p.flash*0.5})`:null;
-  // 左面
-  ctx.beginPath(); ctx.moveTo(top[3].x,top[3].y); ctx.lineTo(top[2].x,top[2].y); ctx.lineTo(base[2].x,base[2].y); ctx.lineTo(base[3].x,base[3].y); ctx.closePath();
-  ctx.fillStyle=wood[1]; ctx.fill(); if(flash){ctx.fillStyle=flash;ctx.fill();}
-  // 右面
-  ctx.beginPath(); ctx.moveTo(top[2].x,top[2].y); ctx.lineTo(top[1].x,top[1].y); ctx.lineTo(base[1].x,base[1].y); ctx.lineTo(base[2].x,base[2].y); ctx.closePath();
-  ctx.fillStyle=wood[2]; ctx.fill(); if(flash){ctx.fillStyle=flash;ctx.fill();}
-  // granule 帯(右面に行数に応じた桟)
-  const g=Math.max(1,Math.min(6,Math.round(p.rows/8192)));
-  ctx.strokeStyle='rgba(0,0,0,.28)';
-  for(let i=1;i<=g;i++){
-    const t=i/(g+1);
-    const x1=top[2].x+(top[1].x-top[2].x)*t, y1=top[2].y+(top[1].y-top[2].y)*t;
-    const x2=base[2].x+(base[1].x-base[2].x)*t, y2=base[2].y+(base[1].y-base[2].y)*t;
-    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  // 棚板(パレット)
+  const platH=hpx(0.16)*p.scale;
+  const platTop=p.merged?'#d7b364':'#8a6f4a';
+  const platSide=p.merged?'#a8844e':'#6d573a';
+  isoBox(p.wx,p.wy,d.sx*p.scale,d.sy*p.scale,platH,0,platTop,platSide,0,p.merged?'#faff69':null);
+  // granule の箱を棚板の上へ(ソート順に整列)
+  const boxS=0.36*p.scale, boxH=hpx(0.5)*p.scale, pitch=0.44*p.scale;
+  const boxes=[];
+  for(let i=0;i<d.g;i++){
+    const c=i%d.perRow, r=Math.floor(i/d.perRow);
+    const bx=p.wx-((d.perRow-1)*pitch)/2+c*pitch;
+    const by=p.wy-((d.rows2-1)*pitch)/2+r*pitch;
+    boxes.push({bx,by,d:proj(bx,by).d});
   }
-  // 天面
-  ctx.beginPath(); ctx.moveTo(top[0].x,top[0].y); top.slice(1).forEach(q=>ctx.lineTo(q.x,q.y)); ctx.closePath();
-  ctx.fillStyle=wood[0]; ctx.fill(); if(flash){ctx.fillStyle=flash;ctx.fill();}
-  ctx.strokeStyle=p.merged?'#faff69':'rgba(0,0,0,.35)'; ctx.lineWidth=p.merged?2:1; ctx.stroke(); ctx.lineWidth=1;
+  boxes.sort((a,b)=>a.d-b.d).forEach(bb=>isoBox(bb.bx,bb.by,boxS,boxS,boxH,platH,'#c9a969','#a8844e',p.flash,null));
+  // ホバー/ドラッグの外形
   if(hover||dragging){
+    const {top}=crateGeom(p);
     ctx.strokeStyle=dragging?'#6fe3ff':'#7dffb2'; ctx.lineWidth=2;
     ctx.beginPath(); ctx.moveTo(top[0].x,top[0].y); top.slice(1).forEach(q=>ctx.lineTo(q.x,q.y)); ctx.closePath(); ctx.stroke(); ctx.lineWidth=1;
   }
@@ -211,48 +311,59 @@ function drawCrate(p,hover,dragging){
 function render(){
   ctx.clearRect(0,0,W,H);
   drawFloor();
-  const order=[...parts].sort((a,b)=>(a.wx+a.wy)-(b.wx+b.wy));
+  drawSortJobs();
+  const order=[...parts].sort((a,b)=>proj(a.wx,a.wy).d-proj(b.wx,b.wy).d);
   order.forEach(p=>drawCrate(p, p===hoverP&&!dragP, p===dragP));
 }
 function loop(){ tick(); render(); requestAnimationFrame(loop); }
 
-/* ---- ヒットテスト & ドラッグ ---- */
-let hoverP=null, dragP=null, dragDX=0, dragDY=0;
+/* ---- ヒットテスト & ドラッグ(木箱=マージ / 空き=カメラぐりぐり) ---- */
+let hoverP=null, dragP=null, dragDX=0, dragDY=0, orbit=null;
 function pick(mx,my){
-  const order=[...parts].sort((a,b)=>(b.wx+b.wy)-(a.wx+a.wy)); // 手前優先
+  const order=[...parts].sort((a,b)=>proj(b.wx,b.wy).d-proj(a.wx,a.wy).d);
   for(const p of order){
     if(p.dying) continue;
-    const {base,top}=crateFaces(p);
+    const {base,top}=crateGeom(p);
     const minX=Math.min(...base.map(q=>q.x)), maxX=Math.max(...base.map(q=>q.x));
     const minY=Math.min(...top.map(q=>q.y)), maxY=Math.max(...base.map(q=>q.y));
     if(mx>=minX&&mx<=maxX&&my>=minY&&my<=maxY) return p;
   }
   return null;
 }
-function screenToWorld(mx,my){ const o=ORIGIN(); const dx=mx-o.x, dy=my-o.y; return {wx:(dy/TH)+(dx/TW), wy:(dy/TH)-(dx/TW)}; }
 const tip=document.getElementById('tip');
 cv.addEventListener('mousemove',e=>{
   const mx=e.clientX,my=e.clientY;
-  if(dragP){ const w=screenToWorld(mx-dragDX,my-dragDY); dragP.tx=w.wx; dragP.ty=w.wy; tip.style.display='none'; return; }
+  if(orbit){
+    cam.yaw=orbit.yaw+(mx-orbit.mx)*0.006;
+    cam.tilt=Math.min(0.92,Math.max(0.3,orbit.tilt+(my-orbit.my)*0.003));
+    tip.style.display='none'; return;
+  }
+  if(dragP){ const w=unproj(mx-dragDX,my-dragDY); dragP.tx=w.wx; dragP.ty=w.wy; tip.style.display='none'; return; }
   hoverP=pick(mx,my);
   if(hoverP){
     tip.style.display='block'; tip.style.left=(mx+14)+'px'; tip.style.top=(my+14)+'px';
-    tip.innerHTML='📦 '+partName(hoverP)+'<small>'+hoverP.rows.toLocaleString()+' 行 · マージ世代 L'+hoverP.lvl+(hoverP.lvl>0?'(マージ産)':'')+' — ドラッグで別の木箱とマージ</small>';
+    tip.innerHTML='🗄 Part '+partName(hoverP)+'<small>'+hoverP.rows.toLocaleString()+' 行 = granule 箱 ×'+granCount(hoverP.rows)+' · マージ世代 L'+hoverP.lvl+(hoverP.lvl>0?'(マージ産)':'')+' — ドラッグで別の棚とマージ</small>';
   } else tip.style.display='none';
 });
 cv.addEventListener('mousedown',e=>{
   const p=pick(e.clientX,e.clientY);
-  if(!p) return;
-  dragP=p; cv.classList.add('drag');
-  const s=iso(p.wx,p.wy); dragDX=e.clientX-s.x; dragDY=e.clientY-s.y;
+  if(p){
+    dragP=p; cv.classList.add('drag');
+    const s=proj(p.wx,p.wy); dragDX=e.clientX-s.x; dragDY=e.clientY-s.y;
+  }else{
+    orbit={mx:e.clientX,my:e.clientY,yaw:cam.yaw,tilt:cam.tilt}; cv.classList.add('drag');
+  }
 });
 window.addEventListener('mouseup',e=>{
+  cv.classList.remove('drag');
+  if(orbit){ orbit=null; return; }
   if(!dragP) return;
   const target=(()=>{ const cand=pick(e.clientX,e.clientY); return (cand&&cand!==dragP)?cand:null; })();
-  const p=dragP; dragP=null; cv.classList.remove('drag');
+  const p=dragP; dragP=null;
   if(target){ if(doMerge(p,target)) return; }
-  const t=slotPos(bay(p.bay),p.slot); p.tx=t.wx; p.ty=t.wy; // 戻す
+  const t=slotPos(bay(p.bay),p.slot); p.tx=t.wx; p.ty=t.wy;
 });
+cv.addEventListener('wheel',e=>{ e.preventDefault(); cam.k=Math.min(90,Math.max(24,cam.k*(e.deltaY<0?1.08:0.93))); },{passive:false});
 
 /* ---- HUD ---- */
 const sqlEl=document.getElementById('sql'), toastEl=document.getElementById('toast');
@@ -260,6 +371,8 @@ let sqlT=null,toastT=null;
 function showSql(s){ sqlEl.textContent=s; sqlEl.classList.add('on'); clearTimeout(sqlT); sqlT=setTimeout(()=>sqlEl.classList.remove('on'),6000); }
 function toast(s,warn){ toastEl.textContent=s; toastEl.className=warn?'on warn':'on'; toastEl.id='toast'; clearTimeout(toastT); toastT=setTimeout(()=>toastEl.classList.remove('on'),5200); }
 document.getElementById('bIns').addEventListener('click',()=>doInsert(document.getElementById('selBay').value));
+document.getElementById('bMerge').addEventListener('click',()=>doMergeAll(document.getElementById('selBay').value));
+document.getElementById('bView').addEventListener('click',()=>{ cam={...CAM0}; });
 document.getElementById('bAmb').addEventListener('click',()=>{
   const b=document.getElementById('bAmb');
   if(ambTimer){ clearInterval(ambTimer); ambTimer=null; b.textContent='▶ 自動再生'; return; }
@@ -279,11 +392,10 @@ document.getElementById('bAmb').addEventListener('click',()=>{
 });
 
 /* ---- 初期状態 & テスト用フック ---- */
-(()=>{ const p=addPart('202607',28000,{fromX:slotPos(bay('202607'),0).wx}); p.lvl=2; p.merged=true; })();
-addPart('202607',3100,{fromX:slotPos(bay('202607'),1).wx});
-(()=>{ const p=addPart('202606',41000,{fromX:slotPos(bay('202606'),0).wx}); p.lvl=1; p.merged=true; })();
-parts.forEach(p=>{ p.wx=p.tx; p.wy=p.ty; p.flash=0; });
-window.__v2={ get parts(){return parts;}, iso, partName };
+(()=>{ const p=addPart('202607',28000,{still:true}); p.lvl=2; p.merged=true; })();
+addPart('202607',3100,{still:true});
+(()=>{ const p=addPart('202606',41000,{still:true}); p.lvl=1; p.merged=true; })();
+window.__v2={ get parts(){return parts;}, proj, partName, get cam(){return cam;}, get sortJobs(){return sortJobs;} };
 loop();
 </script>
 </body>
