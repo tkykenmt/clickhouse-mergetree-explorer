@@ -109,8 +109,8 @@ const LANE_COL=['#6fe3ff','#ffb46f','#c9a2ff']; // granule↔レーン(CPU コ�
 function partsBottom(){ return parts.reduce((m,p)=>Math.max(m,p.ty+partH(p)),INS_Y+108); }
 function laneGeom(i){
   if(MOB){
-    const w=Math.min(420,W-20), h=80;
-    const yTop=Math.min(H-64-(h+8)*LANES, partsBottom()+14);
+    const w=Math.min(420,W-20), h=72; // 薄め(結果テーブルのぶんを下に確保)
+    const yTop=Math.min(H-100-(h+8)*LANES, partsBottom()+14);
     return {x:(W-w)/2, y:yTop+i*(h+8), w, h};
   }
   const w=Math.min(380,(W-60)/LANES-12);
@@ -121,7 +121,7 @@ function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.pus
 function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12+58; }
 function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+36)+42; }
 function layout(){
-  const y0=INS_Y+(MOB?84:76), x0=MOB?10:24, maxW=W-(MOB?10:24);
+  const y0=INS_Y+(MOB?98:76), x0=MOB?10:24, maxW=W-(MOB?10:218);
   let x=x0, y=y0, rowH=0;
   parts.forEach(p=>{
     const w=partW(p), h=partH(p);
@@ -237,8 +237,8 @@ function doMerge(){
 let PRED=600;
 const BUCKET=200; // GROUP BY intDiv(user_id, 200)*200
 function SQLQ(){ return 'SELECT intDiv(user_id, '+BUCKET+')*'+BUCKET+' AS bucket, count() FROM events WHERE user_id >= '+PRED+' GROUP BY bucket ORDER BY bucket'; }
-function clearQueryView(){ // 結果テーブルと枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
-  result=null; setStage(0);
+function clearQueryView(){ // 結果テーブル・レーン・枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
+  result=null; lanes=[]; setStage(0);
   parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.probe=undefined; p.scanG=undefined; });
 }
 function hiOf(p,i){ return (i+1<p.granules.length)?p.granules[i+1][0]:1000; }
@@ -347,7 +347,7 @@ function startProcess(act,keptN,total){
         const sum=Object.keys(l.partial).reduce((s,b)=>s+l.partial[b],0);
         fly.push({kind:'chip', col:LANE_COL[l.i], txt:sum.toLocaleString(),
           fx:g.x+g.w*0.87, fy:g.y+g.h/2, txp:W/2, typ:resY(rows.length)+10, t:0, dt:0.028,
-          done:()=>{ got++; if(got===LANES){ result={rows}; lanes=[]; } }});
+          done:()=>{ got++; if(got===LANES){ result={rows}; } }});
       });
       setTimeout(()=>{ busy=false; },2500); // 結果テーブルと枝刈り表示は次の操作まで残す
     }
@@ -489,8 +489,42 @@ function drawLanes(){
     ctx.fillText('→', z3x-9, zoneY+zoneH/2+4);
   });
 }
+function tableSample(n){
+  return parts.filter(p=>!p.dying).flatMap(p=>p.granules.flat()).sort((a,b)=>a-b).slice(0,n);
+}
+function drawSample(){
+  if(MOB){
+    const vals=tableSample(7);
+    if(!vals.length) return;
+    ctx.fillStyle='#8b93a5'; ctx.font='700 9px '+JP(); ctx.textAlign='left';
+    ctx.fillText('先頭の行(user_id):', 12, INS_Y+86);
+    ctx.fillStyle='#6e7890'; ctx.font='9px '+MONO();
+    ctx.fillText(vals.join(', ')+', …', 110, INS_Y+86);
+    return;
+  }
+  const vals=tableSample(10);
+  if(!vals.length) return;
+  const w=170, x=W-w-24, y=INS_Y+76, rh=15;
+  const hgt=50+vals.length*rh+8;
+  ctx.fillStyle='#101319'; ctx.strokeStyle='#2a3242';
+  ctx.beginPath(); ctx.roundRect(x,y,w,hgt,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#98a0b3'; ctx.font='700 10px '+JP(); ctx.textAlign='left';
+  ctx.fillText('テーブルの中身(先頭10行)', x+10, y+16);
+  ctx.fillStyle='#5a6478'; ctx.font='9px '+MONO();
+  ctx.fillText('SELECT * FROM events LIMIT 10', x+10, y+29);
+  ctx.fillStyle='#5a6478'; ctx.font='700 9px '+MONO();
+  ctx.fillText('user_id', x+14, y+43);
+  ctx.fillText('…', x+w-40, y+43);
+  ctx.strokeStyle='#1d2331'; ctx.beginPath(); ctx.moveTo(x+8,y+47.5); ctx.lineTo(x+w-8,y+47.5); ctx.stroke();
+  vals.forEach((v,i)=>{
+    ctx.fillStyle='#c7cede'; ctx.font='10px '+MONO();
+    ctx.fillText(String(v), x+14, y+60+i*rh);
+    ctx.fillStyle='#3a4152'; ctx.fillText('…', x+w-40, y+60+i*rh);
+  });
+}
 function resY(n){
   const hgt=46+Math.max(1,n)*17;
+  if(MOB&&lanes.length){ const g=laneGeom(LANES-1); return Math.min(g.y+g.h+10, H-hgt-10); } // レーンの下
   return Math.min(partsBottom()+14, H-hgt-40); // Parts の直下(画面下端には張り付けない)
 }
 function drawResult(){
@@ -533,6 +567,7 @@ function render(){
     ctx.fillStyle='#5a6478'; ctx.font='10px '+JP();
     ctx.fillText('セルの数字 = user_id。1行 = granule = 8,192 行の窓', 350, INS_Y+62);
   }
+  drawSample();
   parts.forEach(drawPart);
   drawLanes();
   drawResult();
