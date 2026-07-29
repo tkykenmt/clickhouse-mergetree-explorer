@@ -13,12 +13,7 @@
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--jp)}
-canvas{display:block;touch-action:none}
-#crumb{flex-basis:100%;display:flex;gap:6px;align-items:center;font-size:11px;color:var(--dim);font-family:var(--jp);margin-top:-4px}
-#crumb span{cursor:pointer;border-bottom:1px dotted #3a4152;padding:1px 2px}
-#crumb span.on{color:var(--yellow);border-color:var(--yellow);font-weight:700}
-#crumb i{font-style:normal;color:#3a4152}
-#lvlhint{position:fixed;right:12px;bottom:12px;font-size:10px;color:#57617a;z-index:9;pointer-events:none;font-family:var(--jp)}
+canvas{display:block}
 #hud{position:fixed;top:0;left:0;right:0;display:flex;gap:14px;align-items:center;padding:12px 18px;background:linear-gradient(#0c0d10f0,#0c0d1000);z-index:10;pointer-events:none}
 #hud>*{pointer-events:auto}
 #hud h1{font-size:18px;margin:0;white-space:nowrap}
@@ -58,8 +53,6 @@ canvas{display:block;touch-action:none}
   #steps{font-size:10.5px;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch}
   #steps .step{padding:2px 8px}
   #toast{font-size:12px;bottom:10px;padding:6px 10px}
-  #crumb{font-size:10px}
-  #lvlhint{font-size:9px;right:8px;bottom:4px}
 }
 </style>
 </head>
@@ -95,7 +88,6 @@ canvas{display:block;touch-action:none}
   </span>
   <div id="sqlbar"></div>
   <div id="resgrid"></div>
-  <div id="crumb"><span data-l="0">クラスター</span><i>▸</i><span data-l="1">ノード node-1</span><i>▸</i><span data-l="2" class="on">テーブル otel_events</span></div>
   <div id="steps">
     <span class="step" data-s="1">① 索引分析(二分探索)</span><i>→</i>
     <span class="step" data-s="2">② 対象 granule だけ読む</span><i>→</i>
@@ -105,7 +97,6 @@ canvas{display:block;touch-action:none}
 </div>
 <canvas id="cv"></canvas>
 <div id="toast"></div>
-<div id="lvlhint">🔍 スクロール / ピンチ = 粒度を自由に切り替え(操作中もカメラは奪わない) ／ ▶ 自動再生 = カメラ付きツアー</div>
 
 <script>
 'use strict';
@@ -125,62 +116,6 @@ function resize(){ DPR=window.devicePixelRatio||1; W=window.innerWidth; H=window
 function updateTop(){ INS_Y=Math.max(106, document.getElementById('hud').offsetHeight+8); }
 window.addEventListener('resize',resize); resize();
 
-/* ---- カメラ: 連続ズーム。ラベルは画面等倍、粒度は倍率に応じて滑らかに切り替わる ---- */
-let cam={x:0,y:0,k:1}, camT=null, crumbLvl=2;
-const KMIN=0.24, KMAX=2.5;
-function camClamp(){
-  cam.k=Math.min(KMAX,Math.max(KMIN,cam.k));
-  const x0=-W*1.05, x1=W*2.0, y0=-H*0.7, y1=H*1.5;
-  const vw=W/cam.k, vh=H/cam.k;
-  cam.x=(vw>=x1-x0)?(x0+x1-vw)/2:Math.min(x1-vw,Math.max(x0,cam.x));
-  cam.y=(vh>=y1-y0)?(y0+y1-vh)/2:Math.min(y1-vh,Math.max(y0,cam.y));
-}
-function zoomAt(px,py,k2){
-  k2=Math.min(KMAX,Math.max(KMIN,k2));
-  const wx=px/cam.k+cam.x, wy=py/cam.k+cam.y;
-  cam.k=k2; cam.x=wx-px/cam.k; cam.y=wy-py/cam.k; camClamp();
-}
-function camGo(x,y,k,s){ camT={x,y,k,s:s||0.14}; }
-function fitRect(x0,y0,x1,y1,s){
-  const k=Math.min(KMAX,Math.max(KMIN,Math.min(W/(x1-x0),H/(y1-y0))*0.92));
-  camT={k, x:(x0+x1)/2-W/k/2, y:(y0+y1)/2-H/k/2, s:s||0.14};
-}
-function clientPos(){ return {x:W/2-150, y:INS_Y-300}; }
-function camGoLevel(l,slow){
-  const s=slow?0.055:0.14;
-  if(l===2) camGo(0,0,1,s);
-  else if(l===1) fitRect(-110,INS_Y-110,W+110,Math.max(H+130,partsBottom()+140),s);
-  else fitRect(-W*0.55-70,INS_Y-340,W*1.88,Math.max(H+170,partsBottom()+200),s);
-}
-document.querySelectorAll('#crumb span').forEach(el=>el.addEventListener('click',()=>camGoLevel(+el.dataset.l)));
-function crumbSync(){
-  const l=cam.k>0.9?2:(cam.k>0.45?1:0);
-  if(l===crumbLvl) return; crumbLvl=l;
-  document.querySelectorAll('#crumb span').forEach(el=>el.classList.toggle('on',+el.dataset.l===l));
-}
-cv.addEventListener('wheel',e=>{ e.preventDefault(); camT=null; zoomAt(e.clientX,e.clientY,cam.k*Math.exp(-e.deltaY*0.0012)); },{passive:false});
-cv.addEventListener('dblclick',()=>camGo(0,0,1));
-const ptrs=new Map(); let dragPt=null, pinch=null;
-cv.addEventListener('pointerdown',e=>{ cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  dragPt=(ptrs.size===1)?{x:e.clientX,y:e.clientY}:null; pinch=null; camT=null; });
-cv.addEventListener('pointermove',e=>{
-  if(!ptrs.has(e.pointerId)) return;
-  ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  if(ptrs.size===2){
-    const [a,b]=[...ptrs.values()];
-    const d=Math.hypot(a.x-b.x,a.y-b.y), mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
-    if(pinch){ zoomAt(mx,my,cam.k*(d/pinch.d)); cam.x-=(mx-pinch.mx)/cam.k; cam.y-=(my-pinch.my)/cam.k; camClamp(); }
-    pinch={d,mx,my};
-  }else if(dragPt){
-    cam.x-=(e.clientX-dragPt.x)/cam.k; cam.y-=(e.clientY-dragPt.y)/cam.k; camClamp();
-    dragPt={x:e.clientX,y:e.clientY};
-  }
-});
-['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,e=>{
-  ptrs.delete(e.pointerId); pinch=null;
-  dragPt=(ptrs.size===1)?{...[...ptrs.values()][0]}:null;
-}));
-
 const MONO=()=>getComputedStyle(document.body).getPropertyValue('--mono');
 const JP=()=>getComputedStyle(document.body).getPropertyValue('--jp');
 
@@ -194,7 +129,6 @@ let mv={}, mvFlash=0;   // MV hourly_counts(書き込み時に集計)
 let mv2={}, mv2Flash=0; // MV daily_counts(hourly からのカスケード)
 let projOn=false;       // ADD PROJECTION 済みか
 let ENG='mt', mutSeq=6;  // ENGINE(mt/rmt) と mutation バージョン
-let cine=false;   // true = 自動再生ツアー中だけカメラが物語を追う
 let pulse=0;      // 要約カードの実行中表示の鼓動
 const LANES=3; // max_threads の縮尺
 const LANE_COL=['#6fe3ff','#ffb46f','#c9a2ff']; // granule↔レーン(CPU コア)の対応色
@@ -227,14 +161,6 @@ function layout(){
 
 /* ---- アニメーション駆動 ---- */
 function tick(){
-  if(camT){
-    const s=camT.s||0.14;
-    cam.x+=(camT.x-cam.x)*s; cam.y+=(camT.y-cam.y)*s; cam.k+=(camT.k-cam.k)*s;
-    if(Math.abs(camT.k-cam.k)<0.003&&Math.abs(camT.x-cam.x)<1.5&&Math.abs(camT.y-cam.y)<1.5){ cam={x:camT.x,y:camT.y,k:camT.k}; camT=null; }
-    camClamp();
-  }
-  crumbSync();
-  pulse=(pulse+0.04)%1;
   parts.forEach(p=>{
     p.x+=(p.tx-p.x)*0.12; p.y+=(p.ty-p.y)*0.12;
     if(p.flash>0) p.flash=Math.max(0,p.flash-0.02);
@@ -430,8 +356,7 @@ function doSelect(){
   // 上の SQL ペインがクライアントそのもの。飛来演出は不要になった
   showSql(SQLQ()+';');
   showMsg('実行中…');
-  if(cine){ camGoLevel(0,true); setTimeout(()=>camGoLevel(2,true),2200); setTimeout(()=>selExec(act),3200); }
-  else setTimeout(()=>selExec(act),250);
+  setTimeout(()=>selExec(act),250);
 }
 function selExec(act){
   setStage(1);
@@ -552,10 +477,7 @@ function startProcess(act,keptN,total){
             toast('④ 時間帯ごとの部分集計をマージ → 結果は上の結果ペイン(=クライアント)へ。SQL → 索引 → granule → レーン → マージ → 結果、がクエリの一生');
           } }});
       });
-      setTimeout(()=>{
-        if(cine){ camGoLevel(0,true); setTimeout(()=>{ camGo(0,0,1,0.05); busy=false; },4600); }
-        else busy=false;
-      },cine?2200:1800);
+      setTimeout(()=>{ busy=false; },1800);
     }
   },380);
 }
@@ -654,7 +576,19 @@ function drawPart(p){
   ctx.globalAlpha=1;
 }
 function drawLanes(){
-  if(!lanes.length) return;
+  if(!lanes.length){ // 待機中も枠を見せて配置を安定させる(モバイルは MV と場所を共有するので出さない)
+    if(MOB) return;
+    for(let i=0;i<LANES;i++){
+      const g=laneGeom(i);
+      ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
+      ctx.beginPath(); ctx.roundRect(g.x,g.y,g.w,g.h,10); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle='#3a4152'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
+      ctx.fillText('processing lane '+(i+1)+' = CPU コア', g.x+10, g.y+17);
+      ctx.fillStyle='#2e3542'; ctx.font='10px '+JP();
+      ctx.fillText('SELECT 実行時、対象の granule だけがここへ流れて SIMD で評価される', g.x+10, g.y+g.h/2+6);
+    }
+    return;
+  }
   lanes.forEach(l=>{
     const g=laneGeom(l.i);
     ctx.fillStyle='#111319'; ctx.strokeStyle='#262a33';
@@ -764,70 +698,6 @@ function lvlStats(){
   const g=act.reduce((s,p)=>s+p.granules.length,0);
   return {act, n:act.length, g, rows:g*8192};
 }
-function drawOutside(){
-  // ノードの外側(クラスター)は常在。ラベルは画面等倍(サイズ/k)で潰れない
-  const fz=s=>s/Math.max(cam.k,KMIN);
-  const oA=Math.max(0,Math.min(1,(0.88-cam.k)/0.28));
-  ctx.textAlign='left';
-  // ノード枠(常時うっすら)
-  ctx.globalAlpha=0.35+oA*0.65;
-  ctx.strokeStyle='#2a3242';
-  const nb=Math.max(H+110, partsBottom()+120); // ノード枠の下端はコンテンツ追従
-  ctx.beginPath(); ctx.roundRect(-80,INS_Y-70,W+160,nb-(INS_Y-70),18); ctx.stroke();
-  if(oA<=0.02){ ctx.globalAlpha=1; return; }
-  ctx.globalAlpha=oA;
-  ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(14)+'px '+JP();
-  ctx.fillText('ClickHouse ノード node-1(clickhouse-server)', -62, INS_Y-70-fz(8));
-  const cp=clientPos();
-  const kx=-W*0.55;
-  // クラスター枠
-  ctx.strokeStyle='#20293a';
-  ctx.beginPath(); ctx.roundRect(kx-70,INS_Y-330,W*1.88-(kx-70),nb+90-(INS_Y-330),26); ctx.stroke();
-  ctx.fillStyle='#98a0b3'; ctx.font='700 '+fz(19)+'px '+JP();
-  ctx.fillText('ClickHouse クラスター', kx-40, INS_Y-330+fz(30));
-  // クライアント(常に上。上部の SQL / 結果ペインの主)
-  ctx.fillStyle='#12151c'; ctx.strokeStyle='#3d8ba3';
-  ctx.beginPath(); ctx.roundRect(cp.x,cp.y,300,96,12); ctx.fill(); ctx.stroke();
-  ctx.fillStyle='#e8eaf0'; ctx.font='700 '+fz(13)+'px '+JP();
-  ctx.fillText('クライアント', cp.x+fz(10), cp.y+fz(24));
-  ctx.fillStyle='#57617a'; ctx.font=fz(9)+'px '+JP();
-  ctx.fillText('SQL ペインと結果ペイン = この画面', cp.x+fz(10), cp.y+fz(42));
-  ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
-  ctx.beginPath(); ctx.moveTo(W/2,cp.y+96); ctx.lineTo(W/2,INS_Y-70); ctx.stroke(); ctx.setLineDash([]);
-  ctx.fillStyle='#57617a'; ctx.font=fz(9)+'px '+JP();
-  ctx.fillText('SQL ↓ ／ 結果 ↑', W/2+14, (cp.y+96+INS_Y-70)/2);
-  // Keeper ×3(協調サービス。入れ子ではなく並存)
-  ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(11)+'px '+JP();
-  ctx.fillText('ClickHouse Keeper(協調サービス)', kx, INS_Y-fz(6));
-  for(let i=0;i<3;i++){
-    const ky=INS_Y+10+i*88;
-    ctx.fillStyle='#12151c'; ctx.strokeStyle='#3a4152';
-    ctx.beginPath(); ctx.roundRect(kx,ky,300,68,10); ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#c7cede'; ctx.font='700 '+fz(11)+'px '+MONO();
-    ctx.fillText('keeper-'+(i+1), kx+fz(10), ky+fz(24));
-    ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
-    ctx.beginPath(); ctx.moveTo(kx+300,ky+34); ctx.lineTo(-80,INS_Y+150); ctx.stroke(); ctx.setLineDash([]);
-  }
-  // レプリカ node-2(簡略)
-  const n2x=W+150, n2y=INS_Y+10, n2w=Math.max(500,W*0.5), n2h=330;
-  ctx.fillStyle='#0f1116'; ctx.strokeStyle='#2a3242';
-  ctx.beginPath(); ctx.roundRect(n2x,n2y,n2w,n2h,16); ctx.fill(); ctx.stroke();
-  ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(14)+'px '+JP();
-  ctx.fillText('ノード node-2(レプリカ)', n2x+fz(12), n2y+fz(26));
-  for(let i=0;i<3;i++){
-    ctx.fillStyle='#14161b'; ctx.strokeStyle='#262a33';
-    ctx.beginPath(); ctx.roundRect(n2x+30+i*130,n2y+70,110,60,8); ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#4d5563'; ctx.font='700 '+fz(9)+'px '+MONO();
-    ctx.fillText('Part', n2x+30+i*130+fz(8), n2y+70+fz(20));
-  }
-  ctx.fillStyle='#57617a'; ctx.font=fz(10)+'px '+JP();
-  ctx.fillText('Replicated テーブルなら node-1 と同じ Part 群を複製保持', n2x+fz(12), n2y+180+fz(10));
-  ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
-  ctx.beginPath(); ctx.moveTo(W+80,INS_Y+180); ctx.lineTo(n2x,n2y+150); ctx.stroke(); ctx.setLineDash([]);
-  ctx.fillStyle='#57617a'; ctx.font=fz(9)+'px '+JP();
-  ctx.fillText('レプリケーション(Keeper 経由で調整)', W+90, INS_Y+170);
-  ctx.globalAlpha=1;
-}
 function mvGeom(){
   if(MOB) return {x:10, y:partsBottom()+14, w:W-20};
   const px=24+partW(null)+36;
@@ -871,44 +741,6 @@ function drawMV(){
     days.forEach((d,i)=>{ ctx.fillStyle='#d5f6c9'; ctx.fillText(d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'  '+mv2[d].toLocaleString(), g2.x+16, g2.y+34+i*13); });
   }
 }
-function drawNodeSummary(){
-  // シーンが読めない倍率では、実物の上に要約カードを重ねる(粒度の連続切り替え)
-  const a=Math.max(0,Math.min(1,(0.52-cam.k)/0.16));
-  if(a<=0.02) return;
-  const fz=s=>s/Math.max(cam.k,KMIN);
-  const s=lvlStats();
-  const x=W*0.05, y=INS_Y+30, w=W*0.9;
-  const hh=Math.min(fz(164),(H-INS_Y)*0.9); // 中身が画面等倍なので高さも fz 基準
-  ctx.globalAlpha=a;
-  ctx.fillStyle='#101319f0'; ctx.strokeStyle='#2a3242';
-  ctx.beginPath(); ctx.roundRect(x,y,w,hh,fz(8)); ctx.fill(); ctx.stroke();
-  ctx.fillStyle='#e8eaf0'; ctx.font='700 '+fz(15)+'px '+JP(); ctx.textAlign='left';
-  ctx.fillText('テーブル otel_events(要約)', x+fz(14), y+fz(26));
-  ctx.fillStyle='#c7cede'; ctx.font='700 '+fz(11)+'px '+MONO();
-  ctx.fillText('Part ×'+s.n+' ・ granule ×'+s.g+' ・ '+s.rows.toLocaleString()+' 行', x+fz(14), y+fz(48));
-  const td=s.act.filter(q=>q.day===TODAY).length;
-  ctx.fillStyle='#8b93a5'; ctx.font=fz(10)+'px '+JP();
-  ctx.fillText('パーティション: 今日 '+td+' / 昨日 '+(s.n-td)+' ・ MV ×2(hourly→daily) ・ ENGINE '+(ENG==='rmt'?'ReplacingMT':'MergeTree')+(projOn?' ・ ⚡proj':''), x+fz(14), y+fz(66));
-  const bw=fz(50), bh=fz(30), gp=fz(9);
-  const maxB=Math.max(1,Math.floor((w-fz(28))/(bw+gp)));
-  s.act.slice(0,maxB).forEach((p,i)=>{
-    ctx.fillStyle='#1b2431'; ctx.strokeStyle='#3a4152';
-    ctx.beginPath(); ctx.roundRect(x+fz(14)+i*(bw+gp), y+fz(78), bw, bh, fz(5)); ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#98a0b3'; ctx.font='700 '+fz(9)+'px '+MONO(); ctx.textAlign='center';
-    ctx.fillText(p.granules.length+' g', x+fz(14)+i*(bw+gp)+bw/2, y+fz(78)+bh/2+fz(3)); ctx.textAlign='left';
-  });
-  if(busy&&curStage>0){
-    const names=['','① 索引分析(二分探索)','② 対象 granule だけ読み取り','③ レーン(CPU コア)で並列処理','④ 部分集計をマージ → 結果を返却'];
-    const gA=0.55+0.45*Math.sin(pulse*Math.PI*2);
-    ctx.strokeStyle='rgba(250,255,105,'+(gA*a).toFixed(3)+')';
-    ctx.beginPath(); ctx.roundRect(x,y,w,hh,fz(8)); ctx.stroke();
-    ctx.fillStyle='#faff69'; ctx.font='700 '+fz(12)+'px '+JP();
-    ctx.fillText('実行中: '+names[curStage], x+fz(14), y+hh-fz(34));
-  }
-  ctx.fillStyle='#6fe3ff'; ctx.font='700 '+fz(10)+'px '+JP();
-  ctx.fillText('▶ ズームイン(またはダブルクリック)で Part / granule の実物へ', x+fz(14), y+hh-fz(12));
-  ctx.globalAlpha=1;
-}
 function resY(n){
   const hgt=46+Math.max(1,n)*17;
   if(MOB&&lanes.length){ const g=laneGeom(LANES-1); return Math.min(g.y+g.h+10, H-hgt-10); } // レーンの下
@@ -940,9 +772,6 @@ function drawResult(){
 function render(){
   ctx.setTransform(DPR,0,0,DPR,0,0);
   ctx.clearRect(0,0,W,H);
-  ctx.save();
-  ctx.scale(cam.k,cam.k); ctx.translate(-cam.x,-cam.y);
-  drawOutside();
   ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
   ctx.strokeRect(12,INS_Y,W-24,48); ctx.setLineDash([]);
   ctx.fillStyle='#5a6478'; ctx.font='10px '+JP(); ctx.textAlign='left';
@@ -961,10 +790,9 @@ function render(){
   parts.forEach(drawPart);
   drawMV();
   drawLanes();
-  drawNodeSummary();
   fly.forEach(f=>{
     if(f.kind==='chip'){
-      const sc=1/Math.max(cam.k,0.55); // ズームアウト中も画面上で同じ大きさに見せる
+      const sc=1; // カメラ撤去後は等倍
       ctx.font='700 '+(11*sc)+'px '+MONO();
       const tw=ctx.measureText(f.txt).width+18*sc;
       ctx.fillStyle='#101a13'; ctx.strokeStyle=f.col; ctx.lineWidth=sc;
@@ -993,7 +821,6 @@ function render(){
     ctx.fillStyle='#e8eaf0'; ctx.font='9px '+MONO(); ctx.textAlign='center';
     ctx.fillText(fmtT(f.v), f.x+CELL/2, f.y+16); ctx.textAlign='left';
   });
-  ctx.restore();
 }
 function loop(){ tick(); render(); requestAnimationFrame(loop); }
 
@@ -1049,11 +876,10 @@ document.getElementById('svcSel').addEventListener('change',e=>{ SVCF=e.target.v
 document.getElementById('idxSel').addEventListener('change',e=>{ IDXT=e.target.value; });
 document.getElementById('predR').addEventListener('input',()=>{ PRED=+document.getElementById('predR').value; document.getElementById('predV').textContent=fmtT(PRED); });
 let demoT=null, demoSteps=null;
-function stopDemo(){ if(demoT){ clearInterval(demoT); demoT=null; demoSteps=null; cine=false; document.getElementById('bAmb').textContent='▶ 自動再生'; } }
+function stopDemo(){ if(demoT){ clearInterval(demoT); demoT=null; demoSteps=null;document.getElementById('bAmb').textContent='▶ 自動再生'; } }
 document.getElementById('bAmb').addEventListener('click',()=>{
   if(demoT){ stopDemo(); return; }
   demoSteps=['insert','insert','merge','select'];
-  cine=true; // ツアー中だけカメラが物語を追う
   document.getElementById('bAmb').textContent='⏹ 停止';
   demoT=setInterval(()=>{
     if(demoSteps.length===0){ if(result&&!busy) stopDemo(); return; } // 帰還まで見届けて終了
