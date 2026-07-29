@@ -84,7 +84,7 @@ canvas{display:block;touch-action:none}
 </div>
 <canvas id="cv"></canvas>
 <div id="toast"></div>
-<div id="lvlhint">⬍ スクロール / ピンチ = 情報の粒度を切り替え(クラスター ⇔ ノード ⇔ テーブル)。上のパスでも移動</div>
+<div id="lvlhint">🔍 スクロール / ピンチ = シームレスズーム ／ ドラッグ = 移動 ／ ▶ SELECT でクエリの一生(クライアント→granule→クライアント)を自動追跡</div>
 
 <script>
 'use strict';
@@ -104,42 +104,61 @@ function resize(){ DPR=window.devicePixelRatio||1; W=window.innerWidth; H=window
 function updateTop(){ INS_Y=Math.max(106, document.getElementById('hud').offsetHeight+8); }
 window.addEventListener('resize',resize); resize();
 
-/* ---- 情報粒度レベル: 0=クラスター / 1=ノード / 2=テーブル。縮尺は変えず、見せる粒度を切り替える ---- */
-let LEVEL=2; const lvlA=[0,0,1]; let wAcc=0; const hot=[];
-function setLevel(n,quiet){
-  n=Math.max(0,Math.min(2,n)); if(n===LEVEL) return;
-  LEVEL=n; wAcc=0;
-  document.querySelectorAll('#crumb span').forEach(el=>el.classList.toggle('on',+el.dataset.l===LEVEL));
-  if(!quiet) toast([
-    'クラスター層: Keeper の協調のもと、ノード同士がデータを複製し合う',
-    'ノード層: 1つの clickhouse-server の中に、Part 置き場(ストレージ)とクエリ実行(レーン)が同居する',
-    'テーブル層: Part・granule・primary.idx の実物。INSERT / SELECT / マージを動かせる'][LEVEL]);
+/* ---- カメラ: 連続ズーム。ラベルは画面等倍、粒度は倍率に応じて滑らかに切り替わる ---- */
+let cam={x:0,y:0,k:1}, camT=null, crumbLvl=2;
+const KMIN=0.24, KMAX=2.5;
+function camClamp(){
+  cam.k=Math.min(KMAX,Math.max(KMIN,cam.k));
+  const x0=-W*1.05, x1=W*2.0, y0=-H*0.7, y1=H*1.5;
+  const vw=W/cam.k, vh=H/cam.k;
+  cam.x=(vw>=x1-x0)?(x0+x1-vw)/2:Math.min(x1-vw,Math.max(x0,cam.x));
+  cam.y=(vh>=y1-y0)?(y0+y1-vh)/2:Math.min(y1-vh,Math.max(y0,cam.y));
 }
-document.querySelectorAll('#crumb span').forEach(el=>el.addEventListener('click',()=>setLevel(+el.dataset.l)));
-cv.addEventListener('wheel',e=>{ e.preventDefault(); wAcc+=e.deltaY;
-  if(wAcc>260) setLevel(LEVEL-1); else if(wAcc<-260) setLevel(LEVEL+1); },{passive:false});
-cv.addEventListener('dblclick',()=>setLevel(LEVEL-1));
-cv.addEventListener('click',e=>{
-  for(const r of hot){
-    if(e.clientX>=r.x&&e.clientX<=r.x+r.w&&e.clientY>=r.y&&e.clientY<=r.y+r.h){
-      if(r.go!=null) setLevel(r.go); else if(r.say) toast(r.say);
-      return;
-    }
-  }
-});
-const ptrs=new Map(); let pinchD=null;
-cv.addEventListener('pointerdown',e=>{ ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); if(ptrs.size===2) pinchD=null; });
+function zoomAt(px,py,k2){
+  k2=Math.min(KMAX,Math.max(KMIN,k2));
+  const wx=px/cam.k+cam.x, wy=py/cam.k+cam.y;
+  cam.k=k2; cam.x=wx-px/cam.k; cam.y=wy-py/cam.k; camClamp();
+}
+function camGo(x,y,k,s){ camT={x,y,k,s:s||0.14}; }
+function fitRect(x0,y0,x1,y1,s){
+  const k=Math.min(KMAX,Math.max(KMIN,Math.min(W/(x1-x0),H/(y1-y0))*0.92));
+  camT={k, x:(x0+x1)/2-W/k/2, y:(y0+y1)/2-H/k/2, s:s||0.14};
+}
+function clientPos(){ return {x:-W*0.72, y:INS_Y+330}; }
+function camGoLevel(l,slow){
+  const s=slow?0.055:0.14;
+  if(l===2) camGo(0,0,1,s);
+  else if(l===1) fitRect(-110,INS_Y-110,W+110,H+130,s);
+  else { const cp=clientPos(); fitRect(cp.x-70,INS_Y-240,W*1.88,H+170,s); }
+}
+document.querySelectorAll('#crumb span').forEach(el=>el.addEventListener('click',()=>camGoLevel(+el.dataset.l)));
+function crumbSync(){
+  const l=cam.k>0.9?2:(cam.k>0.45?1:0);
+  if(l===crumbLvl) return; crumbLvl=l;
+  document.querySelectorAll('#crumb span').forEach(el=>el.classList.toggle('on',+el.dataset.l===l));
+}
+cv.addEventListener('wheel',e=>{ e.preventDefault(); camT=null; zoomAt(e.clientX,e.clientY,cam.k*Math.exp(-e.deltaY*0.0012)); },{passive:false});
+cv.addEventListener('dblclick',()=>camGo(0,0,1));
+const ptrs=new Map(); let dragPt=null, pinch=null;
+cv.addEventListener('pointerdown',e=>{ cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  dragPt=(ptrs.size===1)?{x:e.clientX,y:e.clientY}:null; pinch=null; camT=null; });
 cv.addEventListener('pointermove',e=>{
   if(!ptrs.has(e.pointerId)) return;
   ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(ptrs.size===2){
-    const [a,b]=[...ptrs.values()]; const d=Math.hypot(a.x-b.x,a.y-b.y);
-    if(pinchD==null) pinchD=d;
-    else if(d>pinchD*1.35){ setLevel(LEVEL+1); pinchD=d; }
-    else if(d<pinchD*0.74){ setLevel(LEVEL-1); pinchD=d; }
+    const [a,b]=[...ptrs.values()];
+    const d=Math.hypot(a.x-b.x,a.y-b.y), mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    if(pinch){ zoomAt(mx,my,cam.k*(d/pinch.d)); cam.x-=(mx-pinch.mx)/cam.k; cam.y-=(my-pinch.my)/cam.k; camClamp(); }
+    pinch={d,mx,my};
+  }else if(dragPt){
+    cam.x-=(e.clientX-dragPt.x)/cam.k; cam.y-=(e.clientY-dragPt.y)/cam.k; camClamp();
+    dragPt={x:e.clientX,y:e.clientY};
   }
 });
-['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,e=>{ ptrs.delete(e.pointerId); if(ptrs.size<2) pinchD=null; }));
+['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,e=>{
+  ptrs.delete(e.pointerId); pinch=null;
+  dragPt=(ptrs.size===1)?{...[...ptrs.values()][0]}:null;
+}));
 
 const MONO=()=>getComputedStyle(document.body).getPropertyValue('--mono');
 const JP=()=>getComputedStyle(document.body).getPropertyValue('--jp');
@@ -180,8 +199,13 @@ function layout(){
 
 /* ---- アニメーション駆動 ---- */
 function tick(){
-  for(let i=0;i<3;i++) lvlA[i]+=(((i===LEVEL)?1:0)-lvlA[i])*0.14;
-  wAcc*=0.92;
+  if(camT){
+    const s=camT.s||0.14;
+    cam.x+=(camT.x-cam.x)*s; cam.y+=(camT.y-cam.y)*s; cam.k+=(camT.k-cam.k)*s;
+    if(Math.abs(camT.k-cam.k)<0.003&&Math.abs(camT.x-cam.x)<1.5&&Math.abs(camT.y-cam.y)<1.5){ cam={x:camT.x,y:camT.y,k:camT.k}; camT=null; }
+    camClamp();
+  }
+  crumbSync();
   parts.forEach(p=>{
     p.x+=(p.tx-p.x)*0.12; p.y+=(p.ty-p.y)*0.12;
     if(p.flash>0) p.flash=Math.max(0,p.flash-0.02);
@@ -286,7 +310,7 @@ let PRED=600;
 const BUCKET=200; // GROUP BY intDiv(user_id, 200)*200
 function SQLQ(){ return 'SELECT intDiv(user_id, '+BUCKET+')*'+BUCKET+' AS bucket, count() FROM events WHERE user_id >= '+PRED+' GROUP BY bucket ORDER BY bucket'; }
 function clearQueryView(){ // 結果テーブル・レーン・枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
-  if(LEVEL!==2) setLevel(2,true); // 操作の実物はテーブル層にある
+  camGo(0,0,1); // 操作の実物はテーブル粒度にある(SELECT は直後に旅の起点へ上書き)
   result=null; lanes=[]; setStage(0);
   parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.probe=undefined; p.scanG=undefined; });
 }
@@ -296,6 +320,16 @@ function doSelect(){
   const act=parts.filter(p=>!p.dying);
   if(!act.length){ toast('Part がありません。まず INSERT を','warn'); return; }
   busy=true; clearQueryView();
+  // ⓪ クエリの一生はクライアントから始まる
+  camGoLevel(0,true);
+  showSql(SQLQ()+'  -- ⓪ クライアントが送信 → node-1 が受付');
+  toast('⓪ クライアントが SQL を送信。ここから結果が返るまで、クエリの一生をカメラで追う');
+  const cp=clientPos();
+  fly.push({kind:'chip', col:'#6fe3ff', txt:'SELECT …', fx:cp.x+220, fy:cp.y+52, txp:W*0.5, typ:INS_Y+30, t:0, dt:0.0115});
+  setTimeout(()=>camGoLevel(2,true), 2300);
+  setTimeout(()=>selExec(act), 3400);
+}
+function selExec(act){
   setStage(1);
   showSql(SQLQ()+'  -- ① 各 Part の primary.idx を二分探索');
   toast('① 索引分析: 各 Part の primary.idx 上で「user_id ≧ '+PRED+' を含みうる最初の granule」を二分探索。触るのは索引エントリだけで、値の行はまだ読まない');
@@ -398,7 +432,13 @@ function startProcess(act,keptN,total){
           fx:g.x+g.w*0.87, fy:g.y+g.h/2, txp:W/2, typ:resY(rows.length)+10, t:0, dt:0.028,
           done:()=>{ got++; if(got===LANES){ result={rows}; } }});
       });
-      setTimeout(()=>{ busy=false; },2500); // 結果テーブルと枝刈り表示は次の操作まで残す
+      setTimeout(()=>{ // 結果はクライアントへ帰る(カメラも引く)。表示は次の操作まで残る
+        camGoLevel(0,true);
+        const cp=clientPos();
+        fly.push({kind:'chip', col:'#7dffb2', txt:rows.length+' 行の結果', fx:W*0.5, fy:resY(rows.length)+10, txp:cp.x+220, typ:cp.y+52, t:0, dt:0.0115,
+          done:()=>{ toast('結果がクライアントに到着。クライアント → ノード → 索引 → granule → レーン → マージ → クライアント、がクエリの一生'); }});
+        setTimeout(()=>{ camGo(0,0,1,0.05); busy=false; },4600);
+      },2600);
     }
   },380);
 }
@@ -576,132 +616,92 @@ function lvlStats(){
   const g=act.reduce((s,p)=>s+p.granules.length,0);
   return {act, n:act.length, g, rows:g*8192};
 }
-function panelBG(a){ ctx.globalAlpha=Math.min(1,a*1.2); ctx.fillStyle='#0c0d10'; ctx.fillRect(0,0,W,H); ctx.globalAlpha=a; }
-function miniParts(act,x,y,max){
-  act.slice(0,max).forEach((p,i)=>{
-    ctx.fillStyle='#1b2431'; ctx.strokeStyle='#3a4152';
-    ctx.beginPath(); ctx.roundRect(x+i*56,y,48,30,6); ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#98a0b3'; ctx.font='700 9px '+MONO(); ctx.textAlign='center';
-    ctx.fillText(p.granules.length+' g', x+i*56+24, y+19); ctx.textAlign='left';
-  });
-  if(act.length>max){ ctx.fillStyle='#57617a'; ctx.font='10px '+MONO(); ctx.fillText('+'+(act.length-max), x+max*56+4, y+19); }
-}
-function drawNodeLevel(a){
-  panelBG(a); hot.length=0;
-  const s=lvlStats(), top=INS_Y+6;
+function drawOutside(){
+  // ノードの外側(クラスター)は常在。ラベルは画面等倍(サイズ/k)で潰れない
+  const fz=s=>s/Math.max(cam.k,KMIN);
+  const oA=Math.max(0,Math.min(1,(0.88-cam.k)/0.28));
   ctx.textAlign='left';
-  ctx.fillStyle='#e8eaf0'; ctx.font='700 '+(MOB?15:20)+'px '+JP();
-  ctx.fillText('ノード node-1(clickhouse-server プロセス)', 24, top+10);
-  ctx.fillStyle='#98a0b3'; ctx.font=(MOB?'10px ':'12px ')+JP();
-  ctx.fillText('Part の保管もクエリ実行も、この1プロセスの中で完結する', 24, top+32);
-  // ストレージ(テーブルの器)
-  const sx=24, sy=top+52, sw=MOB?W-48:W*0.52, sh=MOB?236:H-sy-140;
-  ctx.strokeStyle='#2f5c41'; ctx.setLineDash([5,5]); ctx.strokeRect(sx,sy,sw,sh); ctx.setLineDash([]);
-  ctx.fillStyle='#4d6157'; ctx.font='700 11px '+JP();
-  ctx.fillText('ストレージ(データディレクトリ)', sx+10, sy+18);
-  const tx=sx+14, ty=sy+30, tw=sw-28, th=MOB?150:168;
-  ctx.fillStyle='#14161b'; ctx.strokeStyle='#3d8ba3';
-  ctx.beginPath(); ctx.roundRect(tx,ty,tw,th,10); ctx.fill(); ctx.stroke();
-  ctx.fillStyle='#e8eaf0'; ctx.font='700 14px '+JP();
-  ctx.fillText('テーブル events', tx+14, ty+24);
-  ctx.fillStyle='#8b93a5'; ctx.font='10px '+MONO();
-  ctx.fillText('events(user_id UInt32, …) ORDER BY user_id', tx+14, ty+42);
-  ctx.fillStyle='#c7cede'; ctx.font='700 12px '+MONO();
-  ctx.fillText('Part ×'+s.n+' ・ granule ×'+s.g+' ・ '+s.rows.toLocaleString()+' 行', tx+14, ty+64);
-  miniParts(s.act, tx+14, ty+76, Math.floor((tw-40)/56));
-  ctx.fillStyle='#6fe3ff'; ctx.font='700 11px '+JP();
-  ctx.fillText('▶ クリックで Part / granule / 索引の実物へ', tx+14, ty+th-12);
-  hot.push({x:tx,y:ty,w:tw,h:th,go:2});
-  ctx.fillStyle='#3a4152'; ctx.font='10px '+JP();
-  ctx.fillText('system.query_log などのシステムテーブルも同じ置き場', sx+14, sy+sh-12);
-  // クエリ実行(レーン)
-  const qx=MOB?24:sx+sw+24, qy=MOB?sy+sh+42:sy, qw=MOB?W-48:W-sx-sw-48, qh=MOB?168:200;
-  ctx.strokeStyle='#3d8ba3'; ctx.setLineDash([5,5]); ctx.strokeRect(qx,qy,qw,qh); ctx.setLineDash([]);
-  ctx.fillStyle='#4d7c8a'; ctx.font='700 11px '+JP();
-  ctx.fillText('クエリ実行: processing lanes(= CPU コア、max_threads)', qx+10, qy+18);
-  for(let i=0;i<LANES;i++){
-    const ly=qy+32+i*40;
-    ctx.fillStyle='#111319'; ctx.strokeStyle='#262a33';
-    ctx.beginPath(); ctx.roundRect(qx+12,ly,qw-24,32,8); ctx.fill(); ctx.stroke();
-    ctx.fillStyle=LANE_COL[i]; ctx.beginPath(); ctx.arc(qx+28,ly+16,4,0,7); ctx.fill();
-    ctx.fillStyle='#98a0b3'; ctx.font='700 11px '+MONO();
-    ctx.fillText('processing lane '+(i+1), qx+40, ly+20);
-  }
-  ctx.fillStyle='#57617a'; ctx.font='10px '+JP();
-  ctx.fillText('SELECT では対象 granule だけがレーンへ流れ、SIMD で束ごと評価', qx+12, qy+qh-10);
-  // 流れの矢印
-  ctx.fillStyle='#57617a'; ctx.font='700 11px '+JP();
-  if(MOB){ ctx.fillText('⬇ INSERT はストレージへ / SELECT はレーンへ ⬇', 24, sy+sh+24); }
-  else{
-    ctx.fillText('⬅ INSERT は Part としてストレージへ', sx, sy+sh+26);
-    ctx.fillText('対象 granule → レーン → 結果をクライアントへ ➡', qx, qy+qh+26);
-  }
-  ctx.globalAlpha=1;
-}
-function drawClusterLevel(a){
-  panelBG(a); hot.length=0;
-  const s=lvlStats(), top=INS_Y+6;
-  ctx.textAlign='left';
-  ctx.fillStyle='#e8eaf0'; ctx.font='700 '+(MOB?15:20)+'px '+JP();
-  ctx.fillText('ClickHouse クラスター', 24, top+10);
-  ctx.fillStyle='#98a0b3'; ctx.font=(MOB?'10px ':'12px ')+JP();
-  ctx.fillText('複数の clickhouse-server と、協調サービスの Keeper で構成', 24, top+32);
-  const kw=MOB?W-48:W*0.26, n1w=MOB?W-48:W*0.3, n2w=MOB?W-48:W*0.3;
-  const kx=24, n1x=MOB?24:W*0.36, n2x=MOB?24:W*0.7;
-  const ky=top+76, n1y=MOB?top+248:top+76, n2y=MOB?top+464:top+76;
-  // Keeper(入れ子ではなく並存する協調サービス)
-  ctx.fillStyle='#8b93a5'; ctx.font='700 12px '+JP();
-  ctx.fillText('ClickHouse Keeper(協調サービス)', kx, ky-10);
+  // ノード枠(常時うっすら)
+  ctx.globalAlpha=0.35+oA*0.65;
+  ctx.strokeStyle='#2a3242';
+  ctx.beginPath(); ctx.roundRect(-80,INS_Y-70,W+160,H-INS_Y+180,18); ctx.stroke();
+  if(oA<=0.02){ ctx.globalAlpha=1; return; }
+  ctx.globalAlpha=oA;
+  ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(14)+'px '+JP();
+  ctx.fillText('ClickHouse ノード node-1(clickhouse-server)', -62, INS_Y-70-fz(8));
+  const cp=clientPos();
+  // クラスター枠
+  ctx.strokeStyle='#20293a';
+  ctx.beginPath(); ctx.roundRect(cp.x-70,INS_Y-240,W*1.88-(cp.x-70),H+170-(INS_Y-240),26); ctx.stroke();
+  ctx.fillStyle='#98a0b3'; ctx.font='700 '+fz(19)+'px '+JP();
+  ctx.fillText('ClickHouse クラスター', cp.x-40, INS_Y-240+fz(30));
+  // Keeper ×3(協調サービス。入れ子ではなく並存)
+  ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(11)+'px '+JP();
+  ctx.fillText('ClickHouse Keeper(協調サービス)', cp.x, INS_Y-fz(6));
   for(let i=0;i<3;i++){
-    const y=ky+i*46;
+    const ky=INS_Y+10+i*88;
     ctx.fillStyle='#12151c'; ctx.strokeStyle='#3a4152';
-    ctx.beginPath(); ctx.roundRect(kx,y,kw,38,8); ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#c7cede'; ctx.font='700 12px '+MONO(); ctx.fillText('keeper-'+(i+1), kx+12, y+24);
+    ctx.beginPath(); ctx.roundRect(cp.x,ky,300,68,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#c7cede'; ctx.font='700 '+fz(11)+'px '+MONO();
+    ctx.fillText('keeper-'+(i+1), cp.x+fz(10), ky+fz(24));
+    ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
+    ctx.beginPath(); ctx.moveTo(cp.x+300,ky+34); ctx.lineTo(-80,INS_Y+150); ctx.stroke(); ctx.setLineDash([]);
   }
-  ctx.fillStyle='#57617a'; ctx.font='10px '+JP();
-  ctx.fillText('メタデータ・レプリケーションログ・リーダー選出を3台の合意で保つ', kx, ky+150);
-  // node-1(操作対象)
-  ctx.fillStyle='#14161b'; ctx.strokeStyle='#faff69';
-  ctx.beginPath(); ctx.roundRect(n1x,n1y,n1w,178,12); ctx.fill(); ctx.stroke();
-  ctx.fillStyle='#e8eaf0'; ctx.font='700 14px '+JP(); ctx.fillText('node-1(このデモの操作対象)', n1x+14, n1y+24);
-  ctx.fillStyle='#c7cede'; ctx.font='700 11px '+MONO();
-  ctx.fillText('events: Part ×'+s.n+' / granule ×'+s.g, n1x+14, n1y+46);
-  miniParts(s.act, n1x+14, n1y+58, Math.floor((n1w-40)/56));
-  ctx.fillStyle='#6fe3ff'; ctx.font='700 11px '+JP();
-  ctx.fillText('▶ クリックでノードの中へ', n1x+14, n1y+160);
-  hot.push({x:n1x,y:n1y,w:n1w,h:178,go:1});
-  // node-2(レプリカ・簡略)
+  // クライアント(クエリの出発点・終着点)
+  ctx.fillStyle='#12151c'; ctx.strokeStyle='#3d8ba3';
+  ctx.beginPath(); ctx.roundRect(cp.x,cp.y,300,104,12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#e8eaf0'; ctx.font='700 '+fz(13)+'px '+JP();
+  ctx.fillText('クライアント', cp.x+fz(10), cp.y+fz(24));
+  ctx.fillStyle='#57617a'; ctx.font=fz(9)+'px '+JP();
+  ctx.fillText('アプリ / BI / clickhouse-client', cp.x+fz(10), cp.y+fz(42));
+  ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
+  ctx.beginPath(); ctx.moveTo(cp.x+300,cp.y+52); ctx.lineTo(-80,INS_Y+340); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle='#57617a'; ctx.font=fz(9)+'px '+JP();
+  ctx.fillText('SQL / 結果', cp.x+320, cp.y+40);
+  // レプリカ node-2(簡略)
+  const n2x=W+150, n2y=INS_Y+10, n2w=Math.max(500,W*0.5), n2h=330;
   ctx.fillStyle='#0f1116'; ctx.strokeStyle='#2a3242';
-  ctx.beginPath(); ctx.roundRect(n2x,n2y,n2w,178,12); ctx.fill(); ctx.stroke();
-  ctx.fillStyle='#8b93a5'; ctx.font='700 14px '+JP(); ctx.fillText('node-2(レプリカ)', n2x+14, n2y+24);
-  ctx.fillStyle='#57617a'; ctx.font='11px '+JP();
-  ctx.fillText('Replicated テーブルなら', n2x+14, n2y+46);
-  ctx.fillText('node-1 と同じ Part 群を複製保持', n2x+14, n2y+62);
+  ctx.beginPath(); ctx.roundRect(n2x,n2y,n2w,n2h,16); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(14)+'px '+JP();
+  ctx.fillText('ノード node-2(レプリカ)', n2x+fz(12), n2y+fz(26));
   for(let i=0;i<3;i++){
     ctx.fillStyle='#14161b'; ctx.strokeStyle='#262a33';
-    ctx.beginPath(); ctx.roundRect(n2x+14+i*56,n2y+76,48,30,6); ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#4d5563'; ctx.font='700 9px '+MONO(); ctx.textAlign='center';
-    ctx.fillText('Part', n2x+14+i*56+24, n2y+95); ctx.textAlign='left';
+    ctx.beginPath(); ctx.roundRect(n2x+30+i*130,n2y+70,110,60,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#4d5563'; ctx.font='700 '+fz(9)+'px '+MONO();
+    ctx.fillText('Part', n2x+30+i*130+fz(8), n2y+70+fz(20));
   }
-  hot.push({x:n2x,y:n2y,w:n2w,h:178,say:'このデモで操作できるのは node-1。レプリカは Keeper のログ経由で同じ Part を複製する側'});
-  // 協調・レプリケーションの線
+  ctx.fillStyle='#57617a'; ctx.font=fz(10)+'px '+JP();
+  ctx.fillText('Replicated テーブルなら node-1 と同じ Part 群を複製保持', n2x+fz(12), n2y+180+fz(10));
   ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
-  if(!MOB){
-    ctx.beginPath(); ctx.moveTo(kx+kw,ky+66); ctx.lineTo(n1x,n1y+90); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(n1x+n1w,n1y+90); ctx.lineTo(n2x,n2y+90); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle='#57617a'; ctx.font='10px '+JP();
-    ctx.fillText('監視・合意', kx+kw+10, ky+56);
-    ctx.fillText('レプリケーション(Keeper 経由で調整)', n1x+n1w+10, n1y+80);
-  }else{
-    ctx.beginPath(); ctx.moveTo(W/2,ky+142); ctx.lineTo(W/2,n1y); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(W/2,n1y+178); ctx.lineTo(W/2,n2y); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle='#57617a'; ctx.font='10px '+JP();
-    ctx.fillText('レプリケーション(Keeper 経由)', 28, n1y+198);
-  }
-  ctx.fillStyle='#3a4152'; ctx.font='10px '+JP();
-  ctx.fillText('スクロール⬇ または node-1 をクリックで、より細かい粒度へ', 24, H-24);
+  ctx.beginPath(); ctx.moveTo(W+80,INS_Y+180); ctx.lineTo(n2x,n2y+150); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle='#57617a'; ctx.font=fz(9)+'px '+JP();
+  ctx.fillText('レプリケーション(Keeper 経由で調整)', W+90, INS_Y+170);
+  ctx.globalAlpha=1;
+}
+function drawNodeSummary(){
+  // シーンが読めない倍率では、実物の上に要約カードを重ねる(粒度の連続切り替え)
+  const a=Math.max(0,Math.min(1,(0.52-cam.k)/0.16));
+  if(a<=0.02) return;
+  const fz=s=>s/Math.max(cam.k,KMIN);
+  const s=lvlStats();
+  const x=W*0.05, y=INS_Y+30, w=W*0.9, hh=(H-INS_Y)*0.6;
+  ctx.globalAlpha=a;
+  ctx.fillStyle='#101319f0'; ctx.strokeStyle='#2a3242';
+  ctx.beginPath(); ctx.roundRect(x,y,w,hh,fz(8)); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#e8eaf0'; ctx.font='700 '+fz(15)+'px '+JP(); ctx.textAlign='left';
+  ctx.fillText('テーブル events(要約)', x+fz(14), y+fz(26));
+  ctx.fillStyle='#c7cede'; ctx.font='700 '+fz(11)+'px '+MONO();
+  ctx.fillText('Part ×'+s.n+' ・ granule ×'+s.g+' ・ '+s.rows.toLocaleString()+' 行', x+fz(14), y+fz(48));
+  const bw=fz(50), bh=fz(30), gp=fz(9);
+  const maxB=Math.max(1,Math.floor((w-fz(28))/(bw+gp)));
+  s.act.slice(0,maxB).forEach((p,i)=>{
+    ctx.fillStyle='#1b2431'; ctx.strokeStyle='#3a4152';
+    ctx.beginPath(); ctx.roundRect(x+fz(14)+i*(bw+gp), y+fz(60), bw, bh, fz(5)); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#98a0b3'; ctx.font='700 '+fz(9)+'px '+MONO(); ctx.textAlign='center';
+    ctx.fillText(p.granules.length+' g', x+fz(14)+i*(bw+gp)+bw/2, y+fz(60)+bh/2+fz(3)); ctx.textAlign='left';
+  });
+  ctx.fillStyle='#6fe3ff'; ctx.font='700 '+fz(10)+'px '+JP();
+  ctx.fillText('▶ ズームイン(またはダブルクリック)で Part / granule の実物へ', x+fz(14), y+hh-fz(12));
   ctx.globalAlpha=1;
 }
 function resY(n){
@@ -733,9 +733,11 @@ function drawResult(){
   ctx.textAlign='left'; ctx.globalAlpha=1;
 }
 function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
   ctx.clearRect(0,0,W,H);
-  if(LEVEL===2) hot.length=0;
-  if(lvlA[2]>0.03){
+  ctx.save();
+  ctx.scale(cam.k,cam.k); ctx.translate(-cam.x,-cam.y);
+  drawOutside();
   ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
   ctx.strokeRect(12,INS_Y,W-24,48); ctx.setLineDash([]);
   ctx.fillStyle='#5a6478'; ctx.font='10px '+JP(); ctx.textAlign='left';
@@ -755,6 +757,7 @@ function render(){
   parts.forEach(drawPart);
   drawLanes();
   drawResult();
+  drawNodeSummary();
   fly.forEach(f=>{
     if(f.kind==='chip'){
       ctx.font='700 11px '+MONO();
@@ -783,9 +786,7 @@ function render(){
     ctx.fillStyle='#e8eaf0'; ctx.font='11px '+MONO(); ctx.textAlign='center';
     ctx.fillText(String(f.v), f.x+CELL/2, f.y+16); ctx.textAlign='left';
   });
-  }
-  if(lvlA[1]>0.02) drawNodeLevel(lvlA[1]);
-  if(lvlA[0]>0.02) drawClusterLevel(lvlA[0]);
+  ctx.restore();
 }
 function loop(){ tick(); render(); requestAnimationFrame(loop); }
 
