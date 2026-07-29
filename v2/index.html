@@ -30,6 +30,11 @@ canvas{display:block;touch-action:none}
 #hud{flex-wrap:wrap}
 #sqlbar{flex-basis:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-space:nowrap;overflow-x:auto}
 #sqlbar .cm{color:var(--dim)}
+#resgrid{flex-basis:100%;background:#101a13;border:1px solid #2f5c41;border-radius:10px;padding:6px 14px;font-family:var(--mono);font-size:12px;color:#d5f6c9;max-height:104px;overflow:auto;margin-top:-4px}
+#resgrid table{border-collapse:collapse}
+#resgrid th{color:#5f8a6f;text-align:left;font-size:10px;border-bottom:1px solid #24402f;padding:1px 26px 2px 0;font-weight:700}
+#resgrid td{padding:1px 26px 1px 0;white-space:nowrap}
+#resgrid .msg{color:#5f8a6f;font-size:11px;padding:2px 0}
 #steps{flex-basis:100%;display:none;gap:8px;align-items:center;font-size:12px;color:var(--dim);font-family:var(--jp)}
 #steps.show{display:flex}
 #steps i{font-style:normal;color:#3a4152}
@@ -49,6 +54,7 @@ canvas{display:block;touch-action:none}
   #ctrl>span{padding:4px 8px !important;font-size:11.5px !important}
   #predR{width:70px !important}
   #sqlbar{font-size:11px;padding:6px 10px}
+  #resgrid{max-height:64px;font-size:10.5px;padding:4px 10px}
   #steps{font-size:10.5px;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch}
   #steps .step{padding:2px 8px}
   #toast{font-size:12px;bottom:10px;padding:6px 10px}
@@ -74,6 +80,7 @@ canvas{display:block;touch-action:none}
     <button class="btn" id="bReset" title="最初からやり直す">⟳</button>
   </span>
   <div id="sqlbar"></div>
+  <div id="resgrid"></div>
   <div id="crumb"><span data-l="0">クラスター</span><i>▸</i><span data-l="1">ノード node-1</span><i>▸</i><span data-l="2" class="on">テーブル events</span></div>
   <div id="steps">
     <span class="step" data-s="1">① 索引分析(二分探索)</span><i>→</i>
@@ -124,12 +131,12 @@ function fitRect(x0,y0,x1,y1,s){
   const k=Math.min(KMAX,Math.max(KMIN,Math.min(W/(x1-x0),H/(y1-y0))*0.92));
   camT={k, x:(x0+x1)/2-W/k/2, y:(y0+y1)/2-H/k/2, s:s||0.14};
 }
-function clientPos(){ return {x:-W*0.72, y:INS_Y+330}; }
+function clientPos(){ return {x:W/2-150, y:INS_Y-300}; }
 function camGoLevel(l,slow){
   const s=slow?0.055:0.14;
   if(l===2) camGo(0,0,1,s);
   else if(l===1) fitRect(-110,INS_Y-110,W+110,H+130,s);
-  else { const cp=clientPos(); fitRect(cp.x-70,INS_Y-240,W*1.88,H+170,s); }
+  else fitRect(-W*0.55-70,INS_Y-340,W*1.88,H+170,s);
 }
 document.querySelectorAll('#crumb span').forEach(el=>el.addEventListener('click',()=>camGoLevel(+el.dataset.l)));
 function crumbSync(){
@@ -240,6 +247,7 @@ function doInsert(){
   const gN=Math.ceil(n/GPR);
   showSql('INSERT INTO events (user_id, …) VALUES '+vals.slice(0,4).map(v=>'('+v+', …)').join(' ')+' …  -- '+(gN*8192).toLocaleString()+' 行(セルは代表値)');
   toast('① INSERT ブロックが届いた順のまま到着。並びはまだバラバラ');
+  showMsg('INSERT 実行中…');
   const cx=Math.max(8,W/2-(n*(CELL+GAP))/2), cy=INS_Y+12;
   vals.forEach((v,i)=>{
     fly.push({v, oi:i, fx:W/2+(Math.random()*500-250), fy:-50-Math.random()*90,
@@ -279,7 +287,9 @@ function doInsert(){
             if(gi===p.granules.length-1){
               p.building=false; p.flash=1; layout();
               showSql('-- 新しい Part '+p.name+'(granule ×'+p.granules.length+' + primary.idx)');
+              showMsg('Ok.(新しい Part '+p.name+' / granule ×'+p.granules.length+')');
               busy=false;
+              setTimeout(()=>{ if(!busy) showDefaultResult(); },2800);
             } }});
       },gi*300);
     });
@@ -294,6 +304,7 @@ function doMerge(){
   busy=true; clearQueryView();
   const vals=act.flatMap(p=>p.granules.flat()).sort((x,y)=>x-y);
   showSql('OPTIMIZE TABLE events  -- '+act.length+' 個の Part をマージソートで1つに併合');
+  showMsg('OPTIMIZE 実行中…');
   act.forEach(p=>{ p.dying=true; });
   const gBefore=act.reduce((s,p)=>s+p.granules.length,0);
   const ids=act.map(p=>p.id), lvl=Math.max(...act.map(p=>p.lvl))+1;
@@ -304,7 +315,9 @@ function doMerge(){
     parts.unshift(p); layout();
     const gAfter=p.granules.length;
     toast(act.length+' 個の Part の行を並べ直して1つに置き換え。元の Part は書き換えず引退'+(gAfter<gBefore?'。granule '+gBefore+' → '+gAfter+'(末尾の端数が詰め直された)':''));
+    showMsg('Ok.(OPTIMIZE: '+act.length+' Part → 1 Part)');
     busy=false;
+    setTimeout(()=>{ if(!busy) showDefaultResult(); },2800);
   },700);
 }
 
@@ -326,13 +339,14 @@ function doSelect(){
   if(cine) camGoLevel(0,true);
   showSql(SQLQ()+'  -- ⓪ クライアントが送信 → node-1 が受付');
   toast('⓪ クライアントから SQL が届く。ここから結果が返るまでがクエリの一生'+(cine?'(カメラが追いかける)':''));
+  showMsg('実行中…');
   const cp=clientPos();
   const d0=cine?900:0;
   setTimeout(()=>{
-    fly.push({kind:'chip', lin:true, col:'#6fe3ff', txt:'SELECT …', fx:cp.x+220, fy:cp.y+52, txp:W*0.5, typ:INS_Y+30, t:0, dt:0.007});
+    fly.push({kind:'chip', lin:true, col:'#6fe3ff', txt:'SELECT …', fx:W/2, fy:cp.y+96, txp:W/2, typ:INS_Y+30, t:0, dt:cine?0.007:0.014});
   },d0);
   if(cine) setTimeout(()=>camGoLevel(2,true), 2900);
-  setTimeout(()=>selExec(act), d0+2600);
+  setTimeout(()=>selExec(act), d0+(cine?2600:1300));
 }
 function selExec(act){
   setStage(1);
@@ -384,6 +398,7 @@ function startRead(act,kept,total){
       showSql(SQLQ()+'  -- 0 行(索引だけで証明、読み取りゼロ)');
       toast('該当しうる granule がゼロ。ストレージに一切触れず「結果 0 行」を確定してクライアントへ返す');
       result={rows:[]};
+      showResult(['user_id 帯(bucket)','count()'],[],'0 rows(索引だけで確定、読み取りゼロ)');
       setTimeout(()=>{ busy=false; },1800);
     },600);
     return;
@@ -430,19 +445,23 @@ function startProcess(act,keptN,total){
       showSql(SQLQ()+'  -- ④ 部分集計をマージ → '+rows.length+' 行の結果を返す');
       toast('④ 各レーンの部分集計(user_id を '+BUCKET+' 刻みの帯 = bucket ごとの件数)をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule');
       let got=0;
+      const mx=W/2, my=INS_Y+30; // ノード上端の合流点(ここでマージしてから返す)
       lanes.forEach(l=>{
         const g=laneGeom(l.i);
         const sum=Object.keys(l.partial).reduce((s,b)=>s+l.partial[b],0);
         fly.push({kind:'chip', col:LANE_COL[l.i], txt:sum.toLocaleString(),
-          fx:g.x+g.w*0.87, fy:g.y+g.h/2, txp:W/2, typ:resY(rows.length)+10, t:0, dt:0.028,
+          fx:g.x+g.w*0.87, fy:g.y+g.h/2, txp:mx, typ:my, t:0, dt:0.028,
           done:()=>{ got++; if(got===LANES){ result={rows}; } }});
       });
-      setTimeout(()=>{ // 結果はクライアントへ帰る。カメラの引きはツアー時のみ
+      setTimeout(()=>{ // 結果は上のクライアント(結果ペイン)へ帰る。カメラの引きはツアー時のみ
         if(cine) camGoLevel(0,true);
         const cp=clientPos();
         setTimeout(()=>{
-          fly.push({kind:'chip', lin:true, col:'#7dffb2', txt:rows.length+' 行の結果', fx:W*0.5, fy:resY(rows.length)+10, txp:cp.x+220, typ:cp.y+52, t:0, dt:0.007,
-            done:()=>{ toast('結果がクライアントに到着。クライアント → ノード → 索引 → granule → レーン → マージ → クライアント、がクエリの一生'); }});
+          fly.push({kind:'chip', lin:true, col:'#7dffb2', txt:rows.length+' 行の結果', fx:W/2, fy:INS_Y+30, txp:W/2, typ:cp.y+60, t:0, dt:cine?0.007:0.014,
+            done:()=>{
+              showResult(['user_id 帯(bucket)','count()'], rows.map(r=>[r[0]+'〜'+(r[0]+BUCKET-1), r[1].toLocaleString()]), rows.length+' rows');
+              toast('結果が上の結果ペインに到着。クライアント → ノード → 索引 → granule → レーン → マージ → クライアント、がクエリの一生');
+            }});
         },cine?1000:300);
         setTimeout(()=>{ if(cine) camGo(0,0,1,0.05); busy=false; },cine?5600:2200);
       },cine?2600:1400);
@@ -637,34 +656,35 @@ function drawOutside(){
   ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(14)+'px '+JP();
   ctx.fillText('ClickHouse ノード node-1(clickhouse-server)', -62, INS_Y-70-fz(8));
   const cp=clientPos();
+  const kx=-W*0.55;
   // クラスター枠
   ctx.strokeStyle='#20293a';
-  ctx.beginPath(); ctx.roundRect(cp.x-70,INS_Y-240,W*1.88-(cp.x-70),H+170-(INS_Y-240),26); ctx.stroke();
+  ctx.beginPath(); ctx.roundRect(kx-70,INS_Y-330,W*1.88-(kx-70),H+170-(INS_Y-330),26); ctx.stroke();
   ctx.fillStyle='#98a0b3'; ctx.font='700 '+fz(19)+'px '+JP();
-  ctx.fillText('ClickHouse クラスター', cp.x-40, INS_Y-240+fz(30));
-  // Keeper ×3(協調サービス。入れ子ではなく並存)
-  ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(11)+'px '+JP();
-  ctx.fillText('ClickHouse Keeper(協調サービス)', cp.x, INS_Y-fz(6));
-  for(let i=0;i<3;i++){
-    const ky=INS_Y+10+i*88;
-    ctx.fillStyle='#12151c'; ctx.strokeStyle='#3a4152';
-    ctx.beginPath(); ctx.roundRect(cp.x,ky,300,68,10); ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#c7cede'; ctx.font='700 '+fz(11)+'px '+MONO();
-    ctx.fillText('keeper-'+(i+1), cp.x+fz(10), ky+fz(24));
-    ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
-    ctx.beginPath(); ctx.moveTo(cp.x+300,ky+34); ctx.lineTo(-80,INS_Y+150); ctx.stroke(); ctx.setLineDash([]);
-  }
-  // クライアント(クエリの出発点・終着点)
+  ctx.fillText('ClickHouse クラスター', kx-40, INS_Y-330+fz(30));
+  // クライアント(常に上。上部の SQL / 結果ペインの主)
   ctx.fillStyle='#12151c'; ctx.strokeStyle='#3d8ba3';
-  ctx.beginPath(); ctx.roundRect(cp.x,cp.y,300,104,12); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.roundRect(cp.x,cp.y,300,96,12); ctx.fill(); ctx.stroke();
   ctx.fillStyle='#e8eaf0'; ctx.font='700 '+fz(13)+'px '+JP();
   ctx.fillText('クライアント', cp.x+fz(10), cp.y+fz(24));
   ctx.fillStyle='#57617a'; ctx.font=fz(9)+'px '+JP();
-  ctx.fillText('アプリ / BI / clickhouse-client', cp.x+fz(10), cp.y+fz(42));
+  ctx.fillText('SQL ペインと結果ペイン = この画面', cp.x+fz(10), cp.y+fz(42));
   ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
-  ctx.beginPath(); ctx.moveTo(cp.x+300,cp.y+52); ctx.lineTo(-80,INS_Y+340); ctx.stroke(); ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(W/2,cp.y+96); ctx.lineTo(W/2,INS_Y-70); ctx.stroke(); ctx.setLineDash([]);
   ctx.fillStyle='#57617a'; ctx.font=fz(9)+'px '+JP();
-  ctx.fillText('SQL / 結果', cp.x+320, cp.y+40);
+  ctx.fillText('SQL ↓ ／ 結果 ↑', W/2+14, (cp.y+96+INS_Y-70)/2);
+  // Keeper ×3(協調サービス。入れ子ではなく並存)
+  ctx.fillStyle='#8b93a5'; ctx.font='700 '+fz(11)+'px '+JP();
+  ctx.fillText('ClickHouse Keeper(協調サービス)', kx, INS_Y-fz(6));
+  for(let i=0;i<3;i++){
+    const ky=INS_Y+10+i*88;
+    ctx.fillStyle='#12151c'; ctx.strokeStyle='#3a4152';
+    ctx.beginPath(); ctx.roundRect(kx,ky,300,68,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#c7cede'; ctx.font='700 '+fz(11)+'px '+MONO();
+    ctx.fillText('keeper-'+(i+1), kx+fz(10), ky+fz(24));
+    ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
+    ctx.beginPath(); ctx.moveTo(kx+300,ky+34); ctx.lineTo(-80,INS_Y+150); ctx.stroke(); ctx.setLineDash([]);
+  }
   // レプリカ node-2(簡略)
   const n2x=W+150, n2y=INS_Y+10, n2w=Math.max(500,W*0.5), n2h=330;
   ctx.fillStyle='#0f1116'; ctx.strokeStyle='#2a3242';
@@ -768,10 +788,8 @@ function render(){
     ctx.fillStyle='#5a6478'; ctx.font='10px '+JP();
     ctx.fillText('セルの数字 = user_id。1行 = granule = 8,192 行の窓', 350, INS_Y+62);
   }
-  drawSample();
   parts.forEach(drawPart);
   drawLanes();
-  drawResult();
   drawNodeSummary();
   fly.forEach(f=>{
     if(f.kind==='chip'){
@@ -811,6 +829,19 @@ function loop(){ tick(); render(); requestAnimationFrame(loop); }
 const sqlEl=document.getElementById('sqlbar'), toastEl=document.getElementById('toast');
 let toastT=null;
 function showSql(s){ sqlEl.textContent=s; }
+const resEl=document.getElementById('resgrid');
+function showResult(cols,rows,note){
+  let html='<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
+  rows.forEach(r=>{ html+='<tr>'+r.map(v=>'<td>'+v+'</td>').join('')+'</tr>'; });
+  html+='</table>';
+  if(note) html+='<div class="msg">'+note+'</div>';
+  resEl.innerHTML=html;
+}
+function showMsg(m){ resEl.innerHTML='<div class="msg">'+m+'</div>'; }
+function showDefaultResult(){ // 初期クエリ = テーブル構造の紹介
+  showSql('SELECT * FROM events LIMIT 10;');
+  showResult(['user_id','…'], tableSample(10).map(v=>[v,'…']), '10 rows(セルは代表値。1行 = 8,192 行の窓)');
+}
 let curStage=0;
 function setStage(n){ // 0 = 非表示
   curStage=n;
@@ -849,7 +880,7 @@ document.getElementById('bReset').addEventListener('click',()=>{
   stopDemo();
   parts=[]; fly=[]; lanes=[]; result=null; seq=0; setStage(0);
   seedParts(); layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
-  showSql('CREATE TABLE events (user_id UInt32, …) ENGINE = MergeTree ORDER BY user_id;');
+  showDefaultResult();
   toast('初期状態に戻した。INSERT → マージ → SELECT をもう一度最初から試せる');
 });
 
@@ -864,7 +895,7 @@ function seedParts(){
   window.__ready=true; updateTop();
   new ResizeObserver(()=>{ updateTop(); layout(); }).observe(document.getElementById('hud'));
   layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
-  showSql('CREATE TABLE events (user_id UInt32, …) ENGINE = MergeTree ORDER BY user_id;');
+  showDefaultResult();
   window.__v2={ get parts(){return parts;} };
   loop();
 })();
