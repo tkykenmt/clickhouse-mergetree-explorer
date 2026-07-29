@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MergeTree Explorer V2 スパイク | index-based pruning を動かす</title>
+<title>MergeTree Explorer V2 | ClickHouse ストレージが動いて見える</title>
 <style>
 :root{
   --bg:#0c0d10; --panel:#14161bee; --line:#262a33; --ink:#e8eaf0; --muted:#98a0b3;
@@ -22,8 +22,9 @@ canvas{display:block}
 .btn{background:#191c23;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp);white-space:nowrap}
 .btn:hover{border-color:var(--cyan)}
 .btn.primary{background:var(--yellow);border-color:var(--yellow);color:#1c1c05}
-#sql{position:fixed;left:50%;bottom:60px;transform:translateX(-50%);max-width:min(880px,94vw);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-family:var(--mono);font-size:12.5px;color:var(--cyan);z-index:10;white-space:nowrap;overflow-x:auto;opacity:0;transition:opacity .25s}
-#sql.on{opacity:1}
+#hud{flex-wrap:wrap}
+#sqlbar{flex-basis:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-space:nowrap;overflow-x:auto}
+#sqlbar .cm{color:var(--dim)}
 #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:13px;color:var(--ink);z-index:10;opacity:0;transition:opacity .25s;max-width:94vw}
 #toast.on{opacity:1}
 #toast.warn{border-color:var(--red);color:var(--red)}
@@ -31,7 +32,7 @@ canvas{display:block}
 </head>
 <body>
 <div id="hud">
-  <h1>MergeTree <b>Explorer</b> <span style="font-size:11px;border:1px solid var(--yellow);color:var(--yellow);border-radius:99px;padding:2px 8px;vertical-align:middle">V2 SPIKE</span></h1>
+  <h1>MergeTree <b>Explorer</b> <span style="font-size:11px;border:1px solid var(--yellow);color:var(--yellow);border-radius:99px;padding:2px 8px;vertical-align:middle">V2 PREVIEW</span></h1>
   <span class="cap">Part は値グリッド、granule は行、索引はカード。<b style="color:var(--ink)">公式ブログの図の語彙のまま、それが動く</b></span>
   <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
     <button class="btn primary" id="bIns">＋ INSERT</button>
@@ -39,9 +40,9 @@ canvas{display:block}
     <button class="btn" id="bSel">▶ SELECT user_id ≧ 600</button>
     <button class="btn" id="bAmb">▶ 自動再生</button>
   </span>
+  <div id="sqlbar"></div>
 </div>
 <canvas id="cv"></canvas>
-<div id="sql"></div>
 <div id="toast"></div>
 
 <script>
@@ -72,7 +73,7 @@ function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.pus
 function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12; }
 function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+26)+42; }
 function layout(){
-  const y0=130, x0=24, maxW=W-24;
+  const y0=182, x0=24, maxW=W-24;
   let x=x0, y=y0, rowH=0;
   parts.forEach(p=>{
     const w=partW(p), h=partH(p);
@@ -110,7 +111,7 @@ function doInsert(){
   const vals=Array.from({length:n},()=>Math.floor(Math.random()*1000));
   const sorted=[...vals].sort((a,b)=>a-b);
   showSql('INSERT INTO events (user_id, …) VALUES '+vals.slice(0,4).map(v=>'('+v+', …)').join(' ')+' …  -- '+n+' 行');
-  const cx=W/2-(n*(CELL+GAP))/2, cy=66;
+  const cx=W/2-(n*(CELL+GAP))/2, cy=118;
   vals.forEach((v,i)=>{
     fly.push({v, fx:W/2+(Math.random()*500-250), fy:-50-Math.random()*90,
       txp:cx+i*(CELL+GAP), typ:cy, t:0, dt:0.024, kind:'raw'});
@@ -122,7 +123,7 @@ function doInsert(){
       seq++;
       const p={id:seq,name:'202607_'+seq+'_'+seq+'_0',granules:mkGranules(sorted),lvl:0,flash:1,x:null,y:null};
       parts.push(p); layout();
-      p.x=W/2-partW(p)/2; p.y=cy-10;
+      p.x=W/2-partW(p)/2; p.y=cy-6;
       fly=fly.filter(f=>f.kind!=='sorting');
       showSql('-- 新しい Part '+p.name+'(granule ×'+p.granules.length+' + primary.idx)');
       busy=false;
@@ -234,9 +235,9 @@ function drawPart(p){
 function render(){
   ctx.clearRect(0,0,W,H);
   ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
-  ctx.strokeRect(20,54,W-40,48); ctx.setLineDash([]);
+  ctx.strokeRect(20,106,W-40,48); ctx.setLineDash([]);
   ctx.fillStyle='#5a6478'; ctx.font='10px '+JP(); ctx.textAlign='left';
-  ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 26, 68);
+  ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 26, 120);
   parts.forEach(drawPart);
   fly.forEach(f=>{
     ctx.fillStyle=f.kind==='sorting'?'#153a2a':'#1b2431';
@@ -249,9 +250,9 @@ function render(){
 function loop(){ tick(); render(); requestAnimationFrame(loop); }
 
 /* ---- HUD ---- */
-const sqlEl=document.getElementById('sql'), toastEl=document.getElementById('toast');
-let sqlT=null,toastT=null;
-function showSql(s){ sqlEl.textContent=s; sqlEl.classList.add('on'); clearTimeout(sqlT); sqlT=setTimeout(()=>sqlEl.classList.remove('on'),7000); }
+const sqlEl=document.getElementById('sqlbar'), toastEl=document.getElementById('toast');
+let toastT=null;
+function showSql(s){ sqlEl.textContent=s; }
 function toast(s,warn){ toastEl.textContent=s; toastEl.className=warn?'on warn':'on'; toastEl.id='toast'; clearTimeout(toastT); toastT=setTimeout(()=>toastEl.classList.remove('on'),6200); }
 document.getElementById('bIns').addEventListener('click',doInsert);
 document.getElementById('bMerge').addEventListener('click',doMerge);
@@ -277,6 +278,7 @@ document.getElementById('bAmb').addEventListener('click',()=>{
   mk([40,100,400,40,700,400,40,500,900,50,300,600],2,'202607_1_5_2');
   mk([60,300,600,60,500,900,60,900,620],0,'202607_6_6_0');
   layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
+  showSql('CREATE TABLE events (user_id UInt32, …) ENGINE = MergeTree ORDER BY user_id;');
   window.__v2={ get parts(){return parts;} };
   loop();
 })();
