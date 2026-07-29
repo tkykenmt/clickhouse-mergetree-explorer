@@ -187,22 +187,23 @@ function laneGeom(i){
     const yTop=Math.min(H-100-(h+8)*LANES, partsBottom()+14);
     return {x:(W-w)/2, y:yTop+i*(h+8), w, h};
   }
-  const w=Math.min(380,(W-60)/LANES-12);
-  return {x:(W-(w+14)*LANES)/2+i*(w+14)+7, y:H-186, w, h:132};
+  // デスクトップ: レーンは右列に縦積み(Parts 左列と左右で分かれる)
+  const px=24+partW(null)+36;
+  const w=Math.min(520, W-px-24);
+  return {x:px, y:INS_Y+76+i*132, w, h:120};
 }
 function granRowPos(p,gi){ return {x:p.x+24, y:p.y+30+gi*(CELLH+GAP)}; }
 function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.push(vals.slice(i,i+GPR)); return gs; }
 function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12+58; }
 function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+36)+42; }
 function layout(){
-  const y0=INS_Y+(MOB?98:76), x0=MOB?10:24, maxW=W-(MOB?10:218);
-  let x=x0, y=y0, rowH=0;
+  // Parts は縦積みの左列(ストレージ)。デスクトップの右列はレーン(計算)が使う
+  const y0=INS_Y+(MOB?98:76), x0=MOB?10:24;
+  let y=y0;
   parts.forEach(p=>{
-    const w=partW(p), h=partH(p);
-    if(x+w>maxW){ x=x0; y+=rowH+18; rowH=0; }
-    p.tx=x; p.ty=y;
-    if(p.x==null){ p.x=x; p.y=-180; }
-    x+=w+18; rowH=Math.max(rowH,h);
+    p.tx=x0; p.ty=y;
+    if(p.x==null){ p.x=x0; p.y=-180; }
+    y+=partH(p)+16;
   });
 }
 
