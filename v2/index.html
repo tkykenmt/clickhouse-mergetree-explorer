@@ -13,7 +13,8 @@
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--jp)}
-canvas{display:block}
+canvas{display:block;touch-action:none;cursor:grab}
+#zoomhint{position:fixed;right:12px;bottom:12px;font-size:10px;color:#57617a;z-index:9;pointer-events:none;font-family:var(--jp)}
 #hud{position:fixed;top:0;left:0;right:0;display:flex;gap:14px;align-items:center;padding:12px 18px;background:linear-gradient(#0c0d10f0,#0c0d1000);z-index:10;pointer-events:none}
 #hud>*{pointer-events:auto}
 #hud h1{font-size:18px;margin:0;white-space:nowrap}
@@ -47,6 +48,7 @@ canvas{display:block}
   #steps{font-size:10.5px;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch}
   #steps .step{padding:2px 8px}
   #toast{font-size:12px;bottom:10px;padding:6px 10px}
+  #zoomhint{font-size:9px;right:8px;bottom:4px}
 }
 </style>
 </head>
@@ -76,6 +78,7 @@ canvas{display:block}
 </div>
 <canvas id="cv"></canvas>
 <div id="toast"></div>
+<div id="zoomhint">🔍 スクロール/ピンチ = ズームアウトでノード・クラスターへ ／ ドラッグ = 移動 ／ ダブルクリック = テーブルに戻る</div>
 
 <script>
 'use strict';
@@ -94,6 +97,44 @@ function resize(){ DPR=window.devicePixelRatio||1; W=window.innerWidth; H=window
   if(window.__ready){ updateTop(); layout(); } }
 function updateTop(){ INS_Y=Math.max(106, document.getElementById('hud').offsetHeight+8); }
 window.addEventListener('resize',resize); resize();
+
+/* ---- カメラ(セマンティックズーム): k=1 がテーブル層、ズームアウトでノード→クラスター ---- */
+let cam={x:0,y:0,k:1}, camT=null;
+const KMIN=0.26, KMAX=2.5;
+function camClamp(){
+  cam.k=Math.min(KMAX,Math.max(KMIN,cam.k));
+  const x0=-W*0.9, x1=W*2.0, y0=-H*0.6, y1=H*1.4;
+  const vw=W/cam.k, vh=H/cam.k;
+  cam.x=(vw>=x1-x0)?(x0+x1-vw)/2:Math.min(x1-vw,Math.max(x0,cam.x));
+  cam.y=(vh>=y1-y0)?(y0+y1-vh)/2:Math.min(y1-vh,Math.max(y0,cam.y));
+}
+function zoomAt(px,py,k2){
+  k2=Math.min(KMAX,Math.max(KMIN,k2));
+  const wx=px/cam.k+cam.x, wy=py/cam.k+cam.y;
+  cam.k=k2; cam.x=wx-px/cam.k; cam.y=wy-py/cam.k; camClamp();
+}
+cv.addEventListener('wheel',e=>{ e.preventDefault(); camT=null; zoomAt(e.clientX,e.clientY,cam.k*Math.exp(-e.deltaY*0.0012)); },{passive:false});
+cv.addEventListener('dblclick',()=>{ camT={x:0,y:0,k:1}; });
+const ptrs=new Map(); let dragPt=null, pinch=null;
+cv.addEventListener('pointerdown',e=>{ cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  dragPt=(ptrs.size===1)?{x:e.clientX,y:e.clientY}:null; pinch=null; camT=null; });
+cv.addEventListener('pointermove',e=>{
+  if(!ptrs.has(e.pointerId)) return;
+  ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ptrs.size===2){
+    const [a,b]=[...ptrs.values()];
+    const d=Math.hypot(a.x-b.x,a.y-b.y), mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    if(pinch){ zoomAt(mx,my,cam.k*(d/pinch.d)); cam.x-=(mx-pinch.mx)/cam.k; cam.y-=(my-pinch.my)/cam.k; camClamp(); }
+    pinch={d,mx,my};
+  }else if(dragPt){
+    cam.x-=(e.clientX-dragPt.x)/cam.k; cam.y-=(e.clientY-dragPt.y)/cam.k; camClamp();
+    dragPt={x:e.clientX,y:e.clientY};
+  }
+});
+['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,e=>{
+  ptrs.delete(e.pointerId); pinch=null;
+  dragPt=(ptrs.size===1)?{...[...ptrs.values()][0]}:null;
+}));
 
 const MONO=()=>getComputedStyle(document.body).getPropertyValue('--mono');
 const JP=()=>getComputedStyle(document.body).getPropertyValue('--jp');
@@ -134,6 +175,10 @@ function layout(){
 
 /* ---- アニメーション駆動 ---- */
 function tick(){
+  if(camT){
+    cam.x+=(camT.x-cam.x)*0.16; cam.y+=(camT.y-cam.y)*0.16; cam.k+=(camT.k-cam.k)*0.16;
+    if(Math.abs(camT.k-cam.k)<0.004&&Math.abs(camT.x-cam.x)<2&&Math.abs(camT.y-cam.y)<2){ cam={...camT}; camT=null; }
+  }
   parts.forEach(p=>{
     p.x+=(p.tx-p.x)*0.12; p.y+=(p.ty-p.y)*0.12;
     if(p.flash>0) p.flash=Math.max(0,p.flash-0.02);
@@ -522,6 +567,75 @@ function drawSample(){
     ctx.fillStyle='#3a4152'; ctx.fillText('…', x+w-40, y+60+i*rh);
   });
 }
+function drawShells(){
+  const pb=Math.max(partsBottom()+16, INS_Y+250);
+  const tTop=INS_Y+(MOB?52:50);
+  const nA=Math.max(0,Math.min(1,(1.06-cam.k)/0.3));   // ノード層
+  const cA=Math.max(0,Math.min(1,(0.8-cam.k)/0.3));    // クラスター層
+  // ---- テーブル枠(DDL レジェンドが見出しになる) ----
+  ctx.globalAlpha=0.45+nA*0.55;
+  ctx.strokeStyle='#242c3c'; ctx.setLineDash([7,7]);
+  ctx.strokeRect(6,tTop,W-12,pb-tTop); ctx.setLineDash([]);
+  ctx.fillStyle='#57617a'; ctx.font='700 10px '+JP(); ctx.textAlign='right';
+  ctx.fillText('テーブル', W-12, tTop+14); ctx.textAlign='left';
+  // ---- ストレージ枠 ----
+  ctx.strokeStyle='#26332d'; ctx.setLineDash([3,5]);
+  ctx.strokeRect(-14,tTop-24,W+28,pb-tTop+50); ctx.setLineDash([]);
+  ctx.fillStyle='#4d6157'; ctx.font='700 11px '+JP();
+  ctx.fillText('ストレージ(データディレクトリ): Part のファイル一式はここに置かれる', 8, pb+16);
+  // ---- ノード枠 ----
+  if(nA>0.01){
+    ctx.globalAlpha=nA;
+    ctx.strokeStyle='#2a3242';
+    ctx.beginPath(); ctx.roundRect(-70,INS_Y-64,W+140,H-INS_Y+150,16); ctx.stroke();
+    ctx.fillStyle='#8b93a5'; ctx.font='700 20px '+JP();
+    ctx.fillText('ClickHouse サーバー(ノード node-1)', -48, INS_Y-36);
+    ctx.fillStyle='#57617a'; ctx.font='12px '+JP();
+    ctx.fillText('Part の保管も、レーンでのクエリ実行も、この1プロセスの中', -48, INS_Y-16);
+  }
+  // ---- クラスター層(Keeper + レプリカノード) ----
+  if(cA>0.01){
+    ctx.globalAlpha=cA;
+    ctx.strokeStyle='#20293a';
+    ctx.beginPath(); ctx.roundRect(-W*0.78,INS_Y-240,W*2.63,H-INS_Y+430,24); ctx.stroke();
+    ctx.fillStyle='#98a0b3'; ctx.font='700 30px '+JP();
+    ctx.fillText('ClickHouse クラスター', -W*0.78+28, INS_Y-196);
+    // Keeper ×3(入れ子ではなく協調サービス)
+    ctx.fillStyle='#8b93a5'; ctx.font='700 14px '+JP();
+    ctx.fillText('ClickHouse Keeper(協調: メタデータ・レプリケーションログ・リーダー選出)', -W*0.7, INS_Y+2);
+    for(let i=0;i<3;i++){
+      const kx=-W*0.7, ky=INS_Y+22+i*92;
+      ctx.fillStyle='#12151c'; ctx.strokeStyle='#3a4152';
+      ctx.beginPath(); ctx.roundRect(kx,ky,W*0.38,66,10); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#c7cede'; ctx.font='700 14px '+MONO();
+      ctx.fillText('keeper-'+(i+1), kx+14, ky+26);
+      ctx.fillStyle='#57617a'; ctx.font='11px '+JP();
+      ctx.fillText('3台の合意で1つの真実を保つ', kx+14, ky+48);
+      ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
+      ctx.beginPath(); ctx.moveTo(kx+W*0.38,ky+33); ctx.lineTo(-70,(INS_Y+H)/2); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // レプリカノード(簡略)
+    const n2x=W+140, n2y=INS_Y+10, n2w=W*0.58, n2h=(H-INS_Y)*0.62;
+    ctx.fillStyle='#0f1116'; ctx.strokeStyle='#2a3242';
+    ctx.beginPath(); ctx.roundRect(n2x,n2y,n2w,n2h,16); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#8b93a5'; ctx.font='700 18px '+JP();
+    ctx.fillText('ノード node-2(レプリカ)', n2x+20, n2y+32);
+    for(let i=0;i<3;i++){
+      const bx=n2x+20+i*(n2w/3.3), by=n2y+52;
+      ctx.fillStyle='#14161b'; ctx.strokeStyle='#262a33';
+      ctx.beginPath(); ctx.roundRect(bx,by,n2w/3.8,58,8); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#4d5563'; ctx.font='700 12px '+MONO();
+      ctx.fillText('Part', bx+10, by+24);
+    }
+    ctx.fillStyle='#57617a'; ctx.font='12px '+JP();
+    ctx.fillText('Replicated テーブルなら node-1 と同じ Part 群を複製保持', n2x+20, n2y+140);
+    ctx.strokeStyle='#2a3242'; ctx.setLineDash([4,6]);
+    ctx.beginPath(); ctx.moveTo(W+70,(INS_Y+H)/2); ctx.lineTo(n2x,(INS_Y+H)/2); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#57617a'; ctx.font='11px '+JP();
+    ctx.fillText('レプリケーション(Keeper 経由で調整)', W+78, (INS_Y+H)/2-8);
+  }
+  ctx.globalAlpha=1;
+}
 function resY(n){
   const hgt=46+Math.max(1,n)*17;
   if(MOB&&lanes.length){ const g=laneGeom(LANES-1); return Math.min(g.y+g.h+10, H-hgt-10); } // レーンの下
@@ -551,7 +665,11 @@ function drawResult(){
   ctx.textAlign='left'; ctx.globalAlpha=1;
 }
 function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
   ctx.clearRect(0,0,W,H);
+  ctx.save();
+  ctx.scale(cam.k,cam.k); ctx.translate(-cam.x,-cam.y);
+  drawShells();
   ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
   ctx.strokeRect(12,INS_Y,W-24,48); ctx.setLineDash([]);
   ctx.fillStyle='#5a6478'; ctx.font='10px '+JP(); ctx.textAlign='left';
@@ -599,6 +717,7 @@ function render(){
     ctx.fillStyle='#e8eaf0'; ctx.font='11px '+MONO(); ctx.textAlign='center';
     ctx.fillText(String(f.v), f.x+CELL/2, f.y+16); ctx.textAlign='left';
   });
+  ctx.restore();
 }
 function loop(){ tick(); render(); requestAnimationFrame(loop); }
 
