@@ -465,7 +465,7 @@ function startProcess(act,keptN,total){
       const cnt=rows.reduce((s,r)=>s+r[1],0);
       setStage(4);
       showSql(SQLQ()+'  -- ④ 部分集計をマージ → '+rows.length+' 行の結果を返す');
-      toast('④ 各レーンの部分集計(user_id を '+BUCKET+' 刻みの帯 = bucket ごとの件数)をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule');
+      toast('④ 各レーンの部分集計(ts の時間帯ごとの件数)をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule');
       let got=0;
       const mx=W/2, my=INS_Y+30; // ノード上端の合流点(マージが済んだ瞬間、上の結果ペインが埋まる)
       lanes.forEach(l=>{
@@ -866,14 +866,14 @@ function seedParts(){
 </script>
 
 <script type="module">
-// ===== V3: 3D ネイティブ再構成 =====
-// Part=スラブ / granule=セルタイル列 / 索引=標識プレート / レーン=プラットフォーム / MV=テーブル。
-// シミュレーション(parts/lanes/fly と各フェーズ)は 2D 版のまま、描画だけ 3D で作り直す。
+// ===== V3: グリッドベースの 3D + DOM オーバーレイ(PGSimCity 方式) =====
+// シーンには幾何と色だけ(文字ボード禁止)。名前は投影された DOM チップ、
+// 詳細はオブジェクトをクリックすると右のインスペクタ(DOM)に出る。
 import * as THREE from './three.module.js';
 const S=1/90;
 const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
 const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0c0d10);
-scene.fog=new THREE.Fog(0x0c0d10, 20, 38);
+scene.fog=new THREE.Fog(0x0c0d10, 20, 40);
 const camera=new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 0.1, 100);
 let az=0.42, pol=0.98, rad=12.5;
 const tgt=new THREE.Vector3(0.1,0.2,2.4);
@@ -883,9 +883,9 @@ function camUpd(){
 }
 window.__r3resize=()=>{ renderer.setPixelRatio(Math.min(2,devicePixelRatio)); renderer.setSize(innerWidth,innerHeight); camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); };
 window.__r3resize();
-let dragP=null; const ptrs=new Map(); let pinchD=null;
+let dragP=null, dragDist=0; const ptrs=new Map(); let pinchD=null;
 cv.addEventListener('pointerdown',e=>{ cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  dragP=(ptrs.size===1)?{x:e.clientX,y:e.clientY}:null; pinchD=null; });
+  dragP=(ptrs.size===1)?{x:e.clientX,y:e.clientY}:null; dragDist=0; pinchD=null; });
 cv.addEventListener('pointermove',e=>{
   if(!ptrs.has(e.pointerId)) return;
   ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
@@ -894,38 +894,156 @@ cv.addEventListener('pointermove',e=>{
     if(pinchD!=null) rad=Math.min(24,Math.max(4.5,rad*pinchD/d));
     pinchD=d;
   }else if(dragP){
+    dragDist+=Math.abs(e.clientX-dragP.x)+Math.abs(e.clientY-dragP.y);
     az-=(e.clientX-dragP.x)*0.005;
     pol=Math.min(1.45,Math.max(0.25,pol-(e.clientY-dragP.y)*0.004));
     dragP={x:e.clientX,y:e.clientY};
   }
 });
-['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,e=>{ ptrs.delete(e.pointerId); if(ptrs.size<2) pinchD=null; if(!ptrs.size) dragP=null; }));
+['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,e=>{
+  if(ev==='pointerup'&&dragDist<6) pick(e.clientX,e.clientY);
+  ptrs.delete(e.pointerId); if(ptrs.size<2) pinchD=null; if(!ptrs.size) dragP=null;
+}));
 cv.addEventListener('wheel',e=>{ e.preventDefault(); rad=Math.min(24,Math.max(4.5,rad*Math.exp(e.deltaY*0.001))); },{passive:false});
 window.__cam={ set(a,p2,r){ az=a; pol=p2; rad=r; } };
 
-// 2D レイアウト座標 → 3D(x=左右、y=奥行き)。原点はストレージ/計算の境界
 const PXB=24+partW(null)+36;
 const wx=x=>(x-PXB)*S;
 const wz=y=>(y-INS_Y-60)*S*0.92;
 
-// ---- 共有素材 ----
+// ---- DOM オーバーレイ(チップ + インスペクタ) ----
+const style=document.createElement('style');
+style.textContent=`
+#ov{position:fixed;inset:0;pointer-events:none;z-index:5;overflow:hidden}
+.chip3{position:absolute;transform:translate(-50%,-100%);background:#e8eaf0;color:#14161b;
+  font:700 10.5px "Hiragino Kaku Gothic ProN",sans-serif;letter-spacing:.06em;
+  border-radius:4px;padding:2px 8px;white-space:nowrap;pointer-events:auto;cursor:pointer;
+  box-shadow:0 1px 6px rgba(0,0,0,.5)}
+.chip3 b{color:#0b6b3a;margin-left:5px;font-family:ui-monospace,Menlo,monospace}
+.chip3.warn{background:#ffb0b0}
+.chip3.mv{background:#d9c8f5}
+.chip3.lane{background:#c4e8f5}
+#insp{position:fixed;top:0;right:-420px;width:400px;height:100%;z-index:20;background:#101319f8;
+  border-left:1px solid #2a3242;transition:right .22s;padding:14px 16px;overflow-y:auto;
+  font-family:"Hiragino Kaku Gothic ProN",sans-serif;color:#e8eaf0}
+#insp.open{right:0}
+#insp h2{font-size:15px;margin:2px 0 4px;color:#faff69}
+#insp .sub{font-size:11px;color:#98a0b3;margin-bottom:10px}
+#insp table{border-collapse:collapse;width:100%;font:11.5px ui-monospace,Menlo,monospace;margin:6px 0 12px}
+#insp th{color:#57617a;text-align:left;font-size:10px;border-bottom:1px solid #262a33;padding:2px 8px 3px 0}
+#insp td{padding:2px 8px 2px 0;border-bottom:1px solid #1a1e27}
+#insp .cellv{display:inline-block;min-width:40px;text-align:center;border-radius:4px;padding:1px 4px;margin:0 2px 2px 0}
+#insp .note{font-size:11.5px;color:#98a0b3;line-height:1.7;margin:8px 0}
+#insp .x{position:absolute;top:10px;right:12px;cursor:pointer;color:#98a0b3;font-size:16px;border:1px solid #2a3242;border-radius:6px;padding:2px 9px;background:#191c23}
+@media (max-width:700px){ #insp{width:100%;right:-100%} }
+`;
+document.head.appendChild(style);
+const ov=document.createElement('div'); ov.id='ov'; document.body.appendChild(ov);
+const insp=document.createElement('div'); insp.id='insp'; document.body.appendChild(insp);
+let inspTarget=null; // {kind,id}
+function openInsp(kind,id){ inspTarget={kind,id}; insp.classList.add('open'); renderInsp(); }
+function closeInsp(){ inspTarget=null; insp.classList.remove('open'); }
+const CELLBG={norm:'#232b3a',hit:'#1d5c3a',dead:'#15161b',skip:'#4a3420',del:'#2a1418',upd:'#0f3b47',probe:'#5c561a'};
+const CELLFG={norm:'#e8eaf0',hit:'#b9ffd6',dead:'#3c4150',skip:'#ffb46f',del:'#7a5560',upd:'#7de3ff',probe:'#faff69'};
+function cellSpan(p,gi,ci,v){
+  const st=cellState(p,gi,ci,v);
+  const deco=st==='del'?'text-decoration:line-through;':'';
+  return '<span class="cellv" style="background:'+CELLBG[st]+';color:'+CELLFG[st]+';'+deco+'">'+fmtT(v)+'</span>';
+}
+function partHTML(p){
+  let h='<h2>Part '+p.name+'</h2><div class="sub">'+(p.granules.length*8192).toLocaleString()+' 行 ・ partition '+p.day+(p.lvl>0?' ・ マージ産(level '+p.lvl+')':'')+(p.hasProj?' ・ ⚡projection 内蔵':'')+(p.partPruned?' ・ <span style="color:#ff7d7d">✂ partition 枝刈り中</span>':'')+'</div>';
+  h+='<table><tr><th></th><th>値(ts)</th><th>primary.idx</th><th>skip idx('+(IDXT==='set'?'set':'bloom')+')</th></tr>';
+  p.granules.forEach((g,gi)=>{
+    const inR=p.showVerdict&&p.verdict&&p.verdict[gi];
+    const probing=p.probe===gi;
+    const skipped=p.showVerdict&&p.skipx&&p.skipx[gi];
+    const s=[...granSvcs(g)].sort();
+    const idxTxt=(probing?'<b style="color:#faff69">':'')+fmtT(g[0])+(probing?' ?</b>':'');
+    const skTxt=IDXT==='set'?'{'+s.map(i=>SVA[i]).join(',')+'}':bloomBits(new Set(s)).toString(2).padStart(8,'0');
+    h+='<tr><td style="color:#707a8c">g'+(gi+1)+'</td><td>'+g.map((v,ci)=>cellSpan(p,gi,ci,v)).join('')+'</td>'
+      +'<td style="color:'+(inR?'#7dffb2':'#b9bd7a')+'">'+idxTxt+'</td>'
+      +'<td style="color:'+(skipped?'#ffb46f':'#a08cc0')+'">'+skTxt+(skipped?' ✂':'')+'</td></tr>';
+  });
+  h+='</table>';
+  if(p.showVerdict&&p.rangeK!=null&&p.rangeK<p.granules.length)
+    h+='<div class="note" style="color:#6fe3ff">二分探索の確定 range: g'+(p.rangeK+1)+'〜g'+p.granules.length+'</div>';
+  h+='<div class="note">1行 = granule = 8,192 イベントの窓(セルは代表値)。primary.idx は各 granule の先頭 ts だけを持つ疎な索引。skip idx は service 列の副次索引で、'+(IDXT==='set'?'set は正確':'bloom は偽陽性がありうる')+'。</div>';
+  return h;
+}
+function laneHTML(i){
+  const l=lanes[i];
+  let h='<h2 style="color:'+LANE_COL[i]+'">processing lane '+(i+1)+'</h2><div class="sub">CPU コア上のスレッド(max_threads の1本)</div>';
+  if(!l){ h+='<div class="note">待機中。SELECT を実行すると、索引が生き残らせた granule だけがこのレーンに流れ、SIMD で束ごと評価される。</div>'; return h; }
+  h+='<table><tr><th>受取待ち</th><th>評価中</th></tr><tr><td>'+l.queue.length+' granule</td><td>'+(l.cur?l.cur.cells.filter(v=>v!=null).map(v=>fmtT(v)).join(' '):'—')+'</td></tr></table>';
+  const ents=Object.keys(l.partial).map(Number).sort((a,b)=>a-b);
+  h+='<table><tr><th>時間帯</th><th>部分集計</th></tr>';
+  if(!ents.length) h+='<tr><td colspan=2 style="color:#57617a">まだなし</td></tr>';
+  ents.forEach(b=>{ h+='<tr><td>'+fmtT(b)+'台</td><td style="color:#7dffb2">'+l.partial[b].toLocaleString()+'</td></tr>'; });
+  h+='</table><div class="note">レーンローカルに集計し、最後に全レーンの部分集計をマージして結果になる。</div>';
+  return h;
+}
+function mvHTML(which){
+  if(which===1){
+    const ents=Object.keys(mv).map(Number).sort((a,b)=>a-b);
+    let h='<h2 style="color:#c9a2ff">MV hourly_counts</h2><div class="sub">CREATE MATERIALIZED VIEW … AS SELECT toStartOfHour(ts) h, count() GROUP BY h</div>';
+    h+='<table><tr><th>toStartOfHour(ts)</th><th>count()</th></tr>';
+    if(!ents.length) h+='<tr><td colspan=2 style="color:#57617a">(まだ空)</td></tr>';
+    ents.forEach(b=>{ h+='<tr><td>'+fmtT(b)+'〜</td><td>'+mv[b].toLocaleString()+'</td></tr>'; });
+    h+='</table><div class="note">集計はクエリ時ではなく INSERT と同時(書き込み時)に走る。MV は作成後の INSERT だけを反映し、既存データはバックフィルが必要。</div>';
+    return h;
+  }
+  const days=Object.keys(mv2).sort();
+  let h='<h2 style="color:#c9a2ff">MV daily_counts</h2><div class="sub">hourly_counts をさらに集計(カスケード)</div>';
+  h+='<table><tr><th>日</th><th>count()</th></tr>';
+  if(!days.length) h+='<tr><td colspan=2 style="color:#57617a">(まだ空)</td></tr>';
+  days.forEach(d=>{ h+='<tr><td>'+d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'</td><td>'+mv2[d].toLocaleString()+'</td></tr>'; });
+  h+='</table><div class="note">MV の結果を別の MV が購読できる。ClickHouse のカスケード MV。</div>';
+  return h;
+}
+function renderInsp(){
+  if(!inspTarget) return;
+  let html='';
+  if(inspTarget.kind==='part'){ const p2=parts.find(q=>q.id===inspTarget.id); if(!p2){ closeInsp(); return; } html=partHTML(p2); }
+  else if(inspTarget.kind==='lane') html=laneHTML(inspTarget.id);
+  else html=mvHTML(inspTarget.id);
+  insp.innerHTML='<div class="x" id="inspx">✕</div>'+html;
+  document.getElementById('inspx').onclick=closeInsp;
+}
+setInterval(()=>{ if(inspTarget) renderInsp(); },350);
+
+// チップ(3D 座標へ投影する DOM ラベル)
+const chips=new Map();
+function chip(key,cls,onClick){
+  let c=chips.get(key);
+  if(!c){ c=document.createElement('div'); c.className='chip3 '+cls; ov.appendChild(c);
+    c.onclick=onClick; chips.set(key,c); }
+  c.__seen=frame; return c;
+}
+const V=new THREE.Vector3();
+function placeChip(c,x,y,z){
+  V.set(x,y,z).project(camera);
+  if(V.z>1){ c.style.display='none'; return; }
+  c.style.display='';
+  c.style.left=((V.x*0.5+0.5)*innerWidth)+'px';
+  c.style.top=((-V.y*0.5+0.5)*innerHeight)+'px';
+}
+
+// ---- 幾何素材 ----
 const MAT={
   slab:new THREE.MeshBasicMaterial({color:0x171a22}),
   slabTop:new THREE.MeshBasicMaterial({color:0x1c2029}),
   post:new THREE.MeshBasicMaterial({color:0x3a4152}),
   plat:new THREE.MeshBasicMaterial({color:0x141922}),
+  idx:new THREE.MeshBasicMaterial({color:0x8a8f3a}),
+  skp:new THREE.MeshBasicMaterial({color:0x8a6fb0}),
+  mv:new THREE.MeshBasicMaterial({color:0x5d4a86}),
+  mv2:new THREE.MeshBasicMaterial({color:0x453763}),
 };
 function makeText(w,h,draw){
   const c=document.createElement('canvas'); c.width=w*2; c.height=h*2;
-  const g=c.getContext('2d'); g.scale(2,2);
-  draw(g);
-  const tex=new THREE.CanvasTexture(c); tex.anisotropy=8;
-  return tex;
+  const g=c.getContext('2d'); g.scale(2,2); draw(g);
+  const tex=new THREE.CanvasTexture(c); tex.anisotropy=8; return tex;
 }
-function board(wW,hW,tex,transparent=true){
-  return new THREE.Mesh(new THREE.PlaneGeometry(wW,hW), new THREE.MeshBasicMaterial({map:tex,transparent,side:THREE.DoubleSide}));
-}
-// ---- 床 ----
 function diamondTex(bg,line){
   const c=document.createElement('canvas'); c.width=c.height=128;
   const g=c.getContext('2d');
@@ -934,24 +1052,18 @@ function diamondTex(bg,line){
   g.beginPath(); g.moveTo(64,0); g.lineTo(128,64); g.lineTo(64,128); g.lineTo(0,64); g.closePath(); g.stroke();
   const tex=new THREE.CanvasTexture(c); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; return tex;
 }
-function slabBox(x0,x1,z0,z1,h,mats){
-  const m=new THREE.Mesh(new THREE.BoxGeometry(x1-x0,h,z1-z0),mats);
-  m.position.set((x0+x1)/2,h/2,(z0+z1)/2); return m;
-}
 {
   const tex=diamondTex('#0d1110','#19212a'); tex.repeat.set(16,10);
-  const f=slabBox(wx(2),wx(PXB+560),-0.9,7.4,0.12,new THREE.MeshBasicMaterial({map:tex}));
-  f.position.y=-0.06; scene.add(f);
-  const l1=board(3.0,0.36,makeText(400,48,g=>{ g.font='700 26px sans-serif'; g.fillStyle='#3f664f'; g.fillText('ストレージ: Part(ファイル)',4,33); }));
+  const f=new THREE.Mesh(new THREE.BoxGeometry(wx(PXB+560)-wx(2),0.12,8.3),new THREE.MeshBasicMaterial({map:tex}));
+  f.position.set((wx(2)+wx(PXB+560))/2,-0.06,(-0.9+7.4)/2); scene.add(f);
+  const l1=new THREE.Mesh(new THREE.PlaneGeometry(3.0,0.36),new THREE.MeshBasicMaterial({map:makeText(400,48,g=>{ g.font='700 26px sans-serif'; g.fillStyle='#3f664f'; g.fillText('ストレージ: Part(ファイル)',4,33); }),transparent:true}));
   l1.rotation.x=-Math.PI/2; l1.position.set(wx(40)+1.5,0.005,-0.55); scene.add(l1);
-  const l2=board(3.2,0.38,makeText(400,48,g=>{ g.font='700 26px sans-serif'; g.fillStyle='#4d7c8a'; g.fillText('計算: CPU コアのレーンと MV',4,33); }));
+  const l2=new THREE.Mesh(new THREE.PlaneGeometry(3.2,0.38),new THREE.MeshBasicMaterial({map:makeText(400,48,g=>{ g.font='700 26px sans-serif'; g.fillStyle='#4d7c8a'; g.fillText('計算: CPU コアのレーンと MV',4,33); }),transparent:true}));
   l2.rotation.x=-Math.PI/2; l2.position.set(wx(PXB+20)+1.6,0.005,-0.55); scene.add(l2);
 }
 
-// ---- セルタイル(値を上面に刻印) ----
+// ---- セルタイル ----
 const CELLW=CELL*S*0.94, CELLD=(CELLH+GAP)*S*0.92*0.82, CELLHT=0.13;
-const STATE_BG={norm:'#232b3a',hit:'#1d5c3a',dead:'#15161b',skip:'#4a3420',del:'#2a1418',upd:'#0f3b47',probe:'#5c561a'};
-const STATE_FG={norm:'#e8eaf0',hit:'#b9ffd6',dead:'#3c4150',skip:'#ffb46f',del:'#7a5560',upd:'#7de3ff',probe:'#faff69'};
 function cellState(p,gi,ci,v){
   if(p.del&&p.del[gi*GPR+ci]) return 'del';
   if(p.upd&&p.upd[gi*GPR+ci]) return 'upd';
@@ -964,194 +1076,108 @@ function cellState(p,gi,ci,v){
 }
 function cellTex(v,st){
   return makeText(72,52,g=>{
-    g.fillStyle=STATE_BG[st]; g.fillRect(0,0,72,52);
+    g.fillStyle=CELLBG[st]; g.fillRect(0,0,72,52);
     g.strokeStyle='rgba(255,255,255,.08)'; g.strokeRect(1,1,70,50);
-    g.fillStyle=STATE_FG[st]; g.font='700 20px ui-monospace,Menlo,monospace'; g.textAlign='center';
+    g.fillStyle=CELLFG[st]; g.font='700 20px ui-monospace,Menlo,monospace'; g.textAlign='center';
     g.fillText(fmtT(v),36,33);
     if(st==='del'){ g.strokeStyle='rgba(255,125,125,.8)'; g.lineWidth=2; g.beginPath(); g.moveTo(8,26); g.lineTo(64,26); g.stroke(); }
   });
 }
 function makeCell(v,st){
   const top=new THREE.MeshBasicMaterial({map:cellTex(v,st)});
-  const side=new THREE.MeshBasicMaterial({color:new THREE.Color(STATE_BG[st]).multiplyScalar(0.8)});
+  const side=new THREE.MeshBasicMaterial({color:new THREE.Color(CELLBG[st]).multiplyScalar(0.8)});
   const m=new THREE.Mesh(new THREE.BoxGeometry(CELLW,CELLHT,CELLD),[side,side,top,side,side,side]);
-  m.userData={v,st};
-  return m;
+  m.userData={v,st}; return m;
 }
 function restyleCell(mesh,v,st){
   if(mesh.userData.st===st&&mesh.userData.v===v) return;
   mesh.material[2].map?.dispose(); mesh.material[2].map=cellTex(v,st); mesh.material[2].needsUpdate=true;
-  mesh.material[0].color=new THREE.Color(STATE_BG[st]).multiplyScalar(0.8);
+  mesh.material[0].color=new THREE.Color(CELLBG[st]).multiplyScalar(0.8);
   mesh.userData={v,st};
 }
 
-// ---- 標識プレート(primary.idx / skip idx) ----
-function idxTex(p){
-  const n=p.granules.length, h=34+n*22+18;
-  return {tex:makeText(150,h,g=>{
-    g.fillStyle='#1a1c10'; g.fillRect(0,0,150,h);
-    g.strokeStyle='#8a8f3a'; g.strokeRect(1,1,148,h-2);
-    g.fillStyle='#faff69'; g.font='700 13px ui-monospace,Menlo,monospace';
-    g.fillText('primary.idx',8,18);
-    p.granules.forEach((gr,gi)=>{
-      const probing=p.probe===gi, inR=p.showVerdict&&p.verdict&&p.verdict[gi];
-      if(probing){ g.fillStyle='rgba(250,255,105,.2)'; g.fillRect(4,26+gi*22-13,142,18); }
-      if(inR){ g.fillStyle='#7dffb2'; g.fillRect(4,26+gi*22-13,3,18); }
-      g.fillStyle=probing?'#faff69':(inR?'#d5f6c9':'#b9bd7a');
-      g.font=(probing?'700 ':'')+'13px ui-monospace,Menlo,monospace';
-      g.fillText('g'+(gi+1)+' → '+fmtT(gr[0])+(probing?' ?':''),8,30+gi*22);
-    });
-    if(p.showVerdict&&p.rangeK!=null&&p.rangeK<n){
-      g.fillStyle='#6fe3ff'; g.font='700 12px ui-monospace,Menlo,monospace';
-      g.fillText('range: g'+(p.rangeK+1)+'〜g'+n,8,h-8);
-    }
-  }),h};
-}
-function skipTex(p){
-  const n=p.granules.length, h=40+n*22+8;
-  return {tex:makeText(130,h,g=>{
-    g.fillStyle='#1a1420'; g.fillRect(0,0,130,h);
-    g.strokeStyle='#8a6fb0'; g.strokeRect(1,1,128,h-2);
-    g.fillStyle='#c9a2ff'; g.font='700 12px ui-monospace,Menlo,monospace';
-    g.fillText('skip idx',8,16);
-    g.fillStyle='#6e5a8a'; g.font='10px ui-monospace,Menlo,monospace';
-    g.fillText(IDXT==='set'?'set(service)':'bloom(service)',8,28);
-    p.granules.forEach((gr,gi)=>{
-      const skipped=p.showVerdict&&p.skipx&&p.skipx[gi];
-      if(skipped){ g.fillStyle='rgba(255,180,111,.2)'; g.fillRect(4,38+gi*22-12,122,18); }
-      g.fillStyle=skipped?'#ffb46f':'#a08cc0'; g.font='11px ui-monospace,Menlo,monospace';
-      const s=[...granSvcs(gr)].sort();
-      g.fillText(IDXT==='set'?'{'+s.map(i=>SVA[i]).join(',')+'}':bloomBits(new Set(s)).toString(2).padStart(8,'0'),8,42+gi*22);
-    });
-  }),h};
-}
-function plate(texH,wW){
-  const g=new THREE.Group();
-  const b=board(wW,texH.h/150*wW,texH.tex); b.position.y=texH.h/150*wW/2+0.16;
-  const post=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.18,0.03),MAT.post); post.position.y=0.08;
-  g.add(b,post); g.userData.board=b;
-  return g;
-}
-
-// ---- Part ビュー(スラブ+タイル列+プレート) ----
+// ---- Part(スラブ+タイル+索引トーテム) ----
 const partViews=new Map(); let frame=0;
+const pickables=[];
 function partSig(p){ return p.granules.map(g=>g.join(',')).join('|'); }
 function buildPart(p){
   const grp=new THREE.Group(); scene.add(grp);
   const rows=p.granules.length;
-  const wW=GPR*(CELL+GAP)*S+0.34, dW=rows*CELLD/0.82+0.3;
-  const nameTex=makeText(360,34,g=>{ g.font='700 15px ui-monospace,Menlo,monospace'; g.fillStyle='#98a0b3'; g.fillText('Part '+p.name+' ('+(p.granules.length*8192).toLocaleString()+' 行)'+(p.lvl>0?' マージ産':''),2,22); });
+  const wW=GPR*(CELL+GAP)*S+0.3, dW=rows*CELLD/0.82+0.28;
   const slab=new THREE.Mesh(new THREE.BoxGeometry(wW,0.09,dW),[MAT.slab,MAT.slab,MAT.slabTop,MAT.slab,MAT.slab,MAT.slab]);
-  slab.position.set(wW/2-0.17,0.045,dW/2-0.15);
-  const name=board(wW*0.96,wW*0.96*34/360,nameTex); name.rotation.x=-Math.PI/2;
-  name.position.set(wW/2-0.17,0.095,-0.02);
-  grp.add(slab,name);
+  slab.position.set(wW/2-0.15,0.045,dW/2-0.12);
+  slab.userData.pick={kind:'part',id:p.id};
+  grp.add(slab); pickables.push(slab);
   const cells=[];
   p.granules.forEach((g,gi)=>{ g.forEach((v,ci)=>{
     const m=makeCell(v,'norm');
-    m.position.set(ci*(CELL+GAP)*S, 0.09+CELLHT/2, 0.14+gi*CELLD/0.82);
-    grp.add(m); cells.push({m,gi,ci,v});
+    m.position.set(ci*(CELL+GAP)*S, 0.09+CELLHT/2, 0.1+gi*CELLD/0.82);
+    m.userData.pick={kind:'part',id:p.id};
+    grp.add(m); cells.push({m,gi,ci,v}); pickables.push(m);
   });});
-  const idx=plate(idxTex(p),1.0); idx.position.set(wW+0.28-0.17,0.09,dW*0.35);
-  const skp=plate(skipTex(p),0.9); skp.position.set(wW+0.28-0.17,0.09,dW*0.8);
-  grp.add(idx,skp);
-  const badge=board(1.4,0.22,makeText(220,34,g=>{ g.font='700 18px ui-monospace,Menlo,monospace'; g.fillStyle='#ff7d7d'; g.fillText('✂ partition(minmax)',2,24); }));
-  badge.position.set(wW/2,0.5,dW/2); badge.visible=false; grp.add(badge);
-  const projTex=makeText(300,26,g=>{ g.font='700 13px ui-monospace,Menlo,monospace'; g.fillStyle='#c9a2ff'; g.fillText('⚡proj: ORDER BY service のコピーを内蔵',2,18); });
-  const proj=board(wW*0.96,wW*0.96*26/300,projTex); proj.rotation.x=-Math.PI/2;
-  proj.position.set(wW/2-0.17,0.095,dW-0.06); proj.visible=false; grp.add(proj);
-  return {grp,cells,idx,skp,badge,proj,sig:partSig(p),idxSig:'',skpSig:''};
+  // 索引トーテム(黄=primary.idx / 紫=skip idx)。詳細はクリックでインスペクタへ
+  const idxT=new THREE.Mesh(new THREE.BoxGeometry(0.13,0.42,0.13),MAT.idx.clone());
+  idxT.position.set(wW+0.06,0.3,dW*0.3); idxT.userData.pick={kind:'part',id:p.id};
+  const skpT=new THREE.Mesh(new THREE.BoxGeometry(0.11,0.3,0.11),MAT.skp.clone());
+  skpT.position.set(wW+0.06,0.24,dW*0.72); skpT.userData.pick={kind:'part',id:p.id};
+  grp.add(idxT,skpT); pickables.push(idxT,skpT);
+  // partition 枝刈りマーカー(赤く点滅する低い壁)
+  const wall=new THREE.Mesh(new THREE.BoxGeometry(wW+0.1,0.05,dW+0.1),new THREE.MeshBasicMaterial({color:0xff5555,transparent:true,opacity:0.25}));
+  wall.position.set(wW/2-0.15,0.02,dW/2-0.12); wall.visible=false; grp.add(wall);
+  // projection マーカー(スラブ後端の紫の縁)
+  const proj=new THREE.Mesh(new THREE.BoxGeometry(wW,0.03,0.05),new THREE.MeshBasicMaterial({color:0xc9a2ff}));
+  proj.position.set(wW/2-0.15,0.1,dW-0.1); proj.visible=false; grp.add(proj);
+  return {grp,cells,idxT,skpT,wall,proj,sig:partSig(p),wW,dW};
 }
-function idxSigOf(p){ return [p.probe,p.showVerdict,p.rangeK,(p.verdict||[]).join(''),partSig(p)].join('#'); }
-function skpSigOf(p){ return [IDXT,p.showVerdict,Object.keys(p.skipx||{}).join(','),partSig(p)].join('#'); }
 
-// ---- レーンビュー(プラットフォーム+評価ゾーン+カウンター柱) ----
+// ---- レーン ----
 const laneViews=[];
 function buildLane(i){
   const grp=new THREE.Group(); scene.add(grp);
   const g0=laneGeom(i);
-  const wW=g0.w*S, dW=g0.h*S*1.15;
-  const plat=new THREE.Mesh(new THREE.BoxGeometry(wW,0.1,dW),MAT.plat);
-  plat.position.set(wW/2,0.05,dW/2); grp.add(plat);
+  const wW=g0.w*S, dW=g0.h*S*0.95;
+  const plat=new THREE.Mesh(new THREE.BoxGeometry(wW,0.1,dW),MAT.plat.clone());
+  plat.position.set(wW/2,0.05,dW/2);
+  plat.userData.pick={kind:'lane',id:i};
+  grp.add(plat); pickables.push(plat);
   const ring=new THREE.Mesh(new THREE.BoxGeometry(wW,0.02,0.06),new THREE.MeshBasicMaterial({color:LANE_COL[i]}));
   ring.position.set(wW/2,0.11,0.03); grp.add(ring);
-  const title=board(wW*0.92,wW*0.92*30/430,makeText(430,30,g=>{ g.font='700 16px ui-monospace,Menlo,monospace'; g.fillStyle='#98a0b3'; g.fillText('processing lane '+(i+1)+' = CPU コア',2,21); }));
-  title.rotation.x=-Math.PI/2; title.position.set(wW/2,0.105,0.16); grp.add(title);
-  // 評価ゾーン(SIMD で光る面)
   const evalPad=new THREE.Mesh(new THREE.PlaneGeometry(wW*0.46,dW*0.5),
     new THREE.MeshBasicMaterial({color:0x14324a,transparent:true,opacity:0.7}));
-  evalPad.rotation.x=-Math.PI/2; evalPad.position.set(wW*0.42,0.102,dW*0.62); grp.add(evalPad);
-  const zl=board(wW*0.4,wW*0.4*24/240,makeText(240,24,g=>{ g.font='13px sans-serif'; g.fillStyle='#4d7c8a'; g.fillText('SIMD 一括評価(束ごと)',2,17); }));
-  zl.rotation.x=-Math.PI/2; zl.position.set(wW*0.42,0.104,dW*0.93); grp.add(zl);
-  // カウンター柱(部分集計)
-  const pillar=new THREE.Mesh(new THREE.BoxGeometry(0.62,0.6,0.14),MAT.post);
-  pillar.position.set(wW-0.42,0.3,dW*0.62); grp.add(pillar);
-  const counter=board(0.86,0.62,makeText(150,110,g=>{}));
-  counter.position.set(wW-0.42,0.62,dW*0.62+0.08); grp.add(counter);
+  evalPad.rotation.x=-Math.PI/2; evalPad.position.set(wW*0.42,0.102,dW*0.6); grp.add(evalPad);
   const evalCells=[];
   for(let ci=0;ci<GPR;ci++){
     const m=makeCell(0,'norm'); m.visible=false;
-    m.position.set(wW*0.24+ci*(CELL+GAP)*S,0.1+CELLHT/2,dW*0.62);
+    m.position.set(wW*0.24+ci*(CELL+GAP)*S,0.1+CELLHT/2,dW*0.6);
     grp.add(m); evalCells.push(m);
   }
   const queue=[];
   for(let q=0;q<4;q++){
     const m=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.06,0.12),new THREE.MeshBasicMaterial({color:LANE_COL[i],transparent:true,opacity:0.45}));
-    m.visible=false; m.position.set(0.35,0.13,dW*0.35+q*0.16); grp.add(m); queue.push(m);
+    m.visible=false; m.position.set(0.35,0.13,dW*0.3+q*0.16); grp.add(m); queue.push(m);
   }
-  return {grp,plat,evalPad,pillar,counter,evalCells,queue,ring,cSig:''};
+  // 集計器(数字はチップとインスペクタに出す)
+  const acc=new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.2,0.34,6),new THREE.MeshBasicMaterial({color:0x2f5c41}));
+  acc.position.set(wW-0.4,0.27,dW*0.6); acc.userData.pick={kind:'lane',id:i};
+  grp.add(acc); pickables.push(acc);
+  return {grp,plat,evalPad,evalCells,queue,acc};
 }
 for(let i=0;i<LANES;i++) laneViews.push(buildLane(i));
-function counterTex(l){
-  const ents=Object.keys(l.partial).map(Number).sort((a,b)=>a-b);
-  return makeText(150,110,g=>{
-    g.fillStyle='#101a13'; g.fillRect(0,0,150,110);
-    g.strokeStyle='#2f5c41'; g.strokeRect(1,1,148,108);
-    g.fillStyle='#5f8a6f'; g.font='700 11px sans-serif'; g.fillText('部分集計',8,16);
-    if(!ents.length){ g.fillStyle='#3f664f'; g.font='700 18px ui-monospace,Menlo,monospace'; g.fillText('—',66,64); }
-    ents.slice(0,4).forEach((b,i2)=>{
-      g.fillStyle='#7dffb2'; g.font='700 13px ui-monospace,Menlo,monospace';
-      g.fillText(fmtT(b)+'台 '+l.partial[b].toLocaleString(),8,38+i2*20);
-    });
-  });
-}
 
-// ---- MV テーブル ----
-function mvTable(wW){
+// ---- MV(小さな建物2棟) ----
+function mvBuilding(mat,h1){
   const grp=new THREE.Group(); scene.add(grp);
-  const top=new THREE.Mesh(new THREE.BoxGeometry(wW,0.06,1.05),MAT.slabTop); top.position.y=0.28; grp.add(top);
-  [[-wW/2+0.08,0.5],[wW/2-0.08,0.5]].forEach(([x,z])=>{
-    const leg=new THREE.Mesh(new THREE.BoxGeometry(0.05,0.28,0.05),MAT.post); leg.position.set(x,0.14,0); grp.add(leg);
-  });
-  const boardM=board(wW*0.96,1.0*0.96,makeText(430,300,g=>{}));
-  boardM.rotation.x=-Math.PI/2+0.5; boardM.position.y=0.52; boardM.position.z=-0.1; grp.add(boardM);
-  grp.userData.board=boardM;
-  return grp;
+  const b1=new THREE.Mesh(new THREE.BoxGeometry(1.1,h1,0.9),mat);
+  b1.position.y=h1/2; grp.add(b1);
+  const b2=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.22,0.6),MAT.slabTop);
+  b2.position.y=h1+0.11; grp.add(b2);
+  return {grp,b1};
 }
-const mvT1=mvTable(3.0), mvT2=mvTable(3.0);
-let mvSig='';
-function mvTex1(){
-  const ents=Object.keys(mv).map(Number).sort((a,b)=>a-b);
-  return makeText(430,300,g=>{
-    g.fillStyle='#c9a2ff'; g.font='700 20px sans-serif'; g.fillText('MV hourly_counts(書き込み時に自動集計)',4,24);
-    g.fillStyle='#57617a'; g.font='12px ui-monospace,Menlo,monospace';
-    g.fillText('CREATE MATERIALIZED VIEW … SELECT toStartOfHour(ts), count()',4,44);
-    if(!ents.length){ g.fillStyle='#57617a'; g.font='15px sans-serif'; g.fillText('(まだ空。MV は作成後の INSERT だけを反映)',4,80); }
-    ents.slice(0,8).forEach((b,i2)=>{ g.fillStyle='#d5f6c9'; g.font='700 17px ui-monospace,Menlo,monospace';
-      g.fillText(fmtT(b)+'〜  '+mv[b].toLocaleString(),8,78+i2*26); });
-  });
-}
-function mvTex2(){
-  const days=Object.keys(mv2).sort();
-  return makeText(430,300,g=>{
-    g.fillStyle='#c9a2ff'; g.font='700 20px sans-serif'; g.fillText('MV daily_counts ← hourly(カスケード)',4,24);
-    if(!days.length){ g.fillStyle='#57617a'; g.font='15px sans-serif'; g.fillText('(MV の結果を別の MV がさらに集計できる)',4,60); }
-    days.forEach((d,i2)=>{ g.fillStyle='#d5f6c9'; g.font='700 17px ui-monospace,Menlo,monospace';
-      g.fillText(d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'  '+mv2[d].toLocaleString(),8,60+i2*26); });
-  });
-}
+const mvB1=mvBuilding(MAT.mv.clone(),0.5), mvB2=mvBuilding(MAT.mv2.clone(),0.36);
+mvB1.grp.traverse(o=>{ if(o.isMesh){ o.userData.pick={kind:'mv',id:1}; pickables.push(o); } });
+mvB2.grp.traverse(o=>{ if(o.isMesh){ o.userData.pick={kind:'mv',id:2}; pickables.push(o); } });
 
-// ---- 飛行体: セルタイル実体が飛ぶ ----
+// ---- 飛行体 ----
 const flyViews=new Map(); let flySeq=0;
 function flyMesh(f){
   if(f.kind==='gran'){
@@ -1161,47 +1187,51 @@ function flyMesh(f){
       m.position.x=ci*(CELL+GAP)*S*0.8; grp.add(m); });
     return grp;
   }
-  if(f.kind==='chip'){
-    const tex=makeText(240,40,g=>{ g.font='700 17px ui-monospace,Menlo,monospace';
-      const tw=g.measureText(f.txt).width+20;
-      g.fillStyle='#101a13'; g.strokeStyle=f.col||'#7dffb2'; g.lineWidth=2;
-      g.beginPath(); g.roundRect(2,4,Math.min(tw,236),32,16); g.fill(); g.stroke();
-      g.fillStyle='#7dffb2'; g.fillText(f.txt,12,26); });
-    return board(1.7,1.7*40/240,tex);
-  }
-  if(f.kind==='idxv'){
-    const tex=makeText(110,34,g=>{ g.font='700 20px ui-monospace,Menlo,monospace'; g.fillStyle='#faff69'; g.fillText(fmtT(f.v),4,24); });
-    return board(0.7,0.7*34/110,tex);
+  if(f.kind==='chip'||f.kind==='idxv'){
+    const col=f.kind==='idxv'?0xfaff69:new THREE.Color(f.col||'#7dffb2').getHex();
+    return new THREE.Mesh(new THREE.SphereGeometry(0.09,12,10),new THREE.MeshBasicMaterial({color:col}));
   }
   return makeCell(f.v,'norm');
 }
+// ---- ピッキング ----
+const ray=new THREE.Raycaster(), pv=new THREE.Vector2();
+function pick(px,py){
+  pv.set(px/innerWidth*2-1, -(py/innerHeight)*2+1);
+  ray.setFromCamera(pv,camera);
+  const hit=ray.intersectObjects(pickables,false)[0];
+  if(hit&&hit.object.userData.pick){ const k=hit.object.userData.pick; openInsp(k.kind,k.id); }
+  else closeInsp();
+}
+
 // ---- メインループ ----
 window.__render3d=function(){
   frame++;
-  // Part
   parts.forEach(p=>{
     if(p.dead) return;
     let v=partViews.get(p.id);
-    if(v&&v.sig!==partSig(p)){ scene.remove(v.grp); partViews.delete(p.id); v=null; }
+    if(v&&v.sig!==partSig(p)){ v.grp.removeFromParent(); v.cells.forEach(c=>{ const i2=pickables.indexOf(c.m); if(i2>=0) pickables.splice(i2,1); }); partViews.delete(p.id); v=null; }
     if(!v){ v=buildPart(p); partViews.set(p.id,v); }
     v.seen=frame;
-    v.grp.position.set(wx(p.x+18), (p.building?0.02:0)+(p.flash>0?Math.sin(frame*0.3)*0.01:0), wz(p.y+22));
-    const op=(p.alpha??1)*(p.partPruned?0.5:1);
-    v.grp.traverse(o=>{ if(o.material&&!Array.isArray(o.material)){ o.material.transparent=true; o.material.opacity=op*(o.material.userData?.baseOp??1); } });
+    v.grp.position.set(wx(p.x+18),0,wz(p.y+22));
+    const op=(p.alpha??1)*(p.partPruned?0.55:1);
+    v.grp.traverse(o=>{ if(o.material&&!Array.isArray(o.material)){ o.material.transparent=true; o.material.opacity=op; } });
     v.cells.forEach(c=>{
       c.m.visible=!(p.building&&!p.shown[c.gi*GPR+c.ci]);
       restyleCell(c.m,c.v,cellState(p,c.gi,c.ci,c.v));
     });
-    const is1=idxSigOf(p);
-    if(v.idxSig!==is1){ v.idxSig=is1; const th=idxTex(p); const b=v.idx.userData.board; b.material.map?.dispose(); b.material.map=th.tex; b.material.needsUpdate=true; }
-    const is2=skpSigOf(p);
-    if(v.skpSig!==is2){ v.skpSig=is2; const th=skipTex(p); const b=v.skp.userData.board; b.material.map?.dispose(); b.material.map=th.tex; b.material.needsUpdate=true; }
-    v.badge.visible=!!p.partPruned;
-    if(v.badge.visible) v.badge.lookAt(camera.position.x,v.badge.position.y+v.grp.position.y,camera.position.z);
+    v.idxT.material.color.setHex(p.probe!=null?0xfaff69:0x8a8f3a);
+    v.idxT.scale.setScalar(p.probe!=null?1.25:1);
+    v.skpT.material.color.setHex((p.showVerdict&&p.skipx&&Object.keys(p.skipx).length)?0xffb46f:0x8a6fb0);
+    v.wall.visible=!!p.partPruned;
+    if(v.wall.visible) v.wall.material.opacity=0.15+0.15*Math.sin(frame*0.15);
     v.proj.visible=!!p.hasProj;
+    // 名前チップ(投影 DOM)
+    const c=chip('p'+p.id,(p.partPruned?'warn':''),()=>openInsp('part',p.id));
+    c.textContent=p.name+' · '+p.granules.length+'g'+(p.partPruned?' ✂':'')+(p.hasProj?' ⚡':'');
+    const wp=v.grp.position;
+    placeChip(c,wp.x+v.wW/2-0.15,0.45,wp.z);
   });
-  partViews.forEach((v,id)=>{ if(v.seen!==frame){ scene.remove(v.grp); partViews.delete(id); } });
-  // レーン
+  partViews.forEach((v,id)=>{ if(v.seen!==frame){ v.grp.removeFromParent(); partViews.delete(id); } });
   laneViews.forEach((lv,i)=>{
     const g0=laneGeom(i);
     lv.grp.position.set(wx(g0.x),0,wz(g0.y));
@@ -1209,39 +1239,39 @@ window.__render3d=function(){
     lv.evalPad.material.color.setHex(l&&l.simd>0?0x2a7ba8:0x14324a);
     lv.evalPad.material.opacity=l&&l.simd>0?0.5+l.simd*0.5:0.55;
     lv.evalCells.forEach((m,ci)=>{
-      const v=l&&l.cur?l.cur.cells[ci]:null;
-      m.visible=v!=null;
-      if(v!=null) restyleCell(m,v,(l.simd>0?(v>=PRED&&(!SVCF||svcOf(v)===SVCF)?'hit':'norm'):'norm'));
+      const v2=l&&l.cur?l.cur.cells[ci]:null;
+      m.visible=v2!=null;
+      if(v2!=null) restyleCell(m,v2,(l.simd>0?(v2>=PRED&&(!SVCF||svcOf(v2)===SVCF)?'hit':'norm'):'norm'));
     });
     lv.queue.forEach((m,qi)=>{ m.visible=!!(l&&l.queue.length>qi); });
-    const sig=l?JSON.stringify(l.partial):'idle';
-    if(lv.cSig!==sig){ lv.cSig=sig;
-      lv.counter.material.map?.dispose();
-      lv.counter.material.map=counterTex(l||{partial:{}}); lv.counter.material.needsUpdate=true; }
-    lv.counter.lookAt(camera.position.x,lv.counter.position.y,camera.position.z);
+    const sum=l?Object.keys(l.partial).reduce((s,b)=>s+l.partial[b],0):0;
+    const c=chip('l'+i,'lane',()=>openInsp('lane',i));
+    c.innerHTML='lane '+(i+1)+(l?' <b>Σ '+sum.toLocaleString()+'</b>':'');
+    placeChip(c,lv.grp.position.x+((g0.w*S)/2),0.5,lv.grp.position.z+0.2);
   });
-  // MV
   {
     const mg=mvGeom();
-    mvT1.position.set(wx(mg.x+mg.w/2),0,wz(mg.y+40));
-    mvT2.position.set(wx(mg.x+mg.w/2),0,wz(mg.y+40)+1.3);
-    const sig=JSON.stringify([mv,mv2]);
-    if(mvSig!==sig){ mvSig=sig;
-      const b1=mvT1.userData.board; b1.material.map?.dispose(); b1.material.map=mvTex1(); b1.material.needsUpdate=true;
-      const b2=mvT2.userData.board; b2.material.map?.dispose(); b2.material.map=mvTex2(); b2.material.needsUpdate=true; }
-    const fl=mvFlash>0?1+mvFlash*0.06:1; mvT1.scale.set(fl,1,fl);
-    const fl2=mv2Flash>0?1+mv2Flash*0.06:1; mvT2.scale.set(fl2,1,fl2);
+    mvB1.grp.position.set(wx(mg.x+mg.w/2),0,wz(mg.y+150));
+    mvB2.grp.position.set(wx(mg.x+mg.w/2),0,wz(mg.y+150)+1.35);
+    const fl=mvFlash>0?1+mvFlash*0.15:1; mvB1.grp.scale.set(1,fl,1);
+    const fl2=mv2Flash>0?1+mv2Flash*0.15:1; mvB2.grp.scale.set(1,fl2,1);
+    const rows1=Object.keys(mv).length, rows2=Object.keys(mv2).length;
+    const c1=chip('mv1','mv',()=>openInsp('mv',1));
+    c1.innerHTML='MV hourly_counts <b>'+rows1+'行</b>';
+    placeChip(c1,mvB1.grp.position.x,0.85,mvB1.grp.position.z);
+    const c2=chip('mv2','mv',()=>openInsp('mv',2));
+    c2.innerHTML='MV daily_counts <b>'+rows2+'行</b>';
+    placeChip(c2,mvB2.grp.position.x,0.7,mvB2.grp.position.z);
   }
-  // 飛行体
   fly.forEach(f=>{
     if(f.__id==null) f.__id=++flySeq;
     let m=flyViews.get(f.__id);
     if(!m){ m=flyMesh(f); scene.add(m); flyViews.set(f.__id,m); }
     m.userData.seen=frame;
     m.position.set(wx(f.x), 0.75+(f.arc?Math.sin(Math.PI*Math.min(1,f.t))*f.arc*S:0), wz(f.y));
-    if(f.kind==='chip'||f.kind==='idxv') m.lookAt(camera.position.x,m.position.y,camera.position.z);
   });
   flyViews.forEach((m,id)=>{ if(m.userData.seen!==frame){ scene.remove(m); flyViews.delete(id); } });
+  chips.forEach((c,k)=>{ if(c.__seen!==frame){ c.remove(); chips.delete(k); } });
   camUpd();
   renderer.render(scene,camera);
 };
