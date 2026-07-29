@@ -74,6 +74,10 @@ canvas{display:block;touch-action:none}
       <span style="font-family:var(--mono);color:var(--muted)">WHERE ts ≧</span>
       <input type="range" id="predR" min="0" max="960" step="15" value="600" style="width:110px;accent-color:#6fe3ff">
       <b id="predV" style="font-family:var(--mono);color:var(--cyan);min-width:44px">18:00</b>
+      <span style="font-family:var(--mono);color:var(--muted)">AND service =</span>
+      <select id="svcSel" style="background:#0f1116;color:#6fe3ff;border:1px solid #262a33;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
+        <option value="">(すべて)</option><option>frontend</option><option>checkout</option><option>cart</option><option>auth</option><option>search</option>
+      </select>
     </span>
     <button class="btn" id="bSel">▶ SELECT</button>
     <button class="btn" id="bAmb">▶ 自動再生</button>
@@ -329,10 +333,10 @@ const BUCKET=60; // 1時間の帯(値 = 8:00 からの経過分)
 function fmtT(v){ return (8+Math.floor(v/60))+':'+String(v%60).padStart(2,'0'); }
 const SVC=['frontend','checkout','cart','auth','search'];
 const svcOf=v=>SVC[v%SVC.length];
-function SQLQ(){ return "SELECT toStartOfHour(ts) AS h, count() FROM otel_events WHERE ts >= '"+fmtT(PRED)+"' GROUP BY h ORDER BY h"; }
+function SQLQ(){ return "SELECT toStartOfHour(ts) AS h, count() FROM otel_events WHERE ts >= '"+fmtT(PRED)+"'"+(SVCF?" AND service = '"+SVCF+"'":'')+" GROUP BY h ORDER BY h"; }
 function clearQueryView(){ // 結果テーブル・レーン・枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
   result=null; lanes=[]; setStage(0); // カメラは動かさない(粒度はユーザーのもの)
-  parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.probe=undefined; p.scanG=undefined; });
+  parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.skipx=null; p.probe=undefined; p.scanG=undefined; });
 }
 function hiOf(p,i){ return (i+1<p.granules.length)?p.granules[i+1][0]:960; }
 function doSelect(){
@@ -376,8 +380,14 @@ function selExec(act){
         const p=s.p, n=p.granules.length, k=s.k;
         p.probe=undefined;
         p.verdict=Array.from({length:n},(_,i)=>i>=k);
+        p.skipx={};
         p.rangeK=k; p.showVerdict=1;
-        p.granules.forEach((g,gi)=>{ if(gi>=k) kept.push({g,p,gi}); });
+        p.granules.forEach((g,gi)=>{
+          if(gi<k) return;
+          // skip index: set(service)。granule 内に該当 service が1つも無ければ読まない
+          if(SVCF && !g.some(v=>svcOf(v)===SVCF)){ p.skipx[gi]=true; p.verdict[gi]=false; return; }
+          kept.push({g,p,gi});
+        });
       });
       const total=act.reduce((s2,p)=>s2+p.granules.length,0);
       startRead(act,kept,total);
@@ -390,7 +400,7 @@ function startRead(act,kept,total){
   const ranges=act.filter(p=>p.rangeK<p.granules.length)
     .map(p=>'g'+(p.rangeK+1)+(p.rangeK+1<p.granules.length?'〜g'+p.granules.length:''));
   showSql(SQLQ()+'  -- ② 読むのは '+kept.length+' / '+total+' granule('+(ranges.join(', ')||'なし')+')');
-  toast('② 読み取り: 生き残った granule は<b>連続した range</b>('+(ranges.join(' / ')||'なし')+')としてまとめて読む。✂ の '+(total-kept.length)+' granule には一切触れない');
+  toast('② 読み取り: 生き残った granule('+(ranges.join(' / ')||'なし')+')だけ読む。✂ '+(total-kept.length)+' granule はスキップ'+(SVCF?'(赤 = 主キー、オレンジ = service の set skip index)':''));
   if(!kept.length){
     setTimeout(()=>{
       showSql(SQLQ()+'  -- 0 行(索引だけで証明、読み取りゼロ)');
@@ -426,7 +436,7 @@ function startProcess(act,keptN,total){
     lanes.forEach(l=>{
       if(l.simd>0){ active=true; return; }           // 評価アニメ中
       if(l.cur){ // 評価完了 → bucket ごとの部分集計へ
-        const hits=l.cur.cells.filter(v=>v>=PRED);
+        const hits=l.cur.cells.filter(v=>v>=PRED&&(!SVCF||svcOf(v)===SVCF));
         hits.forEach(v=>{ const b=Math.floor(v/BUCKET)*BUCKET; l.partial[b]=(l.partial[b]||0)+8192/GPR; }); // b = 時間帯(60分)
         if(hits.length) l.lastAdd={v:hits.length*8192/GPR,t:1};
         l.cur=null;
@@ -503,8 +513,9 @@ function drawPart(p){
     });
     // 縮尺の明示: セルは代表値で、1行 = 8,192 行。刈られた行は ✂
     const pruned=p.showVerdict&&p.verdict&&!p.verdict[gi];
-    ctx.fillStyle=pruned?'#ff7d7d':'#4d5563'; ctx.font='9px '+MONO();
-    ctx.fillText(pruned?'✂ 8,192行':'…8,192行', gx+GPR*(CELL+GAP)+2, ry+15);
+    const bySkip=pruned&&p.skipx&&p.skipx[gi];
+    ctx.fillStyle=bySkip?'#ffb46f':(pruned?'#ff7d7d':'#4d5563'); ctx.font='9px '+MONO();
+    ctx.fillText(bySkip?'✂ skip idx':(pruned?'✂ 8,192行':'…8,192行'), gx+GPR*(CELL+GAP)+2, ry+15);
   });
   const ix=gx+GPR*(CELL+GAP)+56, iy=p.y+30;
   const ih=p.granules.length*16+34;
@@ -854,6 +865,8 @@ function toast(s,warn){ toastEl.textContent=s; toastEl.className=warn?'on warn':
 document.getElementById('bIns').addEventListener('click',doInsert);
 document.getElementById('bMerge').addEventListener('click',doMerge);
 document.getElementById('bSel').addEventListener('click',doSelect);
+let SVCF='';
+document.getElementById('svcSel').addEventListener('change',e=>{ SVCF=e.target.value; });
 document.getElementById('predR').addEventListener('input',()=>{ PRED=+document.getElementById('predR').value; document.getElementById('predV').textContent=fmtT(PRED); });
 let demoT=null, demoSteps=null;
 function stopDemo(){ if(demoT){ clearInterval(demoT); demoT=null; demoSteps=null; cine=false; document.getElementById('bAmb').textContent='▶ 自動再生'; } }
