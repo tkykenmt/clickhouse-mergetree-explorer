@@ -70,7 +70,7 @@ const IDXW=104;                     // 索引カード幅
 /* ---- 状態 ---- */
 let seq=0, parts=[], fly=[], ambTimer=null, ambN=0, busy=false;
 function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.push(vals.slice(i,i+GPR)); return gs; }
-function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12; }
+function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12+58; }
 function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+26)+42; }
 function layout(){
   const y0=182, x0=24, maxW=W-24;
@@ -110,14 +110,15 @@ function doInsert(){
   const n=8+Math.floor(Math.random()*5);
   const vals=Array.from({length:n},()=>Math.floor(Math.random()*1000));
   const sorted=[...vals].sort((a,b)=>a-b);
-  showSql('INSERT INTO events (user_id, …) VALUES '+vals.slice(0,4).map(v=>'('+v+', …)').join(' ')+' …  -- '+n+' 行');
+  const gN=Math.ceil(n/GPR);
+  showSql('INSERT INTO events (user_id, …) VALUES '+vals.slice(0,4).map(v=>'('+v+', …)').join(' ')+' …  -- '+(gN*8192).toLocaleString()+' 行(セルは代表値)');
   const cx=W/2-(n*(CELL+GAP))/2, cy=118;
   vals.forEach((v,i)=>{
     fly.push({v, fx:W/2+(Math.random()*500-250), fy:-50-Math.random()*90,
       txp:cx+i*(CELL+GAP), typ:cy, t:0, dt:0.024, kind:'raw'});
   });
   setTimeout(()=>{
-    toast('ORDER BY 順にソート。8192 行(この縮尺では 4 値)ごとに granule に区切る');
+    toast('ORDER BY 順にソートし、8,192 行ごとに granule に区切る。図のセルは各 granule の代表値で、1行 = 8,192 行の窓');
     fly.forEach(f=>{ if(f.kind==='raw'){ f.fx=f.x; f.fy=f.y; f.txp=cx+sorted.indexOf(f.v)*(CELL+GAP); f.typ=cy; f.t=0; f.kind='sorting'; } });
     setTimeout(()=>{
       seq++;
@@ -179,8 +180,8 @@ function doSelect(){
       act.forEach(p=>{ p.scanG=undefined; p.showVerdict=1; });
       const read=act.reduce((s,p)=>s+p.verdict.filter(Boolean).length,0);
       const total=act.reduce((s,p)=>s+p.granules.length,0);
-      const cnt=act.reduce((s,p)=>s+p.granules.flat().filter(v=>v>=PRED).length,0);
-      toast('枝刈り完了: 全 '+total+' granule のうち '+read+' 個だけ読んで count() = '+cnt+'。✂ の行はストレージから読まれない');
+      const cnt=act.reduce((s,p)=>s+p.granules.reduce((s2,g,gi)=>s2+(p.verdict[gi]?Math.round(g.filter(v=>v>=PRED).length/GPR*8192):0),0),0);
+      toast('枝刈り完了: 全 '+total+' granule('+(total*8192).toLocaleString()+' 行)のうち '+read+' 個だけ読んで count() = '+cnt.toLocaleString()+'。✂ の行はストレージから読まれない');
       setTimeout(()=>{ act.forEach(p=>{ p.showVerdict=0; p.verdict=null; }); busy=false; },5600);
     }
   },560);
@@ -196,7 +197,7 @@ function drawPart(p){
   ctx.beginPath(); ctx.roundRect(p.x,p.y,w,h,10); ctx.fill(); ctx.stroke();
   if(p.flash>0){ ctx.fillStyle='rgba(125,255,178,'+(p.flash*0.25)+')'; ctx.beginPath(); ctx.roundRect(p.x,p.y,w,h,10); ctx.fill(); }
   ctx.fillStyle='#98a0b3'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
-  ctx.fillText('Part '+p.name+(p.lvl>0?'  (マージ産)':''), p.x+10, p.y+17);
+  ctx.fillText('Part '+p.name+' ('+(p.granules.length*8192).toLocaleString()+' 行)'+(p.lvl>0?'  マージ産':''), p.x+10, p.y+17);
   const gx=p.x+24, gy=p.y+30;
   p.granules.forEach((g,gi)=>{
     const ry=gy+gi*(CELLH+GAP);
@@ -216,10 +217,13 @@ function drawPart(p){
       if(scanned){ ctx.strokeStyle='#faff69'; ctx.strokeRect(cxp+0.5,ry+0.5,CELL-1,CELLH-1); }
       ctx.fillStyle=tcol; ctx.font='11px '+MONO(); ctx.textAlign='center';
       ctx.fillText(String(v), cxp+CELL/2, ry+16); ctx.textAlign='left';
-      if(dead&&ci===g.length-1){ ctx.fillStyle='#ff7d7d'; ctx.font='11px '+MONO(); ctx.fillText('✂', cxp+CELL+4, ry+16); }
     });
+    // 縮尺の明示: セルは代表値で、1行 = 8,192 行。刈られた行は ✂
+    const pruned=p.showVerdict&&p.verdict&&!p.verdict[gi];
+    ctx.fillStyle=pruned?'#ff7d7d':'#4d5563'; ctx.font='9px '+MONO();
+    ctx.fillText(pruned?'✂ 8,192行':'…8,192行', gx+GPR*(CELL+GAP)+2, ry+15);
   });
-  const ix=gx+GPR*(CELL+GAP)+8, iy=p.y+30;
+  const ix=gx+GPR*(CELL+GAP)+56, iy=p.y+30;
   const ih=p.granules.length*16+24;
   ctx.fillStyle='#1a1c10'; ctx.strokeStyle='#8a8f3a';
   ctx.beginPath(); ctx.roundRect(ix,iy,IDXW,ih,6); ctx.fill(); ctx.stroke();
