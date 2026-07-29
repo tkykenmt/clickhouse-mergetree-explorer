@@ -19,7 +19,7 @@ canvas{display:block}
 #hud h1{font-size:18px;margin:0;white-space:nowrap}
 #hud h1 b{color:var(--yellow)}
 #hud .cap{font-size:12px;color:var(--muted)}
-.btn{background:#191c23;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp);white-space:nowrap}
+.btn{background:#191c23;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp);white-space:nowrap;touch-action:manipulation}
 .btn:hover{border-color:var(--cyan)}
 .btn.primary{background:var(--yellow);border-color:var(--yellow);color:#1c1c05}
 #hud{flex-wrap:wrap}
@@ -35,13 +35,26 @@ canvas{display:block}
 #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:13px;color:var(--ink);z-index:10;opacity:0;transition:opacity .25s;max-width:94vw}
 #toast.on{opacity:1}
 #toast.warn{border-color:var(--red);color:var(--red)}
+@media (max-width:700px){
+  #hud{gap:8px;padding:8px 10px}
+  #hud h1{font-size:15px}
+  #hud .cap{display:none}
+  #ctrl{margin-left:0 !important;flex-basis:100%;flex-wrap:wrap;gap:6px !important}
+  .btn{padding:7px 10px;font-size:12px}
+  #ctrl>span{padding:4px 8px !important;font-size:11.5px !important}
+  #predR{width:70px !important}
+  #sqlbar{font-size:11px;padding:6px 10px}
+  #steps{font-size:10.5px;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  #steps .step{padding:2px 8px}
+  #toast{font-size:12px;bottom:10px;padding:6px 10px}
+}
 </style>
 </head>
 <body>
 <div id="hud">
   <h1>MergeTree <b>Explorer</b> <span style="font-size:11px;border:1px solid var(--yellow);color:var(--yellow);border-radius:99px;padding:2px 8px;vertical-align:middle">V2 PREVIEW</span></h1>
   <span class="cap">Part は値グリッド、granule は行、索引はカード。<b style="color:var(--ink)">公式ブログの図の語彙のまま、それが動く</b></span>
-  <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
+  <span id="ctrl" style="margin-left:auto;display:flex;gap:10px;align-items:center">
     <button class="btn primary" id="bIns">＋ INSERT</button>
     <button class="btn" id="bMerge">⇄ マージ</button>
     <span style="display:flex;gap:8px;align-items:center;background:#191c23;border:1px solid var(--line);border-radius:9px;padding:4px 12px;font-size:12.5px">
@@ -72,23 +85,30 @@ canvas{display:block}
    マージの併合、SELECT の索引スキャン→枝刈りをアニメで見せる。
 ============================================================ */
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
-let W=0,H=0,DPR=1;
+let W=0,H=0,DPR=1,MOB=false;
+let CELL=34, CELLH=24, IDXW=104, INS_Y=106;   // モバイルでは resize が縮める
 function resize(){ DPR=window.devicePixelRatio||1; W=window.innerWidth; H=window.innerHeight;
-  cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+'px'; cv.style.height=H+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); }
+  cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+'px'; cv.style.height=H+'px'; ctx.setTransform(DPR,0,0,DPR,0,0);
+  MOB=W<700; CELL=MOB?24:34; CELLH=MOB?19:24; IDXW=MOB?78:104;
+  if(window.__ready){ updateTop(); layout(); } }
+function updateTop(){ INS_Y=Math.max(106, document.getElementById('hud').offsetHeight+8); }
 window.addEventListener('resize',resize); resize();
 
 const MONO=()=>getComputedStyle(document.body).getPropertyValue('--mono');
 const JP=()=>getComputedStyle(document.body).getPropertyValue('--jp');
 
 /* ---- 寸法 ---- */
-const CELL=34, CELLH=24, GAP=3;     // 値セル
+const GAP=3;                        // 値セルの間隔
 const GPR=4;                        // granule あたりの値の数(8192 行の縮尺)
-const IDXW=104;                     // 索引カード幅
 
 /* ---- 状態 ---- */
 let seq=0, parts=[], fly=[], lanes=[], ambTimer=null, ambN=0, busy=false;
 const LANES=3; // max_threads の縮尺
 function laneGeom(i){
+  if(MOB){
+    const w=Math.min(420,W-20), h=80;
+    return {x:(W-w)/2, y:H-64-(LANES-i)*(h+8), w, h};
+  }
   const w=Math.min(380,(W-60)/LANES-12);
   return {x:(W-(w+14)*LANES)/2+i*(w+14)+7, y:H-186, w, h:132};
 }
@@ -97,7 +117,7 @@ function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.pus
 function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12+58; }
 function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+36)+42; }
 function layout(){
-  const y0=182, x0=24, maxW=W-24;
+  const y0=INS_Y+72, x0=MOB?10:24, maxW=W-(MOB?10:24);
   let x=x0, y=y0, rowH=0;
   parts.forEach(p=>{
     const w=partW(p), h=partH(p);
@@ -137,7 +157,7 @@ function doInsert(){
   const sorted=[...vals].sort((a,b)=>a-b);
   const gN=Math.ceil(n/GPR);
   showSql('INSERT INTO events (user_id, …) VALUES '+vals.slice(0,4).map(v=>'('+v+', …)').join(' ')+' …  -- '+(gN*8192).toLocaleString()+' 行(セルは代表値)');
-  const cx=W/2-(n*(CELL+GAP))/2, cy=118;
+  const cx=Math.max(8,W/2-(n*(CELL+GAP))/2), cy=INS_Y+12;
   vals.forEach((v,i)=>{
     fly.push({v, fx:W/2+(Math.random()*500-250), fy:-50-Math.random()*90,
       txp:cx+i*(CELL+GAP), typ:cy, t:0, dt:0.024, kind:'raw'});
@@ -308,8 +328,8 @@ function drawPart(p){
       ctx.fillStyle=fill;
       ctx.beginPath(); ctx.roundRect(cxp,ry,CELL,CELLH,4); ctx.fill();
       if(scanned){ ctx.strokeStyle='#faff69'; ctx.strokeRect(cxp+0.5,ry+0.5,CELL-1,CELLH-1); }
-      ctx.fillStyle=tcol; ctx.font='11px '+MONO(); ctx.textAlign='center';
-      ctx.fillText(String(v), cxp+CELL/2, ry+16); ctx.textAlign='left';
+      ctx.fillStyle=tcol; ctx.font=(MOB?'10px ':'11px ')+MONO(); ctx.textAlign='center';
+      ctx.fillText(String(v), cxp+CELL/2, ry+CELLH-8+(MOB?1:0)); ctx.textAlign='left';
     });
     // 縮尺の明示: セルは代表値で、1行 = 8,192 行。刈られた行は ✂
     const pruned=p.showVerdict&&p.verdict&&!p.verdict[gi];
@@ -346,7 +366,7 @@ function drawLanes(){
     ctx.fillStyle='#98a0b3'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
     ctx.fillText('processing lane '+(l.i+1), g.x+10, g.y+17);
     // 3工程のゾーン: 受取待ち | SIMD 一括評価 | 部分集計
-    const zoneY=g.y+26, zoneH=g.h-56;
+    const zoneY=g.y+24, zoneH=g.h-46;
     const z1w=g.w*0.24, z2w=g.w*0.44, z3w=g.w*0.26;
     const z1x=g.x+8, z2x=z1x+z1w+10, z3x=z2x+z2w+10;
     // ゾーン枠
@@ -355,31 +375,33 @@ function drawLanes(){
       ctx.strokeRect(zx,zoneY,zw,zoneH); ctx.setLineDash([]);
     });
     // ① 受取待ち(キューの mini 行)
-    l.queue.slice(0,3).forEach((q,qi)=>{
-      const my=zoneY+6+qi*12;
+    l.queue.slice(0,MOB?2:3).forEach((q,qi)=>{
+      const my=zoneY+5+qi*12;
       q.cells.forEach((v,ci)=>{
         ctx.fillStyle='#1b2c3a';
         ctx.fillRect(z1x+5+ci*((z1w-14)/GPR), my, (z1w-14)/GPR-2, 9);
       });
     });
-    if(l.queue.length>3){ ctx.fillStyle='#5a6478'; ctx.font='9px '+MONO(); ctx.fillText('+'+(l.queue.length-3), z1x+5, zoneY+zoneH-5); }
+    const qShown=MOB?2:3;
+    if(l.queue.length>qShown){ ctx.fillStyle='#5a6478'; ctx.font='9px '+MONO(); ctx.fillText('+'+(l.queue.length-qShown), z1x+5, zoneY+zoneH-4); }
     // ② SIMD 一括評価(現在の granule)
     if(l.cur){
-      const cw=(z2w-16)/GPR;
+      const cw=(z2w-16)/GPR, cy2=zoneY+(zoneH-CELLH)/2;
       l.cur.cells.forEach((v,ci)=>{
         const cxp=z2x+8+ci*cw;
         const hit=v>=PRED;
         ctx.fillStyle=l.simd>0?(hit?'rgba(125,255,178,'+(0.35+l.simd*0.6)+')':'rgba(111,227,255,'+(0.2+l.simd*0.5)+')'):(hit?'#153a2a':'#1b2431');
-        ctx.beginPath(); ctx.roundRect(cxp,zoneY+10,cw-3,CELLH,4); ctx.fill();
+        ctx.beginPath(); ctx.roundRect(cxp,cy2,cw-3,CELLH,4); ctx.fill();
         ctx.fillStyle=hit?'#7dffb2':'#c7cede'; ctx.font='10px '+MONO(); ctx.textAlign='center';
-        ctx.fillText(String(v),cxp+(cw-3)/2,zoneY+26); ctx.textAlign='left';
+        ctx.fillText(String(v),cxp+(cw-3)/2,cy2+CELLH/2+4); ctx.textAlign='left';
       });
     }
     // ③ 部分集計(レーンローカル)
+    const py=zoneY+zoneH/2+5;
     ctx.fillStyle='#7dffb2'; ctx.font='700 13px '+MONO(); ctx.textAlign='center';
-    ctx.fillText(l.partial.toLocaleString(), z3x+z3w/2, zoneY+24);
+    ctx.fillText(l.partial.toLocaleString(), z3x+z3w/2, py);
     if(l.lastAdd){ ctx.globalAlpha=Math.max(0,l.lastAdd.t); ctx.fillStyle='#7dffb2'; ctx.font='11px '+MONO();
-      ctx.fillText('+'+l.lastAdd.v.toLocaleString(), z3x+z3w/2, zoneY+24-14*(1-l.lastAdd.t)-12); ctx.globalAlpha=1; }
+      ctx.fillText('+'+l.lastAdd.v.toLocaleString(), z3x+z3w/2, py-14*(1-l.lastAdd.t)-12); ctx.globalAlpha=1; }
     ctx.textAlign='left';
     // ゾーンのキャプションと矢印
     ctx.fillStyle='#5a6478'; ctx.font='9px '+JP();
@@ -396,9 +418,9 @@ function drawLanes(){
 function render(){
   ctx.clearRect(0,0,W,H);
   ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
-  ctx.strokeRect(20,106,W-40,48); ctx.setLineDash([]);
+  ctx.strokeRect(12,INS_Y,W-24,48); ctx.setLineDash([]);
   ctx.fillStyle='#5a6478'; ctx.font='10px '+JP(); ctx.textAlign='left';
-  ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 26, 120);
+  ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 18, INS_Y+14);
   parts.forEach(drawPart);
   drawLanes();
   fly.forEach(f=>{
@@ -431,6 +453,8 @@ function setStage(n){ // 0 = 非表示
     el.classList.toggle('on',s===n);
     el.classList.toggle('done',s<n);
   });
+  const on=box.querySelector('.step.on');
+  if(on) on.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'});
 }
 function toast(s,warn){ toastEl.textContent=s; toastEl.className=warn?'on warn':'on'; toastEl.id='toast'; clearTimeout(toastT); toastT=setTimeout(()=>toastEl.classList.remove('on'),6200); }
 document.getElementById('bIns').addEventListener('click',doInsert);
@@ -457,6 +481,8 @@ document.getElementById('bAmb').addEventListener('click',()=>{
   const mk=(vals,lvl,name)=>{ seq++; const p={id:seq,name,granules:mkGranules(vals.sort((a,b)=>a-b)),lvl,flash:0,x:null,y:null,merged:lvl>0}; parts.push(p); };
   mk([40,100,400,40,700,400,40,500,900,50,300,600],2,'202607_1_5_2');
   mk([60,300,600,60,500,900,60,900,620],0,'202607_6_6_0');
+  window.__ready=true; updateTop();
+  new ResizeObserver(()=>{ updateTop(); layout(); }).observe(document.getElementById('hud'));
   layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
   showSql('CREATE TABLE events (user_id UInt32, …) ENGINE = MergeTree ORDER BY user_id;');
   window.__v2={ get parts(){return parts;} };
