@@ -218,7 +218,7 @@ function tick(){
   fly=fly.filter(f=>{
     f.t+=f.dt||0.02;
     const tt=Math.min(1,f.t);
-    const e=1-Math.pow(1-tt,3);
+    const e=f.lin?tt:1-Math.pow(1-tt,3); // 旅のチップは等速で「移動」を見せる
     f.x=f.fx+(f.txp-f.fx)*e; f.y=f.fy+(f.typ-f.fy)*e-(f.arc?Math.sin(Math.PI*tt)*f.arc:0);
     if(f.t>=1){ if(f.done){ const fn=f.done; f.done=null; fn(); } return !!f.hold; }
     return true;
@@ -325,9 +325,11 @@ function doSelect(){
   showSql(SQLQ()+'  -- ⓪ クライアントが送信 → node-1 が受付');
   toast('⓪ クライアントが SQL を送信。ここから結果が返るまで、クエリの一生をカメラで追う');
   const cp=clientPos();
-  fly.push({kind:'chip', col:'#6fe3ff', txt:'SELECT …', fx:cp.x+220, fy:cp.y+52, txp:W*0.5, typ:INS_Y+30, t:0, dt:0.0115});
-  setTimeout(()=>camGoLevel(2,true), 2300);
-  setTimeout(()=>selExec(act), 3400);
+  setTimeout(()=>{ // カメラが引き切ってから、クライアント→node-1 の飛行を見せる
+    fly.push({kind:'chip', lin:true, col:'#6fe3ff', txt:'SELECT …', fx:cp.x+220, fy:cp.y+52, txp:W*0.5, typ:INS_Y+30, t:0, dt:0.007});
+  },900);
+  setTimeout(()=>camGoLevel(2,true), 2900);
+  setTimeout(()=>selExec(act), 3900);
 }
 function selExec(act){
   setStage(1);
@@ -435,9 +437,11 @@ function startProcess(act,keptN,total){
       setTimeout(()=>{ // 結果はクライアントへ帰る(カメラも引く)。表示は次の操作まで残る
         camGoLevel(0,true);
         const cp=clientPos();
-        fly.push({kind:'chip', col:'#7dffb2', txt:rows.length+' 行の結果', fx:W*0.5, fy:resY(rows.length)+10, txp:cp.x+220, typ:cp.y+52, t:0, dt:0.0115,
-          done:()=>{ toast('結果がクライアントに到着。クライアント → ノード → 索引 → granule → レーン → マージ → クライアント、がクエリの一生'); }});
-        setTimeout(()=>{ camGo(0,0,1,0.05); busy=false; },4600);
+        setTimeout(()=>{ // 引き切ってから、結果の帰宅を見せる
+          fly.push({kind:'chip', lin:true, col:'#7dffb2', txt:rows.length+' 行の結果', fx:W*0.5, fy:resY(rows.length)+10, txp:cp.x+220, typ:cp.y+52, t:0, dt:0.007,
+            done:()=>{ toast('結果がクライアントに到着。クライアント → ノード → 索引 → granule → レーン → マージ → クライアント、がクエリの一生'); }});
+        },1000);
+        setTimeout(()=>{ camGo(0,0,1,0.05); busy=false; },5600);
       },2600);
     }
   },380);
@@ -760,11 +764,13 @@ function render(){
   drawNodeSummary();
   fly.forEach(f=>{
     if(f.kind==='chip'){
-      ctx.font='700 11px '+MONO();
-      const tw=ctx.measureText(f.txt).width+18;
-      ctx.fillStyle='#101a13'; ctx.strokeStyle=f.col;
-      ctx.beginPath(); ctx.roundRect(f.x-tw/2,f.y-11,tw,22,11); ctx.fill(); ctx.stroke();
-      ctx.fillStyle='#7dffb2'; ctx.textAlign='center'; ctx.fillText(f.txt,f.x,f.y+4); ctx.textAlign='left';
+      const sc=1/Math.max(cam.k,0.55); // ズームアウト中も画面上で同じ大きさに見せる
+      ctx.font='700 '+(11*sc)+'px '+MONO();
+      const tw=ctx.measureText(f.txt).width+18*sc;
+      ctx.fillStyle='#101a13'; ctx.strokeStyle=f.col; ctx.lineWidth=sc;
+      ctx.beginPath(); ctx.roundRect(f.x-tw/2,f.y-11*sc,tw,22*sc,11*sc); ctx.fill(); ctx.stroke();
+      ctx.lineWidth=1;
+      ctx.fillStyle='#7dffb2'; ctx.textAlign='center'; ctx.fillText(f.txt,f.x,f.y+4*sc); ctx.textAlign='left';
       return;
     }
     if(f.kind==='gran'){
