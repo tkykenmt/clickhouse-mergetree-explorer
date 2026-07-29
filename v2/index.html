@@ -68,9 +68,13 @@ canvas{display:block;touch-action:none}
   <h1>MergeTree <b>Explorer</b> <span style="font-size:11px;border:1px solid var(--yellow);color:var(--yellow);border-radius:99px;padding:2px 8px;vertical-align:middle">V2 PREVIEW</span></h1>
   <span class="cap">Part は値グリッド、granule は行、索引はカード。<b style="color:var(--ink)">公式ブログの図の語彙のまま、それが動く</b></span>
   <span id="ctrl" style="margin-left:auto;display:flex;gap:10px;align-items:center">
+    <select id="engSel" style="background:#0f1116;color:#98a0b3;border:1px solid #262a33;border-radius:8px;font-family:var(--mono);font-size:11px;padding:6px 4px">
+      <option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option>
+    </select>
     <button class="btn primary" id="bIns">＋ INSERT</button>
     <button class="btn" id="bMerge">⇄ マージ</button>
     <button class="btn" id="bDel">🗑 DELETE</button>
+    <button class="btn" id="bUpd">✏️ UPDATE</button>
     <button class="btn" id="bProj">⚡ PROJECTION</button>
     <span style="display:flex;gap:8px;align-items:center;background:#191c23;border:1px solid var(--line);border-radius:9px;padding:4px 12px;font-size:12.5px">
       <span style="font-family:var(--mono);color:var(--muted)">WHERE ts ≧</span>
@@ -189,6 +193,7 @@ let seq=0, parts=[], fly=[], lanes=[], result=null, busy=false, simT=640;
 let mv={}, mvFlash=0;   // MV hourly_counts(書き込み時に集計)
 let mv2={}, mv2Flash=0; // MV daily_counts(hourly からのカスケード)
 let projOn=false;       // ADD PROJECTION 済みか
+let ENG='mt', mutSeq=6;  // ENGINE(mt/rmt) と mutation バージョン
 let cine=false;   // true = 自動再生ツアー中だけカメラが物語を追う
 let pulse=0;      // 要約カードの実行中表示の鼓動
 const LANES=3; // max_threads の縮尺
@@ -333,7 +338,9 @@ function doMerge(){
   if(act.length<2){ toast('マージ対象なし(同じパーティション内に Part が2つ以上必要)','warn'); return; }
   busy=true; clearQueryView();
   const delN=act.reduce((s,p)=>s+(p.del?Object.keys(p.del).length:0),0);
-  const vals=act.flatMap(p=>p.granules.flatMap((g,gi)=>g.filter((v,ci)=>!(p.del&&p.del[gi*GPR+ci])))).sort((x,y)=>x-y);
+  let vals=act.flatMap(p=>p.granules.flatMap((g,gi)=>g.filter((v,ci)=>!(p.del&&p.del[gi*GPR+ci])))).sort((x,y)=>x-y);
+  let dedup=0;
+  if(ENG==='rmt'){ const before=vals.length; vals=vals.filter((v,i)=>i===0||v!==vals[i-1]); dedup=before-vals.length; }
   showSql('OPTIMIZE TABLE otel_events PARTITION \''+day+'\'  -- '+act.length+' 個の Part を併合(パーティションは跨がない)');
   showMsg('OPTIMIZE 実行中…');
   act.forEach(p=>{ p.dying=true; });
@@ -345,11 +352,35 @@ function doMerge(){
       granules:mkGranules(vals),lvl,flash:1,x:null,y:null,merged:true};
     parts.unshift(p); layout();
     const gAfter=p.granules.length;
-    toast(act.length+' 個の Part の行を並べ直して1つに置き換え。元の Part は書き換えず引退'+(gAfter<gBefore?'。granule '+gBefore+' → '+gAfter+'(末尾の端数が詰め直された)':'')+(delN?'。マスク済み '+(delN*8192/GPR).toLocaleString()+' 行をここで物理削除':''));
+    toast(act.length+' 個の Part の行を並べ直して1つに置き換え。元の Part は書き換えず引退'+(gAfter<gBefore?'。granule '+gBefore+' → '+gAfter+'(末尾の端数が詰め直された)':'')+(delN?'。マスク済み '+(delN*8192/GPR).toLocaleString()+' 行をここで物理削除':'')+(dedup?'。ReplacingMergeTree: 同じ ts の '+(dedup*8192/GPR).toLocaleString()+' 行を置換(重複解消はマージ時=eventually)':''));
     showMsg('Ok.(OPTIMIZE: '+act.length+' Part → 1 Part)');
     busy=false;
     setTimeout(()=>{ if(!busy) showDefaultResult(); },2800);
   },700);
+}
+
+/* ---- 操作: UPDATE(mutation = Part の書き換え) ---- */
+function doUpdate(){
+  if(busy){ toast('実行中です','warn'); return; }
+  const target=SVCF||'cart';
+  const hit=parts.filter(p=>!p.dying&&p.granules.some(g=>g.some(v=>svcOf(v)===target)));
+  if(!hit.length){ toast('該当行を含む Part がない(service = '+target+')','warn'); return; }
+  busy=true; clearQueryView();
+  mutSeq++;
+  showSql("ALTER TABLE otel_events UPDATE attrs['tier'] = 'vip' WHERE service = '"+target+"'  -- mutation");
+  showMsg('mutation 実行中…(system.mutations: is_done = 0)');
+  toast('UPDATE は mutation: マスクではなく、該当行を含む Part を丸ごと新しい Part に書き換える(重い)。名前に mutation バージョンが付く');
+  let done=0;
+  hit.forEach((p,i)=>setTimeout(()=>{
+    p.dying=true;
+    seq++;
+    const np={id:seq, name:p.name+'_'+mutSeq, day:p.day, hasProj:p.hasProj, del:p.del,
+      granules:p.granules.map(g=>g.slice()), lvl:p.lvl, flash:1, x:p.x, y:p.y, merged:p.merged, upd:{}};
+    np.granules.forEach((g,gi)=>g.forEach((v,ci)=>{ if(svcOf(v)===target) np.upd[gi*GPR+ci]=true; }));
+    parts.splice(parts.indexOf(p),0,np); layout();
+    done++;
+    if(done===hit.length){ showMsg('Ok. mutation 完了('+hit.length+' Part を書き換え、水色 = 更新行)'); busy=false; }
+  }, i*500));
 }
 
 /* ---- 操作: 軽量 DELETE(_row_exists マスク) ---- */
@@ -560,6 +591,8 @@ function drawPart(p){
       let fill=cellColor(v), tcol='#e8eaf0', dead=false;
       const isDel=p.del&&p.del[gi*GPR+ci];
       if(isDel){ fill='#191014'; tcol='#7a5560'; }
+      const isUpd=p.upd&&p.upd[gi*GPR+ci];
+      if(isUpd&&!isDel){ fill='#12333a'; tcol='#7de3ff'; }
       if(p.showVerdict&&p.verdict){
         if(!p.verdict[gi]){ fill='#141519'; tcol='#494f5e'; dead=true; }
         else if(v>=PRED){ fill='#153a2a'; tcol='#7dffb2'; }
@@ -911,14 +944,14 @@ function render(){
   ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 18, INS_Y+14);
   if(MOB){
     ctx.fillStyle='#8b93a5'; ctx.font='700 9px '+MONO();
-    ctx.fillText('otel_events(ts, service, …) PARTITION BY toDate(ts) ORDER BY ts', 12, INS_Y+60);
+    ctx.fillText('otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts', 12, INS_Y+60);
     ctx.fillStyle='#5a6478'; ctx.font='9px '+JP();
     ctx.fillText('セルは ts(時刻)。1行 = granule = 8,192 イベントの窓', 12, INS_Y+72);
   }else{
     ctx.fillStyle='#8b93a5'; ctx.font='700 11px '+MONO();
-    ctx.fillText('otel_events(ts, service, …) PARTITION BY toDate(ts) ORDER BY ts', 18, INS_Y+62);
+    ctx.fillText('otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts', 18, INS_Y+62);
     ctx.fillStyle='#5a6478'; ctx.font='10px '+JP();
-    ctx.fillText('セルは ts(時刻)。1行 = granule = 8,192 イベントの窓', 480, INS_Y+62);
+    ctx.fillText('セルは ts(時刻)。1行 = granule = 8,192 イベントの窓', 660, INS_Y+62);
   }
   parts.forEach(drawPart);
   drawMV();
@@ -994,6 +1027,8 @@ function toast(s,warn){ toastEl.textContent=s; toastEl.className=warn?'on warn':
 document.getElementById('bIns').addEventListener('click',doInsert);
 document.getElementById('bMerge').addEventListener('click',doMerge);
 document.getElementById('bDel').addEventListener('click',doDelete);
+document.getElementById('bUpd').addEventListener('click',doUpdate);
+document.getElementById('engSel').addEventListener('change',e=>{ ENG=e.target.value; toast(ENG==='rmt'?'ReplacingMergeTree: 同じ ORDER BY キー(ts)の行はマージのときに1つへ置換される(即時ではない)':'MergeTree: 置換なしの標準エンジン'); });
 document.getElementById('bProj').addEventListener('click',()=>{
   if(busy){ toast('実行中です','warn'); return; }
   if(projOn){ toast('projection は追加済み。以後の INSERT には自動で入る(⚡proj バッジ)'); return; }
