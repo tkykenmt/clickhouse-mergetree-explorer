@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MergeTree Explorer V2 | ClickHouse ストレージが動いて見える</title>
+<style>
+:root{
+  --bg:#0c0d10; --panel:#14161bee; --line:#262a33; --ink:#e8eaf0; --muted:#98a0b3;
+  --yellow:#faff69; --cyan:#6fe3ff; --green:#7dffb2; --red:#ff7d7d; --dim:#707a8c;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --jp:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--jp)}
+canvas{display:block}
+#hud{position:fixed;top:0;left:0;right:0;display:flex;gap:14px;align-items:center;padding:12px 18px;background:linear-gradient(#0c0d10f0,#0c0d1000);z-index:10;pointer-events:none}
+#hud>*{pointer-events:auto}
+#hud h1{font-size:18px;margin:0;white-space:nowrap}
+#hud h1 b{color:var(--yellow)}
+#hud .cap{font-size:12px;color:var(--muted)}
+.btn{background:#191c23;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp);white-space:nowrap;touch-action:manipulation}
+.btn:hover{border-color:var(--cyan)}
+.btn.primary{background:var(--yellow);border-color:var(--yellow);color:#1c1c05}
+#hud{flex-wrap:wrap}
+#sqlbar{flex-basis:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-space:nowrap;overflow-x:auto}
+#sqlbar .cm{color:var(--dim)}
+#resgrid{flex-basis:100%;background:#101a13;border:1px solid #2f5c41;border-radius:10px;padding:6px 14px;font-family:var(--mono);font-size:12px;color:#d5f6c9;height:104px;overflow:auto;margin-top:-4px}
+#resgrid table{border-collapse:collapse}
+#resgrid th{color:#5f8a6f;text-align:left;font-size:10px;border-bottom:1px solid #24402f;padding:1px 26px 2px 0;font-weight:700}
+#resgrid td{padding:1px 26px 1px 0;white-space:nowrap}
+#resgrid .msg{color:#5f8a6f;font-size:11px;padding:2px 0}
+#steps{flex-basis:100%;display:none;gap:8px;align-items:center;font-size:12px;color:var(--dim);font-family:var(--jp)}
+#steps.show{display:flex}
+#steps i{font-style:normal;color:#3a4152}
+#steps .step{border:1px solid var(--line);border-radius:99px;padding:3px 12px;white-space:nowrap}
+#steps .step.on{border-color:var(--yellow);color:var(--yellow)}
+#steps .step.done{border-color:#2f5c41;color:var(--green)}
+#steps .step.done::after{content:" ✓"}
+#toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:13px;color:var(--ink);z-index:10;opacity:0;transition:opacity .25s;max-width:94vw}
+#toast.on{opacity:1}
+#toast.warn{border-color:var(--red);color:var(--red)}
+@media (max-width:700px){
+  #hud{gap:8px;padding:8px 10px}
+  #hud h1{font-size:15px}
+  #hud .cap{display:none}
+  #ctrl{margin-left:0 !important;flex-basis:100%;flex-wrap:wrap;gap:6px !important}
+  .btn{padding:7px 10px;font-size:12px}
+  #ctrl>span{padding:4px 8px !important;font-size:11.5px !important}
+  #predR{width:70px !important}
+  #sqlbar{font-size:11px;padding:6px 10px}
+  #resgrid{height:64px;font-size:10.5px;padding:4px 10px}
+  #steps{font-size:10.5px;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  #steps .step{padding:2px 8px}
+  #toast{font-size:12px;bottom:10px;padding:6px 10px}
+}
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>MergeTree <b>Explorer</b> <span style="font-size:11px;border:1px solid #6fe3ff;color:#6fe3ff;border-radius:99px;padding:2px 8px;vertical-align:middle">V3 ISO SPIKE</span></h1>
+  <span class="cap">Part は値グリッド、granule は行、索引はカード。<b style="color:var(--ink)">公式ブログの図の語彙のまま、それが動く</b></span>
+  <span id="ctrl" style="margin-left:auto;display:flex;gap:10px;align-items:center">
+    <select id="engSel" style="background:#0f1116;color:#98a0b3;border:1px solid #262a33;border-radius:8px;font-family:var(--mono);font-size:11px;padding:6px 4px">
+      <option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option>
+    </select>
+    <button class="btn primary" id="bIns">＋ INSERT</button>
+    <button class="btn" id="bMerge">⇄ マージ</button>
+    <button class="btn" id="bDel">🗑 DELETE</button>
+    <button class="btn" id="bUpd">✏️ UPDATE</button>
+    <button class="btn" id="bProj">⚡ PROJECTION</button>
+    <span style="display:flex;gap:8px;align-items:center;background:#191c23;border:1px solid var(--line);border-radius:9px;padding:4px 12px;font-size:12.5px">
+      <span style="font-family:var(--mono);color:var(--muted)">WHERE ts ≧</span>
+      <input type="range" id="predR" min="0" max="960" step="15" value="600" style="width:110px;accent-color:#6fe3ff">
+      <b id="predV" style="font-family:var(--mono);color:var(--cyan);min-width:44px">18:00</b>
+      <span style="font-family:var(--mono);color:var(--muted)">AND service =</span>
+      <select id="svcSel" style="background:#0f1116;color:#6fe3ff;border:1px solid #262a33;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
+        <option value="">(すべて)</option><option>frontend</option><option>checkout</option><option>cart</option><option>auth</option><option>search</option>
+      </select>
+      <span style="font-family:var(--mono);color:var(--muted)">idx:</span>
+      <select id="idxSel" style="background:#0f1116;color:#c9a2ff;border:1px solid #262a33;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
+        <option value="set">set</option><option value="bloom">bloom_filter</option>
+      </select>
+    </span>
+    <button class="btn" id="bSel">▶ SELECT</button>
+    <button class="btn" id="bAmb">▶ 自動再生</button>
+    <button class="btn" id="bReset" title="最初からやり直す">⟳</button>
+  </span>
+  <div id="sqlbar"></div>
+  <div id="resgrid"></div>
+  <div id="steps">
+    <span class="step" data-s="1">① 索引分析(二分探索)</span><i>→</i>
+    <span class="step" data-s="2">② 対象 granule だけ読む</span><i>→</i>
+    <span class="step" data-s="3">③ レーン並列処理(SIMD)</span><i>→</i>
+    <span class="step" data-s="4">④ マージして結果を返す</span>
+  </div>
+</div>
+<canvas id="cv"></canvas>
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* ============================================================
+   V2 スパイク(ブログ調): index-based pruning の図をそのまま動かす。
+   メタファー無し — Part は値グリッド、granule は 4 値の行、
+   primary.idx は g→先頭値 のカード。INSERT の飛来ソート、
+   マージの併合、SELECT の索引スキャン→枝刈りをアニメで見せる。
+============================================================ */
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+let W=0,H=0,DPR=1,MOB=false;
+let CELL=34, CELLH=24, IDXW=104, SKW=88, INS_Y=106;   // モバイルでは resize が縮める
+function resize(){ DPR=window.devicePixelRatio||1; W=window.innerWidth; H=window.innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+'px'; cv.style.height=H+'px'; ctx.setTransform(DPR,0,0,DPR,0,0);
+  MOB=W<700; CELL=MOB?24:34; CELLH=MOB?19:24; IDXW=MOB?78:104; SKW=MOB?72:88;
+  if(window.__ready){ updateTop(); layout(); } }
+function updateTop(){ INS_Y=Math.max(106, document.getElementById('hud').offsetHeight+8); }
+window.addEventListener('resize',resize); resize();
+
+const MONO=()=>getComputedStyle(document.body).getPropertyValue('--mono');
+const JP=()=>getComputedStyle(document.body).getPropertyValue('--jp');
+
+/* ---- 寸法 ---- */
+const GAP=3;                        // 値セルの間隔
+const GPR=4;                        // granule あたりの値の数(8192 行の縮尺)
+
+/* ---- 状態 ---- */
+let seq=0, parts=[], fly=[], lanes=[], result=null, busy=false, simT=640;
+let mv={}, mvFlash=0;   // MV hourly_counts(書き込み時に集計)
+let mv2={}, mv2Flash=0; // MV daily_counts(hourly からのカスケード)
+let projOn=false;       // ADD PROJECTION 済みか
+let ENG='mt', mutSeq=6;  // ENGINE(mt/rmt) と mutation バージョン
+let pulse=0;      // 要約カードの実行中表示の鼓動
+const LANES=3; // max_threads の縮尺
+const LANE_COL=['#6fe3ff','#ffb46f','#c9a2ff']; // granule↔レーン(CPU コア)の対応色
+function partsBottom(){ return parts.reduce((m,p)=>Math.max(m,p.ty+partH(p)),INS_Y+108); }
+function laneGeom(i){
+  if(MOB){
+    const w=Math.min(420,W-20), h=72; // 薄め(結果テーブルのぶんを下に確保)
+    const yTop=Math.min(H-100-(h+8)*LANES, partsBottom()+14);
+    return {x:(W-w)/2, y:yTop+i*(h+8), w, h};
+  }
+  // デスクトップ: レーンは計算床の上に階段状(クォータービュー)
+  const px=24+partW(null)+ISOX*4+52;
+  const w=Math.min(500, W-px-90);
+  return {x:px+i*ISOX, y:INS_Y+110+i*136, w, h:120};
+}
+function granRowPos(p,gi){ return {x:p.x+24, y:p.y+30+gi*(CELLH+GAP)}; }
+function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.push(vals.slice(i,i+GPR)); return gs; }
+function partW(p){ return GPR*(CELL+GAP)+24+56+IDXW+10+SKW+10; }
+function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+36)+42; }
+const ISOX=26; // 1段奥に置くごとの右シフト(クォータービューの奥行き)
+function layout(){
+  // Parts は左のストレージ床に、奥(右上)へ階段状に並ぶ
+  const y0=INS_Y+(MOB?98:96), x0=MOB?10:36;
+  let y=y0;
+  parts.forEach((p,i)=>{
+    p.tx=x0+(MOB?0:i*ISOX); p.ty=y;
+    if(p.x==null){ p.x=p.tx; p.y=-180; }
+    y+=partH(p)+22;
+  });
+}
+
+/* ---- アニメーション駆動 ---- */
+function tick(){
+  parts.forEach(p=>{
+    p.x+=(p.tx-p.x)*0.12; p.y+=(p.ty-p.y)*0.12;
+    if(p.flash>0) p.flash=Math.max(0,p.flash-0.02);
+    if(p.dying){ p.alpha=Math.max(0,(p.alpha??1)-0.05); if(p.alpha===0) p.dead=true; }
+  });
+  const before=parts.length;
+  parts=parts.filter(p=>!p.dead);
+  if(parts.length!==before) layout();
+  if(mvFlash>0) mvFlash=Math.max(0,mvFlash-0.03);
+  if(mv2Flash>0) mv2Flash=Math.max(0,mv2Flash-0.03);
+  lanes.forEach(l=>{ if(l.simd>0) l.simd=Math.max(0,l.simd-0.09); if(l.lastAdd) { l.lastAdd.t-=0.02; if(l.lastAdd.t<=0) l.lastAdd=null; } });
+  const dones=[]; // done の中で fly.push しても消えないよう、filter 後に実行
+  fly=fly.filter(f=>{
+    f.t+=f.dt||0.02;
+    const tt=Math.min(1,f.t);
+    const e=f.lin?tt:1-Math.pow(1-tt,3); // 旅のチップは等速で「移動」を見せる
+    f.x=f.fx+(f.txp-f.fx)*e; f.y=f.fy+(f.typ-f.fy)*e-(f.arc?Math.sin(Math.PI*tt)*f.arc:0);
+    if(f.t>=1){ if(f.done){ dones.push(f.done); f.done=null; } return !!f.hold; }
+    return true;
+  });
+  dones.forEach(fn=>fn());
+}
+
+/* ---- 操作: INSERT(飛来 → ソート → granule 積み込み → 索引構築) ---- */
+function doInsert(){
+  if(busy){ toast('実行中です','warn'); return; }
+  busy=true; clearQueryView();
+  const n=8+Math.floor(Math.random()*5);
+  simT=Math.min(920,simT+12); // OTel らしく「いまの時刻近辺」が少し乱れて届く
+  const vals=Array.from({length:n},()=>Math.max(0,Math.min(959,simT+Math.floor(Math.random()*50)-35)));
+  const ord=vals.map((_,i)=>i).sort((a,b)=>vals[a]-vals[b]);
+  const rank=[]; ord.forEach((oi,pos)=>rank[oi]=pos);
+  const sorted=ord.map(i=>vals[i]);
+  const gN=Math.ceil(n/GPR);
+  showSql('INSERT INTO otel_events (ts, service, …) VALUES '+vals.slice(0,4).map(v=>"('"+fmtT(v)+"', '"+svcOf(v)+"', …)").join(' ')+' …  -- '+(gN*8192).toLocaleString()+' イベント');
+  toast('① INSERT ブロックが届いた順のまま到着。並びはまだバラバラ');
+  showMsg('INSERT 実行中…');
+  const cx=Math.max(8,W/2-(n*(CELL+GAP))/2), cy=INS_Y+12;
+  vals.forEach((v,i)=>{
+    fly.push({v, oi:i, fx:W/2+(Math.random()*500-250), fy:-50-Math.random()*90,
+      txp:cx+i*(CELL+GAP), typ:cy, t:0, dt:0.024, kind:'raw', hold:true});
+  });
+  setTimeout(()=>{ // ② ソート(弧を描いて入れ替わる)
+    toast('② ORDER BY ts で並べ替え。ソート済みで書き込むから、あとで索引が効く');
+    fly.forEach(f=>{ if(f.kind!=='raw') return;
+      f.fx=f.x; f.fy=f.y; f.txp=cx+rank[f.oi]*(CELL+GAP); f.typ=cy; f.t=0; f.dt=0.02; f.kind='sorting';
+      f.arc=(rank[f.oi]===f.oi)?0:((rank[f.oi]%2?-1:1)*(14+Math.random()*16));
+    });
+  },1500);
+  setTimeout(()=>{ // ③ 8,192 行ごとに granule として Part へ積む
+    seq++;
+    const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,hasProj:projOn,granules:mkGranules(sorted),lvl:0,flash:0,
+      x:null,y:null,building:true,shown:[],idxReveal:0};
+    parts.push(p); layout();
+    p.x=p.tx; p.y=p.ty; // 確定スロットの位置でそのまま組み立てる(既存 Part と重ねない)
+    toast('③ 8,192 行ごとに区切り、granule として Part に積む(セルは各 granule の代表値)');
+    let loaded=0;
+    fly.forEach(f=>{ if(f.kind!=='sorting') return;
+      const pos=rank[f.oi], gi=(pos/GPR)|0, ci=pos%GPR;
+      setTimeout(()=>{
+        f.fx=f.x; f.fy=f.y; f.arc=0;
+        f.txp=p.x+24+ci*(CELL+GAP); f.typ=p.y+30+gi*(CELLH+GAP); f.t=0; f.dt=0.05; f.kind='load'; f.hold=false;
+        f.done=()=>{ p.shown[pos]=true; loaded++; if(loaded===n) buildIdx(p); };
+      },pos*80);
+    });
+  },3100);
+  function buildIdx(p){ // ④ 各 granule の先頭値 → primary.idx
+    toast('④ 各 granule の先頭値だけを primary.idx に記録。行ごとではなく granule ごと1エントリの疎な索引');
+    const ix=p.x+24+GPR*(CELL+GAP)+56;
+    p.granules.forEach((g,gi)=>{
+      setTimeout(()=>{
+        fly.push({v:g[0], fx:p.x+24+CELL/2, fy:p.y+30+gi*(CELLH+GAP)+4, txp:ix+8, typ:p.y+48+gi*16, t:0, dt:0.05, kind:'idxv',
+          done:()=>{ p.idxReveal=gi+1;
+            if(gi===p.granules.length-1){
+              p.building=false; p.flash=1; layout();
+              showSql('-- 新しい Part '+p.name+'(granule ×'+p.granules.length+' + primary.idx)');
+              showMsg('Ok.(新しい Part '+p.name+' / granule ×'+p.granules.length+')');
+              { const mg=mvGeom(); // MV はクエリ時ではなく書き込み時に集計が走る
+                fly.push({kind:'chip', col:'#c9a2ff', txt:'→ MV へも自動集計', fx:p.x+170, fy:p.y+10, txp:mg.x+mg.w/2, typ:mg.y+16, t:0, dt:0.02,
+                  done:()=>{ sorted.forEach(v=>{ const b=Math.floor(v/BUCKET)*BUCKET; mv[b]=(mv[b]||0)+8192/GPR; }); mvFlash=1;
+                    toast('MV hourly_counts: INSERT と同時に集計済みの行が積まれた。SELECT のたびに数え直さなくてよくなる');
+                    const gm=mvGeom(), g2=mv2Geom(), tot=sorted.length*(8192/GPR);
+                    fly.push({kind:'chip', col:'#c9a2ff', txt:'カスケード → daily', fx:gm.x+gm.w/2, fy:g2.y-14, txp:g2.x+g2.w/2, typ:g2.y+14, t:0, dt:0.03,
+                      done:()=>{ mv2[TODAY]=(mv2[TODAY]||0)+tot; mv2Flash=1; }}); }});
+              }
+              busy=false;
+              setTimeout(()=>{ if(!busy) showDefaultResult(); },2800);
+            } }});
+      },gi*300);
+    });
+  }
+}
+
+/* ---- 操作: マージ ---- */
+function doMerge(){
+  if(busy){ toast('実行中です','warn'); return; }
+  const byDay={};
+  parts.filter(p=>!p.dying).forEach(p=>(byDay[p.day]=byDay[p.day]||[]).push(p));
+  const day=Object.keys(byDay).sort((a,b)=>byDay[b].length-byDay[a].length)[0];
+  const act=byDay[day]||[];
+  if(act.length<2){ toast('マージ対象なし(同じパーティション内に Part が2つ以上必要)','warn'); return; }
+  busy=true; clearQueryView();
+  const delN=act.reduce((s,p)=>s+(p.del?Object.keys(p.del).length:0),0);
+  let vals=act.flatMap(p=>p.granules.flatMap((g,gi)=>g.filter((v,ci)=>!(p.del&&p.del[gi*GPR+ci])))).sort((x,y)=>x-y);
+  let dedup=0;
+  if(ENG==='rmt'){ const before=vals.length; vals=vals.filter((v,i)=>i===0||v!==vals[i-1]); dedup=before-vals.length; }
+  showSql('OPTIMIZE TABLE otel_events PARTITION \''+day+'\'  -- '+act.length+' 個の Part を併合(パーティションは跨がない)');
+  showMsg('OPTIMIZE 実行中…');
+  act.forEach(p=>{ p.dying=true; });
+  const gBefore=act.reduce((s,p)=>s+p.granules.length,0);
+  const ids=act.map(p=>p.id), lvl=Math.max(...act.map(p=>p.lvl))+1;
+  setTimeout(()=>{
+    seq++;
+    const p={id:seq,name:day+'_'+Math.min(...ids)+'_'+Math.max(...ids)+'_'+lvl,day,
+      granules:mkGranules(vals),lvl,flash:1,x:null,y:null,merged:true};
+    parts.unshift(p); layout();
+    const gAfter=p.granules.length;
+    toast(act.length+' 個の Part の行を並べ直して1つに置き換え。元の Part は書き換えず引退'+(gAfter<gBefore?'。granule '+gBefore+' → '+gAfter+'(末尾の端数が詰め直された)':'')+(delN?'。マスク済み '+(delN*8192/GPR).toLocaleString()+' 行をここで物理削除':'')+(dedup?'。ReplacingMergeTree: 同じ ts の '+(dedup*8192/GPR).toLocaleString()+' 行を置換(重複解消はマージ時=eventually)':''));
+    showMsg('Ok.(OPTIMIZE: '+act.length+' Part → 1 Part)');
+    busy=false;
+    setTimeout(()=>{ if(!busy) showDefaultResult(); },2800);
+  },700);
+}
+
+/* ---- 操作: UPDATE(mutation = Part の書き換え) ---- */
+function doUpdate(){
+  if(busy){ toast('実行中です','warn'); return; }
+  const target=SVCF||'cart';
+  const hit=parts.filter(p=>!p.dying&&p.granules.some(g=>g.some(v=>svcOf(v)===target)));
+  if(!hit.length){ toast('該当行を含む Part がない(service = '+target+')','warn'); return; }
+  busy=true; clearQueryView();
+  mutSeq++;
+  showSql("ALTER TABLE otel_events UPDATE attrs['tier'] = 'vip' WHERE service = '"+target+"'  -- mutation");
+  showMsg('mutation 実行中…(system.mutations: is_done = 0)');
+  toast('UPDATE は mutation: マスクではなく、該当行を含む Part を丸ごと新しい Part に書き換える(重い)。名前に mutation バージョンが付く');
+  let done=0;
+  hit.forEach((p,i)=>setTimeout(()=>{
+    p.dying=true;
+    seq++;
+    const np={id:seq, name:p.name+'_'+mutSeq, day:p.day, hasProj:p.hasProj, del:p.del,
+      granules:p.granules.map(g=>g.slice()), lvl:p.lvl, flash:1, x:p.x, y:p.y, merged:p.merged, upd:{}};
+    np.granules.forEach((g,gi)=>g.forEach((v,ci)=>{ if(svcOf(v)===target) np.upd[gi*GPR+ci]=true; }));
+    parts.splice(parts.indexOf(p),0,np); layout();
+    done++;
+    if(done===hit.length){ showMsg('Ok. mutation 完了('+hit.length+' Part を書き換え、水色 = 更新行)'); busy=false; }
+  }, i*500));
+}
+
+/* ---- 操作: 軽量 DELETE(_row_exists マスク) ---- */
+function doDelete(){
+  if(busy){ toast('実行中です','warn'); return; }
+  const target=SVCF||'cart';
+  busy=true; clearQueryView();
+  showSql("DELETE FROM otel_events WHERE service = '"+target+"'  -- 軽量削除(_row_exists でマスク)");
+  let n=0;
+  parts.filter(p=>!p.dying).forEach(p=>{
+    p.del=p.del||{};
+    p.granules.forEach((g,gi)=>g.forEach((v,ci)=>{ const key=gi*GPR+ci; if(!p.del[key]&&svcOf(v)===target){ p.del[key]=true; n++; } }));
+  });
+  toast('軽量 DELETE: 行は Part の中に残ったまま、_row_exists のマスクが付いただけ(取り消し線)。物理削除は次のマージのとき');
+  showMsg('Ok. '+(n*8192/GPR).toLocaleString()+" 行をマスク(service = '"+target+"')");
+  setTimeout(()=>{ busy=false; },900);
+}
+
+/* ---- 操作: SELECT(索引スキャン → 枝刈り) ---- */
+let PRED=600;
+const TODAY='20260729', YDAY='20260728'; // PARTITION BY toDate(ts)
+const BUCKET=60; // 1時間の帯(値 = 8:00 からの経過分)
+function fmtT(v){ return (8+Math.floor(v/60))+':'+String(v%60).padStart(2,'0'); }
+const SVC=['frontend','checkout','cart','auth','search'];
+const svcOf=v=>SVC[v%SVC.length];
+const SVA=['fe','ch','ca','au','se'];
+let IDXT='set'; // skip index の種類: set(正確) / bloom_filter(偽陽性あり)
+function granSvcs(g){ const s=new Set(); g.forEach(v=>{ if(v!=null) s.add(v%SVC.length); }); return s; }
+function bloomBits(s){ let b=0; s.forEach(i=>{ b|=(1<<(i%8))|(1<<((i*3+2)%8)); }); return b; }
+function idxMayContain(g,target){
+  const ti=SVC.indexOf(target), s=granSvcs(g);
+  if(IDXT==='set') return s.has(ti);
+  const tb=(1<<(ti%8))|(1<<((ti*3+2)%8));
+  return (bloomBits(s)&tb)===tb; // 部分集合なら「含むかも」= 偽陽性がありうる
+}
+function SQLQ(){ return "SELECT toStartOfHour(ts) AS h, count() FROM otel_events WHERE ts >= '2026-07-29 "+fmtT(PRED)+"'"+(SVCF?" AND service = '"+SVCF+"'":'')+" GROUP BY h ORDER BY h"; }
+function clearQueryView(){ // 結果テーブル・レーン・枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
+  result=null; lanes=[]; setStage(0); // カメラは動かさない(粒度はユーザーのもの)
+  parts.forEach(p=>{ p.showVerdict=0; p.verdict=null; p.rangeK=null; p.assign=null; p.skipx=null; p.partPruned=0; p.probe=undefined; p.scanG=undefined; });
+}
+function hiOf(p,i){ return (i+1<p.granules.length)?p.granules[i+1][0]:960; }
+function doSelect(){
+  if(busy){ toast('実行中です','warn'); return; }
+  const act=parts.filter(p=>!p.dying);
+  if(!act.length){ toast('Part がありません。まず INSERT を','warn'); return; }
+  busy=true; clearQueryView();
+  // 上の SQL ペインがクライアントそのもの。飛来演出は不要になった
+  showSql(SQLQ()+';');
+  showMsg('実行中…');
+  setTimeout(()=>selExec(act),250);
+}
+function selExec(act){
+  setStage(1);
+  // まずパーティション枝刈り: 日付条件に合わない partition は索引すら見ない
+  const pp=act.filter(p=>p.day!==TODAY);
+  pp.forEach(p=>{ p.partPruned=1; p.showVerdict=1; p.verdict=p.granules.map(()=>false); p.rangeK=p.granules.length; });
+  act=act.filter(p=>p.day===TODAY);
+  showSql(SQLQ()+'  -- ① partition 枝刈り → 各 Part の primary.idx を二分探索');
+  toast('① 索引分析: まず minmax(toDate(ts)) でパーティションを枝刈り'+(pp.length?'('+YDAY+' は丸ごと対象外)':'')+'。残った Part の primary.idx で「ts ≧ '+fmtT(PRED)+'」を二分探索');
+  const st=act.map(p=>{
+    const n=p.granules.length;
+    const s={p,lo:0,hi:n-1,done:false};
+    if(n<=1){ s.k=(hiOf(p,0)>=PRED)?0:n; s.done=true; }
+    return s;
+  });
+  const iv=setInterval(()=>{
+    let any=false;
+    st.forEach(s=>{
+      if(s.done){ s.p.probe=undefined; return; }
+      any=true;
+      const mid=(s.lo+s.hi)>>1;
+      s.p.probe=mid;
+      if(hiOf(s.p,mid)>=PRED) s.hi=mid; else s.lo=mid+1;
+      if(s.lo>=s.hi){
+        s.k=(hiOf(s.p,s.lo)>=PRED)?s.lo:s.p.granules.length;
+        s.done=true;
+      }
+    });
+    if(!any){
+      clearInterval(iv);
+      const kept=[];
+      st.forEach(s=>{
+        const p=s.p, n=p.granules.length, k=s.k;
+        p.probe=undefined;
+        p.verdict=Array.from({length:n},(_,i)=>i>=k);
+        p.skipx={};
+        p.rangeK=k; p.showVerdict=1;
+        p.granules.forEach((g,gi)=>{
+          if(gi<k) return;
+          // skip index(set / bloom_filter)。「含まない」と言い切れた granule は読まない
+          if(SVCF && !idxMayContain(g,SVCF)){ p.skipx[gi]=true; p.verdict[gi]=false; return; }
+          kept.push({g:g.map((v,ci)=>(p.del&&p.del[gi*GPR+ci])?null:v),p,gi}); // マスク行は null
+        });
+      });
+      const total=act.reduce((s2,p)=>s2+p.granules.length,0);
+      startRead(act,kept,total);
+    }
+  },700);
+}
+function startRead(act,kept,total){
+  // ② 対象 granule だけをストレージから読む(✂ は読まれない)
+  setStage(2);
+  const ranges=act.filter(p=>p.rangeK<p.granules.length)
+    .map(p=>'g'+(p.rangeK+1)+(p.rangeK+1<p.granules.length?'〜g'+p.granules.length:''));
+  showSql(SQLQ()+'  -- ② 読むのは '+kept.length+' / '+total+' granule('+(ranges.join(', ')||'なし')+')');
+  toast('② 読み取り: 生き残った granule('+(ranges.join(' / ')||'なし')+')だけ読む。✂ '+(total-kept.length)+' granule はスキップ'+(SVCF?'(赤 = 主キー、オレンジ = service の '+(IDXT==='set'?'set':'bloom_filter')+' skip index'+(IDXT==='bloom'?'。bloom は偽陽性がありうる = 読んでから空振りすることもある':'')+')':''));
+  if(!kept.length){
+    setTimeout(()=>{
+      showSql(SQLQ()+'  -- 0 行(索引だけで証明、読み取りゼロ)');
+      toast('該当しうる granule がゼロ。ストレージに一切触れず「結果 0 行」を確定してクライアントへ返す');
+      result={rows:[]};
+      showResult(['toStartOfHour(ts)','count()'],[],'0 rows(索引だけで確定、読み取りゼロ)');
+      setTimeout(()=>{ busy=false; },1800);
+    },600);
+    return;
+  }
+  lanes=Array.from({length:LANES},(_,i)=>({i,queue:[],cur:null,simd:0,partial:{},fed:0}));
+  let arrived=0;
+  kept.forEach((k,idx)=>{
+    const lane=lanes.reduce((a,b)=>a.fed<=b.fed?a:b); // 動的配分(空いているレーンへ)
+    lane.fed++;
+    if(!k.p.assign) k.p.assign={};
+    k.p.assign[k.gi]=lane.i;
+    const src=granRowPos(k.p,k.gi);
+    const lg=laneGeom(lane.i);
+    setTimeout(()=>{
+      fly.push({cells:k.g, col:LANE_COL[lane.i], fx:src.x, fy:src.y, txp:lg.x+12, typ:lg.y+34, t:0, dt:0.022, kind:'gran',
+        done:()=>{ lane.queue.push({cells:k.g}); arrived++; if(arrived===kept.length) startProcess(act,kept.length,total); }});
+    }, idx*90);
+  });
+}
+function startProcess(act,keptN,total){
+  // ③ ベクトル化実行: レーンごとに granule を SIMD で一括評価し、部分集計を積む
+  setStage(3);
+  showSql(SQLQ()+'  -- ③ '+LANES+' レーンが並列にベクトル化実行(SIMD)');
+  toast('③ 並列処理: granule は '+LANES+' 本のレーン(= max_threads、それぞれ CPU コア上のスレッド)へ動的に配分。色が granule とレーンの対応。各レーンは束を SIMD で一括評価し、自分の部分集計を持つ');
+  const proc=setInterval(()=>{
+    let active=false;
+    lanes.forEach(l=>{
+      if(l.simd>0){ active=true; return; }           // 評価アニメ中
+      if(l.cur){ // 評価完了 → bucket ごとの部分集計へ
+        const hits=l.cur.cells.filter(v=>v!=null&&v>=PRED&&(!SVCF||svcOf(v)===SVCF));
+        hits.forEach(v=>{ const b=Math.floor(v/BUCKET)*BUCKET; l.partial[b]=(l.partial[b]||0)+8192/GPR; }); // b = 時間帯(60分)
+        if(hits.length) l.lastAdd={v:hits.length*8192/GPR,t:1};
+        l.cur=null;
+      }
+      if(l.queue.length){ l.cur=l.queue.shift(); l.simd=1; active=true; }
+    });
+    if(!active&&fly.every(f=>f.kind!=='gran')){
+      clearInterval(proc);
+      const merged={};
+      lanes.forEach(l=>Object.keys(l.partial).forEach(b=>{ merged[b]=(merged[b]||0)+l.partial[b]; }));
+      const rows=Object.keys(merged).map(Number).sort((a,b)=>a-b).map(b=>[b,merged[b]]);
+      const cnt=rows.reduce((s,r)=>s+r[1],0);
+      setStage(4);
+      showSql(SQLQ()+'  -- ④ 部分集計をマージ → '+rows.length+' 行の結果を返す');
+      toast('④ 各レーンの部分集計(user_id を '+BUCKET+' 刻みの帯 = bucket ごとの件数)をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule');
+      let got=0;
+      const mx=W/2, my=INS_Y+30; // ノード上端の合流点(マージが済んだ瞬間、上の結果ペインが埋まる)
+      lanes.forEach(l=>{
+        const g=laneGeom(l.i);
+        const sum=Object.keys(l.partial).reduce((s,b)=>s+l.partial[b],0);
+        fly.push({kind:'chip', col:LANE_COL[l.i], txt:sum.toLocaleString(),
+          fx:g.x+g.w*0.87, fy:g.y+g.h/2, txp:mx, typ:my, t:0, dt:0.028,
+          done:()=>{ got++; if(got===LANES){
+            result={rows};
+            showResult(['toStartOfHour(ts)','count()'], rows.map(r=>[fmtT(r[0])+'〜', r[1].toLocaleString()]), rows.length+' rows');
+            toast('④ 時間帯ごとの部分集計をマージ → 結果は上の結果ペイン(=クライアント)へ。SQL → 索引 → granule → レーン → マージ → 結果、がクエリの一生');
+          } }});
+      });
+      setTimeout(()=>{ busy=false; },1800);
+    }
+  },380);
+}
+/* ---- 描画 ---- */
+function cellColor(v){ return 'hsl('+(205+v/1000*35)+' 16% 20%)'; }
+function drawPart(p){
+  const w=partW(p), h=partH(p);
+  ctx.globalAlpha=(p.alpha??1)*(p.partPruned?0.45:1);
+  if(!MOB) pedestal(p.x,p.y,w,h,'#0a1f14');
+  ctx.fillStyle='#14161b';
+  ctx.strokeStyle=p.merged?'#faff69':'#262a33';
+  ctx.beginPath(); ctx.roundRect(p.x,p.y,w,h,10); ctx.fill(); ctx.stroke();
+  if(p.flash>0){ ctx.fillStyle='rgba(125,255,178,'+(p.flash*0.25)+')'; ctx.beginPath(); ctx.roundRect(p.x,p.y,w,h,10); ctx.fill(); }
+  ctx.fillStyle='#98a0b3'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
+  ctx.fillText('Part '+p.name+' ('+(p.granules.length*8192).toLocaleString()+' 行)'+(p.lvl>0?'  マージ産':''), p.x+10, p.y+17);
+  if(p.partPruned){ ctx.fillStyle='#ff7d7d'; ctx.font='700 9px '+MONO(); ctx.textAlign='right';
+    ctx.fillText('✂ partition', p.x+w-8, p.y+17); ctx.textAlign='left'; }
+  const gx=p.x+24, gy=p.y+30;
+  ctx.fillStyle='#4d5563'; ctx.font='8px '+MONO();
+  ctx.fillText('ts', gx+2, p.y+27);
+  p.granules.forEach((g,gi)=>{
+    const ry=gy+gi*(CELLH+GAP);
+    const scanned=p.scanG===gi;
+    const laneNo=p.assign?p.assign[gi]:null;
+    if(laneNo!=null){ ctx.fillStyle=LANE_COL[laneNo]; ctx.fillRect(p.x+2,ry+2,3,CELLH-4); }
+    ctx.fillStyle=scanned?'#faff69':(laneNo!=null?LANE_COL[laneNo]:'#707a8c'); ctx.font='10px '+MONO();
+    ctx.fillText('g'+(gi+1), p.x+6, ry+15);
+    g.forEach((v,ci)=>{
+      const cxp=gx+ci*(CELL+GAP);
+      if(p.building&&!p.shown[gi*GPR+ci]){
+        ctx.strokeStyle='#232733'; ctx.setLineDash([3,3]);
+        ctx.strokeRect(cxp+0.5,ry+0.5,CELL-1,CELLH-1); ctx.setLineDash([]); return;
+      }
+      let fill=cellColor(v), tcol='#e8eaf0', dead=false;
+      const isDel=p.del&&p.del[gi*GPR+ci];
+      if(isDel){ fill='#191014'; tcol='#7a5560'; }
+      const isUpd=p.upd&&p.upd[gi*GPR+ci];
+      if(isUpd&&!isDel){ fill='#12333a'; tcol='#7de3ff'; }
+      if(p.showVerdict&&p.verdict){
+        if(!p.verdict[gi]){ fill='#141519'; tcol='#494f5e'; dead=true; }
+        else if(v>=PRED){ fill='#153a2a'; tcol='#7dffb2'; }
+        else { fill='#1b2431'; tcol='#8b93a5'; }
+      }
+      ctx.fillStyle=fill;
+      ctx.beginPath(); ctx.roundRect(cxp,ry,CELL,CELLH,4); ctx.fill();
+      if(scanned){ ctx.strokeStyle='#faff69'; ctx.strokeRect(cxp+0.5,ry+0.5,CELL-1,CELLH-1); }
+      ctx.fillStyle=tcol; ctx.font=(MOB?'7.5px ':'9.5px ')+MONO(); ctx.textAlign='center';
+      ctx.fillText(fmtT(v), cxp+CELL/2, ry+CELLH-8+(MOB?1:0)); ctx.textAlign='left';
+      if(isDel){ ctx.strokeStyle='rgba(255,125,125,.6)';
+        ctx.beginPath(); ctx.moveTo(cxp+4,ry+CELLH/2); ctx.lineTo(cxp+CELL-4,ry+CELLH/2); ctx.stroke(); }
+    });
+    // 縮尺の明示: セルは代表値で、1行 = 8,192 行。刈られた行は ✂
+    const pruned=p.showVerdict&&p.verdict&&!p.verdict[gi];
+    const bySkip=pruned&&p.skipx&&p.skipx[gi];
+    ctx.fillStyle=bySkip?'#ffb46f':(pruned?'#ff7d7d':'#4d5563'); ctx.font='9px '+MONO();
+    ctx.fillText(p.partPruned?'✂ partition':(bySkip?'✂ skip idx':(pruned?'✂ 8,192行':'…8,192行')), gx+GPR*(CELL+GAP)+2, ry+15);
+  });
+  const ix=gx+GPR*(CELL+GAP)+56, iy=p.y+30;
+  const ih=p.granules.length*16+34;
+  ctx.fillStyle='#1a1c10'; ctx.strokeStyle='#8a8f3a';
+  ctx.beginPath(); ctx.roundRect(ix,iy,IDXW,ih,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#faff69'; ctx.font='700 10px '+MONO();
+  ctx.fillText('primary.idx', ix+8, iy+14);
+  p.granules.forEach((g,gi)=>{
+    if(p.building&&gi>=p.idxReveal) return;
+    const probing=p.probe===gi;
+    const inRange=p.showVerdict&&p.verdict&&p.verdict[gi];
+    if(probing){ ctx.fillStyle='rgba(250,255,105,.18)'; ctx.fillRect(ix+3,iy+18+gi*16,IDXW-6,14); }
+    if(inRange){ ctx.fillStyle='#7dffb2'; ctx.fillRect(ix+3,iy+18+gi*16,2,14); }
+    ctx.fillStyle=probing?'#faff69':(inRange?'#d5f6c9':'#b9bd7a');
+    ctx.font=(probing?'700 ':'')+'10px '+MONO();
+    ctx.fillText('g'+(gi+1)+' → '+fmtT(g[0])+(probing?' ?':''), ix+8, iy+28+gi*16);
+  });
+  if(p.showVerdict&&p.rangeK!=null&&p.rangeK<p.granules.length){
+    ctx.fillStyle='#6fe3ff'; ctx.font='700 9px '+MONO();
+    ctx.fillText('range: g'+(p.rangeK+1)+'〜g'+p.granules.length, ix+8, iy+ih-6);
+  }
+  if(p.hasProj){ ctx.fillStyle='#c9a2ff'; ctx.font='700 8px '+MONO();
+    ctx.fillText('⚡proj: ORDER BY service のコピーを内蔵', p.x+8, p.y+partH(p)-8); }
+  // skip idx カード(service 列の副次索引): set は中身、bloom はビット列
+  const kx2=ix+IDXW+10;
+  ctx.fillStyle='#1a1420'; ctx.strokeStyle='#8a6fb0';
+  ctx.beginPath(); ctx.roundRect(kx2,iy,SKW,ih,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#c9a2ff'; ctx.font='700 9px '+MONO();
+  ctx.fillText('skip idx', kx2+6, iy+14);
+  ctx.fillStyle='#6e5a8a'; ctx.font='7px '+MONO();
+  ctx.fillText(IDXT==='set'?'set(service)':'bloom(service)', kx2+6, iy+14+8);
+  p.granules.forEach((g,gi)=>{
+    if(p.building&&gi>=p.idxReveal) return;
+    const skipped=p.showVerdict&&p.skipx&&p.skipx[gi];
+    if(skipped){ ctx.fillStyle='rgba(255,180,111,.16)'; ctx.fillRect(kx2+3,iy+26+gi*16-10,SKW-6,13); }
+    ctx.fillStyle=skipped?'#ffb46f':'#a08cc0'; ctx.font='7.5px '+MONO();
+    const s=[...granSvcs(g)].sort();
+    const txt=IDXT==='set' ? '{'+s.map(i=>SVA[i]).join(',')+'}' : bloomBits(new Set(s)).toString(2).padStart(8,'0');
+    ctx.fillText(txt, kx2+6, iy+28+gi*16);
+  });
+  ctx.globalAlpha=1;
+}
+function drawLanes(){
+  if(!lanes.length){ // 待機中も枠を見せて配置を安定させる(モバイルは MV と場所を共有するので出さない)
+    if(MOB) return;
+    for(let i=0;i<LANES;i++){
+      const g=laneGeom(i);
+      ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
+      ctx.beginPath(); ctx.roundRect(g.x,g.y,g.w,g.h,10); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle='#3a4152'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
+      ctx.fillText('processing lane '+(i+1)+' = CPU コア', g.x+10, g.y+17);
+      ctx.fillStyle='#2e3542'; ctx.font='10px '+JP();
+      ctx.fillText('SELECT 実行時、対象の granule だけがここへ流れて SIMD で評価される', g.x+10, g.y+g.h/2+6);
+    }
+    return;
+  }
+  lanes.forEach(l=>{
+    const g=laneGeom(l.i);
+    if(!MOB) pedestal(g.x,g.y,g.w,g.h,'#0a1420');
+    ctx.fillStyle='#111319'; ctx.strokeStyle='#262a33';
+    ctx.beginPath(); ctx.roundRect(g.x,g.y,g.w,g.h,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=LANE_COL[l.i]; ctx.beginPath(); ctx.arc(g.x+14,g.y+13,4,0,7); ctx.fill();
+    ctx.fillStyle='#98a0b3'; ctx.font='700 11px '+MONO(); ctx.textAlign='left';
+    ctx.fillText('processing lane '+(l.i+1)+' = CPU コア', g.x+24, g.y+17);
+    // 3工程のゾーン: 受取待ち | SIMD 一括評価 | 部分集計
+    const zoneY=g.y+24, zoneH=g.h-46;
+    const z1w=g.w*0.24, z2w=g.w*0.44, z3w=g.w*0.26;
+    const z1x=g.x+8, z2x=z1x+z1w+10, z3x=z2x+z2w+10;
+    // ゾーン枠
+    [[z1x,z1w,'#262a33'],[z2x,z2w,l.simd>0?LANE_COL[l.i]:'#262a33'],[z3x,z3w,'#2f5c41']].forEach(([zx,zw,col])=>{
+      ctx.strokeStyle=col; ctx.setLineDash([3,3]);
+      ctx.strokeRect(zx,zoneY,zw,zoneH); ctx.setLineDash([]);
+    });
+    // ① 受取待ち(キューの mini 行)
+    l.queue.slice(0,MOB?2:3).forEach((q,qi)=>{
+      const my=zoneY+5+qi*12;
+      q.cells.forEach((v,ci)=>{
+        ctx.globalAlpha=0.35; ctx.fillStyle=LANE_COL[l.i];
+        ctx.fillRect(z1x+5+ci*((z1w-14)/GPR), my, (z1w-14)/GPR-2, 9);
+        ctx.globalAlpha=1;
+      });
+    });
+    const qShown=MOB?2:3;
+    if(l.queue.length>qShown){ ctx.fillStyle='#5a6478'; ctx.font='9px '+MONO(); ctx.fillText('+'+(l.queue.length-qShown), z1x+5, zoneY+zoneH-4); }
+    // ② SIMD 一括評価(現在の granule)
+    if(l.cur){
+      const cw=(z2w-16)/GPR, cy2=zoneY+(zoneH-CELLH)/2;
+      l.cur.cells.forEach((v,ci)=>{
+        const cxp=z2x+8+ci*cw;
+        if(v==null){ ctx.fillStyle='#141519'; ctx.beginPath(); ctx.roundRect(cxp,cy2,cw-3,CELLH,4); ctx.fill(); return; }
+        const hit=v>=PRED;
+        ctx.fillStyle=l.simd>0?(hit?'rgba(125,255,178,'+(0.35+l.simd*0.6)+')':'rgba(111,227,255,'+(0.2+l.simd*0.5)+')'):(hit?'#153a2a':'#1b2431');
+        ctx.beginPath(); ctx.roundRect(cxp,cy2,cw-3,CELLH,4); ctx.fill();
+        ctx.strokeStyle=LANE_COL[l.i]; ctx.globalAlpha=0.5; ctx.stroke(); ctx.globalAlpha=1;
+        ctx.fillStyle=hit?'#7dffb2':'#c7cede'; ctx.font='9px '+MONO(); ctx.textAlign='center';
+        ctx.fillText(fmtT(v),cxp+(cw-3)/2,cy2+CELLH/2+4); ctx.textAlign='left';
+      });
+    }
+    // ③ 部分集計(bucket ごと・レーンローカル)
+    const ents=Object.keys(l.partial).map(Number).sort((a,b)=>a-b);
+    if(!ents.length){
+      ctx.fillStyle='#3f664f'; ctx.font='700 12px '+MONO(); ctx.textAlign='center';
+      ctx.fillText('—', z3x+z3w/2, zoneY+zoneH/2+4); ctx.textAlign='left';
+    }else{
+      const maxL=Math.max(1,Math.floor((zoneH-4)/11));
+      ctx.textAlign='left'; ctx.font='9px '+MONO();
+      ents.slice(0,maxL).forEach((b,ei)=>{
+        ctx.fillStyle='#7dffb2';
+        ctx.fillText(fmtT(b)+'台 '+l.partial[b].toLocaleString(), z3x+5, zoneY+11+ei*11);
+      });
+      if(ents.length>maxL){ ctx.fillStyle='#5f8a6f'; ctx.fillText('+'+(ents.length-maxL), z3x+z3w-16, zoneY+zoneH-3); }
+    }
+    if(l.lastAdd){ ctx.globalAlpha=Math.max(0,l.lastAdd.t); ctx.fillStyle='#7dffb2'; ctx.font='700 11px '+MONO(); ctx.textAlign='center';
+      ctx.fillText('+'+l.lastAdd.v.toLocaleString(), z3x+z3w/2, zoneY+zoneH/2+4-10*(1-l.lastAdd.t)); ctx.globalAlpha=1; ctx.textAlign='left'; }
+    // ゾーンのキャプションと矢印
+    ctx.fillStyle='#5a6478'; ctx.font='9px '+JP();
+    ctx.fillText('受取待ち', z1x+2, g.y+g.h-8);
+    ctx.fillStyle=l.simd>0?'#6fe3ff':'#5a6478';
+    ctx.fillText('SIMD 一括評価(束ごと)', z2x+2, g.y+g.h-8);
+    ctx.fillStyle='#5a6478';
+    ctx.fillText('部分集計', z3x+2, g.y+g.h-8);
+    ctx.fillStyle='#3a4152'; ctx.font='11px '+MONO();
+    ctx.fillText('→', z2x-9, zoneY+zoneH/2+4);
+    ctx.fillText('→', z3x-9, zoneY+zoneH/2+4);
+  });
+}
+function tableSample(n){
+  return parts.filter(p=>!p.dying)
+    .flatMap(p=>p.granules.flatMap((g,gi)=>g.filter((v,ci)=>!(p.del&&p.del[gi*GPR+ci]))))
+    .sort((a,b)=>a-b).slice(0,n);
+}
+function drawSample(){
+  if(MOB){
+    const vals=tableSample(7);
+    if(!vals.length) return;
+    ctx.fillStyle='#8b93a5'; ctx.font='700 9px '+JP(); ctx.textAlign='left';
+    ctx.fillText('先頭の行(user_id):', 12, INS_Y+86);
+    ctx.fillStyle='#6e7890'; ctx.font='9px '+MONO();
+    ctx.fillText(vals.join(', ')+', …', 110, INS_Y+86);
+    return;
+  }
+  const vals=tableSample(10);
+  if(!vals.length) return;
+  const w=170, x=W-w-24, y=INS_Y+76, rh=15;
+  const hgt=50+vals.length*rh+8;
+  ctx.fillStyle='#101319'; ctx.strokeStyle='#2a3242';
+  ctx.beginPath(); ctx.roundRect(x,y,w,hgt,8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#98a0b3'; ctx.font='700 10px '+JP(); ctx.textAlign='left';
+  ctx.fillText('テーブルの中身(先頭10行)', x+10, y+16);
+  ctx.fillStyle='#5a6478'; ctx.font='9px '+MONO();
+  ctx.fillText('SELECT * FROM events LIMIT 10', x+10, y+29);
+  ctx.fillStyle='#5a6478'; ctx.font='700 9px '+MONO();
+  ctx.fillText('user_id', x+14, y+43);
+  ctx.fillText('…', x+w-40, y+43);
+  ctx.strokeStyle='#1d2331'; ctx.beginPath(); ctx.moveTo(x+8,y+47.5); ctx.lineTo(x+w-8,y+47.5); ctx.stroke();
+  vals.forEach((v,i)=>{
+    ctx.fillStyle='#c7cede'; ctx.font='10px '+MONO();
+    ctx.fillText(String(v), x+14, y+60+i*rh);
+    ctx.fillStyle='#3a4152'; ctx.fillText('…', x+w-40, y+60+i*rh);
+  });
+}
+function lvlStats(){
+  const act=parts.filter(p=>!p.dying);
+  const g=act.reduce((s,p)=>s+p.granules.length,0);
+  return {act, n:act.length, g, rows:g*8192};
+}
+function mvGeom(){
+  if(MOB) return {x:10, y:partsBottom()+14, w:W-20};
+  const px=24+partW(null)+ISOX*4+52;
+  return {x:px+3*ISOX, y:INS_Y+110+3*136+10, w:Math.min(500, W-px-90-3*ISOX)};
+}
+function mvHgt(){ return 52+Math.max(1,Math.min(6,Object.keys(mv).length))*13+8; }
+function mv2Geom(){ const g=mvGeom(); return {x:g.x, y:g.y+mvHgt()+10, w:g.w}; }
+function drawMV(){
+  const g=mvGeom();
+  const ents=Object.keys(mv).map(Number).sort((a,b)=>a-b);
+  const shown=ents.slice(0,6);
+  const hgt=mvHgt();
+  ctx.fillStyle='#12151c'; ctx.strokeStyle=mvFlash>0?'rgba(125,255,178,'+(0.3+mvFlash*0.7)+')':'#2a3242';
+  ctx.beginPath(); ctx.roundRect(g.x,g.y,g.w,hgt,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#c9a2ff'; ctx.font='700 11px '+JP(); ctx.textAlign='left';
+  ctx.fillText('MV hourly_counts(INSERT と同時に自動集計)', g.x+12, g.y+17);
+  ctx.fillStyle='#57617a'; ctx.font='9px '+MONO();
+  ctx.fillText('CREATE MATERIALIZED VIEW … AS SELECT toStartOfHour(ts) h, count() GROUP BY h', g.x+12, g.y+31);
+  if(!ents.length){
+    ctx.fillStyle='#57617a'; ctx.font='10px '+JP();
+    ctx.fillText('(まだ空。MV は作成後の INSERT だけを反映 = 既存分はバックフィルが必要)', g.x+12, g.y+50);
+  }else{
+    ctx.font='10px '+MONO();
+    shown.forEach((b,i)=>{
+      ctx.fillStyle='#d5f6c9';
+      ctx.fillText(fmtT(b)+'〜  '+mv[b].toLocaleString(), g.x+16, g.y+48+i*13);
+    });
+    if(ents.length>shown.length){ ctx.fillStyle='#57617a'; ctx.fillText('+'+(ents.length-shown.length)+' 行', g.x+16, g.y+48+shown.length*13); }
+  }
+  // カスケード先: daily_counts(MV から MV へ)
+  const g2=mv2Geom(), days=Object.keys(mv2).sort();
+  const hgt2=40+Math.max(1,days.length)*13+6;
+  ctx.fillStyle='#12151c'; ctx.strokeStyle=mv2Flash>0?'rgba(201,162,255,'+(0.3+mv2Flash*0.7)+')':'#2a3242';
+  ctx.beginPath(); ctx.roundRect(g2.x,g2.y,g2.w,hgt2,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#c9a2ff'; ctx.font='700 11px '+JP(); ctx.textAlign='left';
+  ctx.fillText('MV daily_counts ← hourly_counts(カスケード)', g2.x+12, g2.y+17);
+  if(!days.length){ ctx.fillStyle='#57617a'; ctx.font='10px '+JP();
+    ctx.fillText('(MV の結果を別の MV がさらに集計できる)', g2.x+12, g2.y+34);
+  }else{
+    ctx.font='10px '+MONO();
+    days.forEach((d,i)=>{ ctx.fillStyle='#d5f6c9'; ctx.fillText(d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'  '+mv2[d].toLocaleString(), g2.x+16, g2.y+34+i*13); });
+  }
+}
+function resY(n){
+  const hgt=46+Math.max(1,n)*17;
+  if(MOB&&lanes.length){ const g=laneGeom(LANES-1); return Math.min(g.y+g.h+10, H-hgt-10); } // レーンの下
+  return Math.min(partsBottom()+14, H-hgt-40); // Parts の直下(画面下端には張り付けない)
+}
+function drawResult(){
+  if(!result) return;
+  result.a=Math.min(1,(result.a??0)+0.05);
+  const rows=result.rows, w=MOB?210:250, rh=17;
+  const hgt=46+Math.max(1,rows.length)*rh;
+  const x=W/2-w/2, y=resY(rows.length);
+  ctx.globalAlpha=result.a;
+  ctx.fillStyle='#101a13'; ctx.strokeStyle='#2f5c41';
+  ctx.beginPath(); ctx.roundRect(x,y,w,hgt,10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#7dffb2'; ctx.font='700 11px '+JP(); ctx.textAlign='center';
+  ctx.fillText('結果テーブル → クライアントへ', x+w/2, y+16);
+  ctx.font='700 10px '+MONO(); ctx.fillStyle='#5f8a6f';
+  ctx.textAlign='left'; ctx.fillText('user_id 帯(bucket)', x+18, y+32);
+  ctx.textAlign='right'; ctx.fillText('count()', x+w-18, y+32);
+  ctx.strokeStyle='#24402f'; ctx.beginPath(); ctx.moveTo(x+10,y+37.5); ctx.lineTo(x+w-10,y+37.5); ctx.stroke();
+  if(!rows.length){ ctx.fillStyle='#5f8a6f'; ctx.font='10px '+MONO(); ctx.textAlign='center'; ctx.fillText('(0 行)', x+w/2, y+52); }
+  rows.forEach((r,ri)=>{
+    ctx.fillStyle='#d5f6c9'; ctx.font='11px '+MONO();
+    ctx.textAlign='left'; ctx.fillText(r[0]+'〜'+(r[0]+BUCKET-1), x+18, y+52+ri*rh);
+    ctx.textAlign='right'; ctx.fillText(r[1].toLocaleString(), x+w-18, y+52+ri*rh);
+  });
+  ctx.textAlign='left'; ctx.globalAlpha=1;
+}
+function isoTileFloor(x0,y0,w,h,fill,stroke){
+  // 2:1 のひし形タイルで床を敷く(クォータービューの地形)
+  const TW=72, TH=36;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0,y0,w,h); ctx.clip();
+  ctx.fillStyle=fill; ctx.fillRect(x0,y0,w,h);
+  ctx.strokeStyle=stroke; ctx.lineWidth=1;
+  for(let y=y0-TH;y<y0+h+TH;y+=TH/2){
+    for(let x=x0-TW;x<x0+w+TW;x+=TW){
+      const ox=((Math.round((y-y0)/(TH/2))%2)+2)%2? TW/2:0;
+      ctx.beginPath();
+      ctx.moveTo(x+ox+TW/2,y); ctx.lineTo(x+ox+TW,y+TH/2); ctx.lineTo(x+ox+TW/2,y+TH); ctx.lineTo(x+ox,y+TH/2);
+      ctx.closePath(); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+function pedestal(x,y,w,h,col){
+  // カードの足元に厚みのある台座(ビルボードが床に立って見える)
+  const d=14;
+  ctx.fillStyle=col;
+  ctx.beginPath();
+  ctx.moveTo(x+4,y+h); ctx.lineTo(x+w-4,y+h); ctx.lineTo(x+w-4-d,y+h+d*0.8); ctx.lineTo(x+4-d,y+h+d*0.8);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle='rgba(0,0,0,.35)';
+  ctx.beginPath();
+  ctx.moveTo(x+w-4,y+h); ctx.lineTo(x+w-4,y+h-6); ctx.lineTo(x+w-4-d,y+h+d*0.8-6); ctx.lineTo(x+w-4-d,y+h+d*0.8);
+  ctx.closePath(); ctx.fill();
+}
+function drawFloors(){
+  if(MOB) return;
+  const pb=Math.max(partsBottom()+40, INS_Y+420);
+  const px=24+partW(null)+ISOX*4+30;
+  // ストレージ床(左)と計算床(右)
+  isoTileFloor(10, INS_Y+70, px-30, pb-(INS_Y+70), '#0e1310', '#16211a');
+  isoTileFloor(px-10, INS_Y+70, W-px-4, pb-(INS_Y+70), '#0d1116', '#1a2330');
+  ctx.fillStyle='#3f664f'; ctx.font='700 11px '+JP(); ctx.textAlign='left';
+  ctx.fillText('ストレージ床: Part(ファイル)が並ぶ', 22, INS_Y+90);
+  ctx.fillStyle='#4d7c8a';
+  ctx.fillText('計算床: CPU コアのレーンと MV', px+4, INS_Y+90);
+}
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+  drawFloors();
+  ctx.strokeStyle='#1d2331'; ctx.setLineDash([5,5]);
+  ctx.strokeRect(12,INS_Y,W-24,48); ctx.setLineDash([]);
+  ctx.fillStyle='#5a6478'; ctx.font='10px '+JP(); ctx.textAlign='left';
+  ctx.fillText('INSERT ブロック(届いた順) → ソート → granule 区切り', 18, INS_Y+14);
+  if(MOB){
+    ctx.fillStyle='#8b93a5'; ctx.font='700 9px '+MONO();
+    ctx.fillText('otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts', 12, INS_Y+60);
+    ctx.fillStyle='#5a6478'; ctx.font='9px '+JP();
+    ctx.fillText('セルは ts(時刻)。1行 = granule = 8,192 イベントの窓', 12, INS_Y+72);
+  }else{
+    ctx.fillStyle='#8b93a5'; ctx.font='700 11px '+MONO();
+    ctx.fillText('otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts', 18, INS_Y+62);
+    ctx.fillStyle='#5a6478'; ctx.font='10px '+JP();
+    ctx.fillText('セルは ts(時刻)。1行 = granule = 8,192 イベントの窓', 660, INS_Y+62);
+  }
+  parts.forEach(drawPart);
+  drawMV();
+  drawLanes();
+  fly.forEach(f=>{
+    if(f.kind==='chip'){
+      const sc=1; // カメラ撤去後は等倍
+      ctx.font='700 '+(11*sc)+'px '+MONO();
+      const tw=ctx.measureText(f.txt).width+18*sc;
+      ctx.fillStyle='#101a13'; ctx.strokeStyle=f.col; ctx.lineWidth=sc;
+      ctx.beginPath(); ctx.roundRect(f.x-tw/2,f.y-11*sc,tw,22*sc,11*sc); ctx.fill(); ctx.stroke();
+      ctx.lineWidth=1;
+      ctx.fillStyle='#7dffb2'; ctx.textAlign='center'; ctx.fillText(f.txt,f.x,f.y+4*sc); ctx.textAlign='left';
+      return;
+    }
+    if(f.kind==='gran'){
+      f.cells.forEach((v,ci)=>{
+        if(v==null) return;
+        ctx.fillStyle='#1b2c3a'; ctx.strokeStyle=f.col||'#3d8ba3';
+        ctx.beginPath(); ctx.roundRect(f.x+ci*(CELL*0.7),f.y,CELL*0.65,CELLH*0.8,3); ctx.fill(); ctx.stroke();
+      });
+      return;
+    }
+    if(f.kind==='idxv'){
+      ctx.fillStyle='#faff69'; ctx.font='700 10px '+MONO(); ctx.textAlign='left';
+      ctx.fillText(fmtT(f.v), f.x, f.y+10);
+      return;
+    }
+    const srt=f.kind==='sorting'||f.kind==='load';
+    ctx.fillStyle=srt?'#153a2a':'#1b2431';
+    ctx.strokeStyle=srt?'#7dffb2':'#3a4152';
+    ctx.beginPath(); ctx.roundRect(f.x,f.y,CELL,CELLH,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#e8eaf0'; ctx.font='9px '+MONO(); ctx.textAlign='center';
+    ctx.fillText(fmtT(f.v), f.x+CELL/2, f.y+16); ctx.textAlign='left';
+  });
+}
+function loop(){ tick(); render(); requestAnimationFrame(loop); }
+
+/* ---- HUD ---- */
+const sqlEl=document.getElementById('sqlbar'), toastEl=document.getElementById('toast');
+let toastT=null;
+function showSql(s){ sqlEl.textContent=s; }
+const resEl=document.getElementById('resgrid');
+function showResult(cols,rows,note){
+  let html='<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
+  rows.forEach(r=>{ html+='<tr>'+r.map(v=>'<td>'+v+'</td>').join('')+'</tr>'; });
+  html+='</table>';
+  if(note) html+='<div class="msg">'+note+'</div>';
+  resEl.innerHTML=html;
+}
+function showMsg(m){ resEl.innerHTML='<div class="msg">'+m+'</div>'; }
+function showDefaultResult(){ // 初期クエリ = テーブル構造の紹介
+  showSql('SELECT * FROM otel_events LIMIT 10;');
+  showResult(['ts','service','…'], tableSample(10).map(v=>[fmtT(v),svcOf(v),'…']), '10 rows(代表値)');
+}
+let curStage=0;
+function setStage(n){ // 0 = 非表示
+  curStage=n;
+  const box=document.getElementById('steps');
+  if(n===0){ box.classList.remove('show'); return; }
+  box.classList.add('show');
+  box.querySelectorAll('.step').forEach(el=>{
+    const s=+el.dataset.s;
+    el.classList.toggle('on',s===n);
+    el.classList.toggle('done',s<n);
+  });
+  const on=box.querySelector('.step.on');
+  if(on) on.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'});
+}
+function toast(s,warn){ toastEl.textContent=s; toastEl.className=warn?'on warn':'on'; toastEl.id='toast'; clearTimeout(toastT); toastT=setTimeout(()=>toastEl.classList.remove('on'),6200); }
+document.getElementById('bIns').addEventListener('click',doInsert);
+document.getElementById('bMerge').addEventListener('click',doMerge);
+document.getElementById('bDel').addEventListener('click',doDelete);
+document.getElementById('bUpd').addEventListener('click',doUpdate);
+document.getElementById('engSel').addEventListener('change',e=>{ ENG=e.target.value; toast(ENG==='rmt'?'ReplacingMergeTree: 同じ ORDER BY キー(ts)の行はマージのときに1つへ置換される(即時ではない)':'MergeTree: 置換なしの標準エンジン'); });
+document.getElementById('bProj').addEventListener('click',()=>{
+  if(busy){ toast('実行中です','warn'); return; }
+  if(projOn){ toast('projection は追加済み。以後の INSERT には自動で入る(⚡proj バッジ)'); return; }
+  projOn=true;
+  showSql("ALTER TABLE otel_events ADD PROJECTION p_svc (SELECT * ORDER BY service); ALTER TABLE otel_events MATERIALIZE PROJECTION p_svc;");
+  parts.filter(p=>!p.dying).forEach(p=>{ p.hasProj=true; p.flash=1; });
+  toast('MATERIALIZE PROJECTION: 各 Part の中に service 順に並べ直したコピーができた(ワンショットの一括処理)。以後の INSERT では書き込み時に自動生成される');
+  showMsg('Ok. projection p_svc を追加し、既存 '+parts.filter(p=>!p.dying).length+' Part を MATERIALIZE');
+});
+document.getElementById('bSel').addEventListener('click',doSelect);
+let SVCF='';
+document.getElementById('svcSel').addEventListener('change',e=>{ SVCF=e.target.value; });
+document.getElementById('idxSel').addEventListener('change',e=>{ IDXT=e.target.value; });
+document.getElementById('predR').addEventListener('input',()=>{ PRED=+document.getElementById('predR').value; document.getElementById('predV').textContent=fmtT(PRED); });
+let demoT=null, demoSteps=null;
+function stopDemo(){ if(demoT){ clearInterval(demoT); demoT=null; demoSteps=null;document.getElementById('bAmb').textContent='▶ 自動再生'; } }
+document.getElementById('bAmb').addEventListener('click',()=>{
+  if(demoT){ stopDemo(); return; }
+  demoSteps=['insert','insert','merge','select'];
+  document.getElementById('bAmb').textContent='⏹ 停止';
+  demoT=setInterval(()=>{
+    if(demoSteps.length===0){ if(result&&!busy) stopDemo(); return; } // 帰還まで見届けて終了
+    if(busy) return;
+    const s=demoSteps.shift();
+    if(s==='insert') doInsert(); else if(s==='merge') doMerge(); else doSelect();
+  },900);
+});
+document.getElementById('bReset').addEventListener('click',()=>{
+  if(busy){ toast('実行中です。終わってからリセットを','warn'); return; }
+  stopDemo();
+  parts=[]; fly=[]; lanes=[]; result=null; seq=0; mv={}; mv2={}; projOn=false; setStage(0);
+  seedParts(); layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
+  showDefaultResult();
+  toast('初期状態に戻した。INSERT → マージ → SELECT をもう一度最初から試せる');
+});
+
+/* ---- 初期状態(ブログの例と同じ気分の値) ---- */
+function seedParts(){
+  const mk=(vals,lvl,name,day)=>{ seq++; const p={id:seq,name,day,granules:mkGranules(vals.sort((a,b)=>a-b)),lvl,flash:0,x:null,y:null,merged:lvl>0}; parts.push(p); };
+  mk([60,180,600,120,500,880,60,900,700,240],1,YDAY+'_1_3_1',YDAY);
+  mk([40,100,400,40,700,400,40,500,900,50,300,600],2,TODAY+'_1_5_2',TODAY);
+  mk([61,300,600,62,500,901,63,902,620],0,TODAY+'_6_6_0',TODAY);
+}
+(function init(){
+  seedParts();
+  window.__ready=true; updateTop();
+  new ResizeObserver(()=>{ updateTop(); layout(); }).observe(document.getElementById('hud'));
+  layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
+  showDefaultResult();
+  window.__v2={ get parts(){return parts;} };
+  loop();
+})();
+</script>
+</body>
+</html>
