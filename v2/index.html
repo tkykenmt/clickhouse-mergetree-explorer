@@ -79,6 +79,10 @@ canvas{display:block;touch-action:none}
       <select id="svcSel" style="background:#0f1116;color:#6fe3ff;border:1px solid #262a33;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
         <option value="">(すべて)</option><option>frontend</option><option>checkout</option><option>cart</option><option>auth</option><option>search</option>
       </select>
+      <span style="font-family:var(--mono);color:var(--muted)">idx:</span>
+      <select id="idxSel" style="background:#0f1116;color:#c9a2ff;border:1px solid #262a33;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
+        <option value="set">set</option><option value="bloom">bloom_filter</option>
+      </select>
     </span>
     <button class="btn" id="bSel">▶ SELECT</button>
     <button class="btn" id="bAmb">▶ 自動再生</button>
@@ -108,10 +112,10 @@ canvas{display:block;touch-action:none}
 ============================================================ */
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
 let W=0,H=0,DPR=1,MOB=false;
-let CELL=34, CELLH=24, IDXW=104, INS_Y=106;   // モバイルでは resize が縮める
+let CELL=34, CELLH=24, IDXW=104, SKW=88, INS_Y=106;   // モバイルでは resize が縮める
 function resize(){ DPR=window.devicePixelRatio||1; W=window.innerWidth; H=window.innerHeight;
   cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+'px'; cv.style.height=H+'px'; ctx.setTransform(DPR,0,0,DPR,0,0);
-  MOB=W<700; CELL=MOB?24:34; CELLH=MOB?19:24; IDXW=MOB?78:104;
+  MOB=W<700; CELL=MOB?24:34; CELLH=MOB?19:24; IDXW=MOB?78:104; SKW=MOB?72:88;
   if(window.__ready){ updateTop(); layout(); } }
 function updateTop(){ INS_Y=Math.max(106, document.getElementById('hud').offsetHeight+8); }
 window.addEventListener('resize',resize); resize();
@@ -200,7 +204,7 @@ function laneGeom(i){
 }
 function granRowPos(p,gi){ return {x:p.x+24, y:p.y+30+gi*(CELLH+GAP)}; }
 function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.push(vals.slice(i,i+GPR)); return gs; }
-function partW(p){ return GPR*(CELL+GAP)+24+IDXW+12+58; }
+function partW(p){ return GPR*(CELL+GAP)+24+56+IDXW+10+SKW+10; }
 function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+36)+42; }
 function layout(){
   // Parts は縦積みの左列(ストレージ)。デスクトップの右列はレーン(計算)が使う
@@ -364,6 +368,16 @@ const BUCKET=60; // 1時間の帯(値 = 8:00 からの経過分)
 function fmtT(v){ return (8+Math.floor(v/60))+':'+String(v%60).padStart(2,'0'); }
 const SVC=['frontend','checkout','cart','auth','search'];
 const svcOf=v=>SVC[v%SVC.length];
+const SVA=['fe','ch','ca','au','se'];
+let IDXT='set'; // skip index の種類: set(正確) / bloom_filter(偽陽性あり)
+function granSvcs(g){ const s=new Set(); g.forEach(v=>{ if(v!=null) s.add(v%SVC.length); }); return s; }
+function bloomBits(s){ let b=0; s.forEach(i=>{ b|=(1<<(i%8))|(1<<((i*3+2)%8)); }); return b; }
+function idxMayContain(g,target){
+  const ti=SVC.indexOf(target), s=granSvcs(g);
+  if(IDXT==='set') return s.has(ti);
+  const tb=(1<<(ti%8))|(1<<((ti*3+2)%8));
+  return (bloomBits(s)&tb)===tb; // 部分集合なら「含むかも」= 偽陽性がありうる
+}
 function SQLQ(){ return "SELECT toStartOfHour(ts) AS h, count() FROM otel_events WHERE ts >= '2026-07-29 "+fmtT(PRED)+"'"+(SVCF?" AND service = '"+SVCF+"'":'')+" GROUP BY h ORDER BY h"; }
 function clearQueryView(){ // 結果テーブル・レーン・枝刈り表示は次の操作までは残す方針。呼ぶのは各操作の開始時だけ
   result=null; lanes=[]; setStage(0); // カメラは動かさない(粒度はユーザーのもの)
@@ -419,8 +433,8 @@ function selExec(act){
         p.rangeK=k; p.showVerdict=1;
         p.granules.forEach((g,gi)=>{
           if(gi<k) return;
-          // skip index: set(service)。granule 内に該当 service が1つも無ければ読まない
-          if(SVCF && !g.some(v=>svcOf(v)===SVCF)){ p.skipx[gi]=true; p.verdict[gi]=false; return; }
+          // skip index(set / bloom_filter)。「含まない」と言い切れた granule は読まない
+          if(SVCF && !idxMayContain(g,SVCF)){ p.skipx[gi]=true; p.verdict[gi]=false; return; }
           kept.push({g:g.map((v,ci)=>(p.del&&p.del[gi*GPR+ci])?null:v),p,gi}); // マスク行は null
         });
       });
@@ -435,7 +449,7 @@ function startRead(act,kept,total){
   const ranges=act.filter(p=>p.rangeK<p.granules.length)
     .map(p=>'g'+(p.rangeK+1)+(p.rangeK+1<p.granules.length?'〜g'+p.granules.length:''));
   showSql(SQLQ()+'  -- ② 読むのは '+kept.length+' / '+total+' granule('+(ranges.join(', ')||'なし')+')');
-  toast('② 読み取り: 生き残った granule('+(ranges.join(' / ')||'なし')+')だけ読む。✂ '+(total-kept.length)+' granule はスキップ'+(SVCF?'(赤 = 主キー、オレンジ = service の set skip index)':''));
+  toast('② 読み取り: 生き残った granule('+(ranges.join(' / ')||'なし')+')だけ読む。✂ '+(total-kept.length)+' granule はスキップ'+(SVCF?'(赤 = 主キー、オレンジ = service の '+(IDXT==='set'?'set':'bloom_filter')+' skip index'+(IDXT==='bloom'?'。bloom は偽陽性がありうる = 読んでから空振りすることもある':'')+')':''));
   if(!kept.length){
     setTimeout(()=>{
       showSql(SQLQ()+'  -- 0 行(索引だけで証明、読み取りゼロ)');
@@ -578,6 +592,23 @@ function drawPart(p){
     ctx.fillStyle='#6fe3ff'; ctx.font='700 9px '+MONO();
     ctx.fillText('range: g'+(p.rangeK+1)+'〜g'+p.granules.length, ix+8, iy+ih-6);
   }
+  // skip idx カード(service 列の副次索引): set は中身、bloom はビット列
+  const kx2=ix+IDXW+10;
+  ctx.fillStyle='#1a1420'; ctx.strokeStyle='#8a6fb0';
+  ctx.beginPath(); ctx.roundRect(kx2,iy,SKW,ih,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#c9a2ff'; ctx.font='700 9px '+MONO();
+  ctx.fillText('skip idx', kx2+6, iy+14);
+  ctx.fillStyle='#6e5a8a'; ctx.font='7px '+MONO();
+  ctx.fillText(IDXT==='set'?'set(service)':'bloom(service)', kx2+6, iy+14+8);
+  p.granules.forEach((g,gi)=>{
+    if(p.building&&gi>=p.idxReveal) return;
+    const skipped=p.showVerdict&&p.skipx&&p.skipx[gi];
+    if(skipped){ ctx.fillStyle='rgba(255,180,111,.16)'; ctx.fillRect(kx2+3,iy+26+gi*16-10,SKW-6,13); }
+    ctx.fillStyle=skipped?'#ffb46f':'#a08cc0'; ctx.font='7.5px '+MONO();
+    const s=[...granSvcs(g)].sort();
+    const txt=IDXT==='set' ? '{'+s.map(i=>SVA[i]).join(',')+'}' : bloomBits(new Set(s)).toString(2).padStart(8,'0');
+    ctx.fillText(txt, kx2+6, iy+28+gi*16);
+  });
   ctx.globalAlpha=1;
 }
 function drawLanes(){
@@ -942,6 +973,7 @@ document.getElementById('bDel').addEventListener('click',doDelete);
 document.getElementById('bSel').addEventListener('click',doSelect);
 let SVCF='';
 document.getElementById('svcSel').addEventListener('change',e=>{ SVCF=e.target.value; });
+document.getElementById('idxSel').addEventListener('change',e=>{ IDXT=e.target.value; });
 document.getElementById('predR').addEventListener('input',()=>{ PRED=+document.getElementById('predR').value; document.getElementById('predV').textContent=fmtT(PRED); });
 let demoT=null, demoSteps=null;
 function stopDemo(){ if(demoT){ clearInterval(demoT); demoT=null; demoSteps=null; cine=false; document.getElementById('bAmb').textContent='▶ 自動再生'; } }
