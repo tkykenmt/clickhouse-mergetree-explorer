@@ -82,6 +82,15 @@ select{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);b
 .langopt{display:block;padding:5px 12px;color:var(--ink);text-decoration:none;border-radius:6px;font-size:13px;font-family:var(--jp);white-space:nowrap}
 .langopt:hover{background:var(--panel-2)}
 .langopt.on::after{content:" ✓";color:var(--cyan)}
+.ibtn{background:none;border:1px solid var(--line);border-radius:99px;color:var(--muted);font-size:11px;width:20px;height:20px;line-height:1;cursor:pointer;padding:0;vertical-align:middle}
+.ibtn:hover{border-color:var(--cyan);color:var(--cyan)}
+.stwhy{display:none}
+.stwhy.open{display:block}
+.lvintro:not(.open) .lvbody{display:none!important}
+.lvintro.open .lvbody{display:flex;margin-top:8px}
+.lvintro .lvhead{display:flex;gap:10px;align-items:center;margin-bottom:0}
+.lvintro .lvhead .btn{margin-left:auto}
+#firstVisit{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:60;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px;display:flex;gap:12px;align-items:center;font-size:13.5px;color:var(--ink);font-family:var(--jp);box-shadow:0 18px 50px var(--shadow)}
 .fviz{border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:11.5px;color:var(--muted);font-family:var(--mono)}
 .fvt{font-family:var(--jp);font-size:12.5px;color:var(--ink);margin-bottom:8px}
 .fvn{font-family:var(--jp);font-size:12px;margin-top:8px;line-height:1.7}
@@ -599,6 +608,7 @@ body.L8.smt-on .smtnote{display:block}
         <select id="insPartition"><option value="202607">今月のイベント(2026-07)</option><option value="202606">先月のイベント(2026-06)</option></select>
         <button class="btn primary" id="btnInsert">＋ INSERT</button>
         <button class="btn" id="btnMerge">⇄ マージ</button>
+        <button class="btn" id="btnAmbient" title="INSERT とマージを自動で回し続けるデモモード">▶ 自動再生</button>
       </div>
       <div class="deck-g lv5"><span class="deck-l">Materialized View(INSERT に連動)</span>
         <label class="ctl-inline" title="INSERT のたびに mv_daily が発火して daily_counts に部分集計を書く"><input type="checkbox" id="mvOn" checked>mv_daily → daily_counts(日次集計)</label>
@@ -789,7 +799,6 @@ body.L8.smt-on .smtnote{display:block}
   <!-- ============ TAB B : クエリと読み取り ============ -->
   <div class="pane" id="pB">
     <div class="only-l1" style="border:1px dashed var(--line);border-radius:12px;padding:26px;text-align:center;color:var(--muted);font-size:14px">🔒 クエリの流れは <b style="color:var(--ink)">Lv2(<span class="term" data-g="primaryidx">primary.idx</span> の登場)</b>で解禁されます。まず「構造と書き込み」タブで INSERT と<span class="term" data-g="merge">マージ</span>を動かして、<span class="term" data-g="part">Part</span> の感覚をつかんでください。<div style="margin-top:14px"><button class="btn primary" id="qUnlock">Lv2 に進んでクエリを見る →</button></div></div>
-    <div class="hint lv2">ClickHouse は<span class="y">「どこを読まないか」を先に決めきってから</span>、最後に初めてストレージに触ります。以下は optimizer が実際に判断する順序です。</div>
     <div class="deck lv2">
       <div class="deck-g lv3"><span class="deck-l"><i class="q-part" style="font-style:normal">PARTITION BY で月ごと切る</i> → STAGE 1</span>
         <span class="ctl-inline">期間
@@ -827,12 +836,12 @@ body.L8.smt-on .smtnote{display:block}
     <div class="mlog lv8" id="scnLog" style="margin-bottom:12px"><div>— 読み取りシナリオの実況がここに流れます —</div></div>
     <div class="lv8" id="mapDockB"></div>
     <div id="qpipeFoldBar"><button class="btn" id="qpipeFoldBtn"></button></div>
-    <div class="qpipe"><div class="qpipe-l">1つの SELECT の一生(受信 → 結果、上から下へ)</div>
-      <div class="stage lv2" id="stg0"><div class="sthead"><b>受信(メモリ内で計画)</b><span class="stcut" id="cut0"></span></div><div class="stbody">クエリは Node のメモリ内で解析されます。ここから下の判断はすべて<b>メモリ内(primary.idx などの常駐メタデータ)</b>で行われ、ストレージに触るのは STAGE 5 が最初です。</div></div>
+    <div class="qpipe"><div class="qpipe-l">1つの SELECT の一生 — 「どこを読まないか」を先に決めきってから、最後に初めてストレージに触る(上から下へ)</div>
+      <div class="stage lv2" id="stg0"><div class="sthead"><b>受信(メモリ内で計画)</b><span class="stcut" id="cut0"></span></div><div class="stbody">ここから下の判断はすべて<b>メモリ内</b>。ストレージに触るのは STAGE 5 が最初です。</div></div>
       <div class="pipearrow lv2" id="arr0"></div>
-      <div class="stage lv3" id="stg1"><div class="sthead"><b>STAGE 1: Partition pruning(月ごと丸ごと除外)</b><span class="stcut" id="cut1"></span></div><div class="stbody" id="sb1"></div><div class="stwhy" id="why1"></div></div>
+      <div class="stage lv3" id="stg1"><div class="sthead"><b>STAGE 1: Partition pruning(月ごと丸ごと除外)</b><button class="ibtn" data-why="why1" title="このステージの解説">ⓘ</button><span class="stcut" id="cut1"></span></div><div class="stbody" id="sb1"></div><div class="stwhy" id="why1"></div></div>
       <div class="pipearrow lv3" id="arr1"></div>
-      <div class="stage lv5" id="stg2"><div class="sthead"><b>STAGE 2: Projection の自動選択で読む場所を決める(Part ごと)</b><span class="stcut" id="cut2"></span></div><div class="stbody" id="sb2"></div><div class="stwhy" id="why2"></div>
+      <div class="stage lv5" id="stg2"><div class="sthead"><b>STAGE 2: Projection の自動選択で読む場所を決める(Part ごと)</b><button class="ibtn" data-why="why2" title="このステージの解説">ⓘ</button><span class="stcut" id="cut2"></span></div><div class="stbody" id="sb2"></div><div class="stwhy" id="why2"></div>
         <details class="stdeep"><summary>🔬 深掘り: Projection 実験室と MV との使い分け</summary>
       <div class="qgrid">
         <div class="controls">
@@ -869,7 +878,7 @@ body.L8.smt-on .smtnote{display:block}
         </details>
       </div>
       <div class="pipearrow lv5" id="arr2"></div>
-      <div class="stage lv2" id="stg3"><div class="sthead"><b>STAGE 3: primary.idx の二分探索で granule 範囲を絞る</b><span class="stcut" id="cut3"></span></div><div class="stbody" id="sb3"></div><div class="stwhy" id="why3"></div>
+      <div class="stage lv2" id="stg3"><div class="sthead"><b>STAGE 3: primary.idx の二分探索で granule 範囲を絞る</b><button class="ibtn" data-why="why3" title="このステージの解説">ⓘ</button><span class="stcut" id="cut3"></span></div><div class="stbody" id="sb3"></div><div class="stwhy" id="why3"></div>
         <details class="stdeep"><summary>🔬 深掘り: ORDER BY vs PRIMARY KEY(並びと索引の分離)</summary>
     <div class="hint">💡 <b>ORDER BY</b> = ディスク上の<span class="y">並び順</span>を決める。<b>PRIMARY KEY</b> = そのうち<span class="y">primary.idx に載せる接頭辞</span>を決める。スライダーで PRIMARY KEY を短くして、<b>左(並び)は不変・右(索引)だけ痩せる</b>ことを確認してください。</div>
     <div class="obgrid">
@@ -919,7 +928,7 @@ body.L8.smt-on .smtnote{display:block}
         </details>
       </div>
       <div class="pipearrow lv2" id="arr3"></div>
-      <div class="stage lv4" id="stg4"><div class="sthead"><b>STAGE 4: Skip index(text / minmax)で granule を絞る</b><span class="stcut" id="cut4"></span></div><div class="stbody" id="sb4"></div><div class="stwhy" id="why4"></div></div>
+      <div class="stage lv4" id="stg4"><div class="sthead"><b>STAGE 4: Skip index(text / minmax)で granule を絞る</b><button class="ibtn" data-why="why4" title="このステージの解説">ⓘ</button><span class="stcut" id="cut4"></span></div><div class="stbody" id="sb4"></div><div class="stwhy" id="why4"></div></div>
       <div class="pipearrow lv4" id="arr4"></div>
       <div class="stage lv2" id="stg5"><div class="sthead"><b>STAGE 5: 生き残った granule の列を読む(ここで初めて I/O)</b><span class="stcut" id="cut5"></span></div><div class="stbody" id="sb5"></div>
         <div class="obpanels lv6" style="margin-top:10px">
@@ -1042,6 +1051,11 @@ body.L8.smt-on .smtnote{display:block}
     </div>
   </div>
   </div>
+</div>
+<div id="firstVisit" style="display:none">
+  <span>はじめてですか? 各レベルは<b>ツアー</b>で、操作つきで体験できます。</span>
+  <button class="btn primary" id="fvTour">▶ Lv1 をツアーで体験</button>
+  <button class="btn" id="fvClose">閉じる</button>
 </div>
 <div id="tourPanel" style="display:none">
   <span id="tourText"></span>
@@ -2019,6 +2033,19 @@ $('btnResetAll').addEventListener('click',()=>{
   $('udRun').textContent='実行'; $('an3').classList.add('ghost');
   log('リセットしました。<span class="y">INSERT</span> から流れを追ってみてください');
 });
+var ambTimer=null, ambN=0;
+$('btnAmbient').addEventListener('click',()=>{
+  if(ambTimer){ clearInterval(ambTimer); ambTimer=null; $('btnAmbient').textContent='▶ 自動再生'; return; }
+  $('btnAmbient').textContent='⏹ 自動再生中';
+  ambTimer=setInterval(()=>{
+    ambN++;
+    const total=Object.keys(ST.ev).reduce((s,pt)=>s+ST.ev[pt].filter(p=>p.active).length,0);
+    if(total>=6||ambN%4===0){ $('btnMerge').click(); return; }
+    $('insPartition').value=(ambN%3===0)?'202606':'202607';
+    $('insPartition').dispatchEvent(new Event('change',{bubbles:true}));
+    $('btnInsert').click();
+  },4200);
+});
 $('mvOn').addEventListener('change',()=>{ actTag='MV'; if(!$('mvOn').checked){ $('mvCas').checked=false; } $('mvCas').disabled=!$('mvOn').checked; renderMap(); if(typeof qpipe==='function') qpipe(); log($('mvOn').checked?'MV <span class="c">mv_daily</span> を有効化。以後の INSERT は daily_counts にも Part を作ります':'MV を無効化(DROP VIEW 相当)。daily_counts はそのまま残ります'); });
 $('mvCas').addEventListener('change',()=>{ actTag='MV'; renderMap(); if(typeof qpipe==='function') qpipe(); log($('mvCas').checked?'カスケード MV <span class="c">mv_weekly</span> を有効化。daily_counts への INSERT(mv_daily 経由を含む)が連鎖して weekly_counts に集計を書きます':'mv_weekly を無効化(DROP VIEW 相当)。weekly_counts はそのまま残ります'); });
 $('mvCas').addEventListener('mouseenter',()=>showAct(actCode(($('mvCas').checked?'DROP VIEW mv_weekly <span class="cm">-- OFF にすると</span>':'CREATE MATERIALIZED VIEW mv_weekly TO weekly_counts AS SELECT toStartOfWeek(d) AS w, sum(cnt) FROM daily_counts GROUP BY w <span class="cm">-- ON にすると。トリガは daily_counts への INSERT</span>'))));
@@ -2207,6 +2234,7 @@ function qpipe(){
 const renderMapCore=renderMap;
 renderMap=function(){ renderMapCore(); if(typeof qpipe==='function') qpipe(); };
 document.querySelectorAll('.fMonth,.fTen').forEach(c=>c.addEventListener('change',qpipe));
+document.querySelectorAll('.ibtn[data-why]').forEach(b=>b.addEventListener('click',()=>{ const w=$(b.dataset.why); if(w) w.classList.toggle('open'); }));
 function mselInit(boxId,cls,allLabel){
   const box=$(boxId), btn=box.querySelector('.msel-btn');
   btn.addEventListener('click',e=>{ e.stopPropagation();
@@ -2417,6 +2445,14 @@ $('tourNext').addEventListener('click',()=>{
   setTimeout(tourShow,250);
 });
 $('tourStop').addEventListener('click',tourEnd);
+try{
+  if(!localStorage.getItem('mtx-visited')){
+    $('firstVisit').style.display='flex';
+    const fvDone=()=>{ $('firstVisit').style.display='none'; try{ localStorage.setItem('mtx-visited','1'); }catch(e){} };
+    $('fvTour').addEventListener('click',()=>{ fvDone(); if(typeof tourStart==='function') tourStart(); });
+    $('fvClose').addEventListener('click',fvDone);
+  }
+}catch(e){}
 window.addEventListener('scroll',()=>{ if(TOUR&&TOUR.place) TOUR.place(); },{passive:true});
 window.addEventListener('resize',()=>{ if(TOUR&&TOUR.place) TOUR.place(); });
 const LEVELS=[null,
@@ -2440,10 +2476,13 @@ function setLevel(n){
     c.classList.toggle('done',k<LV);
   });
   const L=LEVELS[LV];
-  $('lvIntro').innerHTML='<div class="lvhead"><b>Lv'+LV+'</b> '+L.t+'</div>'+
-    '<div class="lvbody"><div style="flex:2;min-width:280px">'+L.d+'</div>'+
-    '<div class="try" style="display:flex;align-items:center"><button class="btn primary" id="lvTourBtn">▶ このレベルをツアーで体験</button></div></div>';
+  $('lvIntro').classList.remove('open');
+  $('lvIntro').innerHTML='<div class="lvhead"><b>Lv'+LV+'</b> '+L.t+
+    ' <button class="ibtn" id="lvInfoBtn" title="このレベルの解説を開く">ⓘ</button>'+
+    '<button class="btn primary" id="lvTourBtn">▶ ツアーで体験</button></div>'+
+    '<div class="lvbody"><div style="flex:2;min-width:280px">'+L.d+'</div></div>';
   const tb=$('lvTourBtn'); if(tb) tb.onclick=()=>{ if(typeof tourStart==='function') tourStart(); };
+  const ib=$('lvInfoBtn'); if(ib) ib.onclick=()=>$('lvIntro').classList.toggle('open');
   if(typeof tourEnd==='function'&&typeof TOUR!=='undefined'&&TOUR) tourEnd();
 
   if(LV>=3&&typeof ST!=='undefined'&&ST&&ST.ev){
