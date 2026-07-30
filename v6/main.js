@@ -68,13 +68,21 @@ function doInsert(){
   seqRun([
     [1100,()=>emit('insert.sorted',{vals:sorted})],
     [1100,()=>{ seq++; const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,granules:mkGranules(sorted),lvl:0,del:{},upd:{}}; parts.push(p); emit('part.born',{pid:p.id}); }],
-    [900,()=>{ sorted.forEach(v=>{ const h=Math.floor(v/60)*60; mvH[h]=(mvH[h]||0)+2048; }); emit('mv.fire',{mv:'hourly_mv',src:'otel_events',dst:'hourly_counts'}); }],
-    [800,()=>{ mvD[TODAY]=(mvD[TODAY]||0)+sorted.length*2048; emit('mv.fire',{mv:'daily_mv',src:'hourly_counts',dst:'daily_counts'}); }],
-    [700,()=>{ sorted.forEach(v=>{ const tid=traceIdOf(TODAY,v);
+    [900,()=>{ const hrs=new Set(sorted.map(v=>Math.floor(v/60))).size;
+      emit('mv.fire',{mv:'hourly_mv',src:'otel_events',dst:'hourly_counts',
+        inLbl:(sorted.length*2048).toLocaleString()+' 行のブロック',outLbl:'GROUP BY hour → '+hrs+' 行'}); }],
+    [1800,()=>{ sorted.forEach(v=>{ const h=Math.floor(v/60)*60; mvH[h]=(mvH[h]||0)+2048; }); emit('mv.applied',{mv:'hourly_mv'}); }],
+    [900,()=>emit('mv.fire',{mv:'daily_mv',src:'hourly_counts',dst:'daily_counts',
+        inLbl:'hourly の増分',outLbl:'day 合計 → 1 行'})],
+    [1800,()=>{ mvD[TODAY]=(mvD[TODAY]||0)+sorted.length*2048; emit('mv.applied',{mv:'daily_mv'}); }],
+    [900,()=>{ const tn=new Set(sorted.map(v=>Math.floor(v/TRWIN))).size;
+      emit('mv.fire',{mv:'trace_id_mv',src:'otel_events',dst:'trace_id_ts',
+        inLbl:(sorted.length*2048).toLocaleString()+' 行のブロック',outLbl:'GROUP BY TraceId → '+tn+' 行'}); }],
+    [1800,()=>{ sorted.forEach(v=>{ const tid=traceIdOf(TODAY,v);
       const r=mvT[tid]||(mvT[tid]={s:v,e:v,n:0});
       r.s=Math.min(r.s,v); r.e=Math.max(r.e,v); r.n++; });
-      emit('mv.fire',{mv:'trace_id_mv',src:'otel_events',dst:'trace_id_ts'}); }],
-    [700,()=>{ emit('table.rows',{total:tableRows()}); showMsg('Ok.('+(sorted.length*2048).toLocaleString()+' 行 → 新しい Part)'); busy=false; }],
+      emit('mv.applied',{mv:'trace_id_mv'}); }],
+    [900,()=>{ emit('table.rows',{total:tableRows()}); showMsg('Ok.('+(sorted.length*2048).toLocaleString()+' 行 → 新しい Part)'); busy=false; }],
   ]);
 }
 function doMerge(){
@@ -401,21 +409,23 @@ function dotted(g,x1,y1,x2,y2,col){
 // 飛行体(シーン横断の共有プール。シーン切替で消す)
 let fly=[];
 const flyC=new PIXI.Container(); world.addChild(flyC);
-function flyChip(txt,col,fx,fy,tx,ty,dt,done){
+function flyChip(txt,col,fx,fy,tx,ty,dt,done,flat){
   const c=new PIXI.Container();
   const t=textV(txt,11.5,0xffffff); t.x=8; t.y=3;
   const g=new PIXI.Graphics(); g.roundRect(0,0,t.width+16,t.height+6,5).fill(col).stroke({width:1,color:0x00000022});
   c.addChild(g,t); flyC.addChild(c);
-  fly.push({c,fx,fy,tx,ty,t:0,dt:dt||0.02,done});
+  fly.push({c,fx,fy,tx,ty,t:0,dt:dt||0.02,done,flat});
 }
 function tickFly(){
+  const dones=[]; // done内のflyChip追加がfilter再代入で消えないよう、後で実行(V2の教訓)
   fly=fly.filter(f=>{
     f.t+=f.dt;
     const e=f.t<1?(1-Math.pow(1-f.t,3)):1;
-    f.c.x=f.fx+(f.tx-f.fx)*e; f.c.y=f.fy+(f.ty-f.fy)*e-Math.sin(Math.PI*Math.min(1,f.t))*36;
-    if(f.t>=1){ f.c.destroy({children:true}); if(f.done) f.done(); return false; }
+    f.c.x=f.fx+(f.tx-f.fx)*e; f.c.y=f.fy+(f.ty-f.fy)*e-(f.flat?0:Math.sin(Math.PI*Math.min(1,f.t))*36);
+    if(f.t>=1){ f.c.destroy({children:true}); if(f.done) dones.push(f.done); return false; }
     return true;
   });
+  dones.forEach(fn=>fn());
 }
 function clearFly(){ fly.forEach(f=>f.c.destroy({children:true})); fly=[]; }
 
@@ -486,7 +496,7 @@ scenes.S0=(()=>{
   const secL=textV('TABLE — 論理(このNodeのテーブルとMVパイプ)',11,0x9a9a90,false);
   const secR=textV('DERIVED TABLES — MV(パイプ)の書き込み先',11,0x9a9a90,false);
   s.cont.addChild(secL,secR);
-  let flash=0, pipePulse={}, dispRows=0, tgtFlash=[0,0,0], lastShown=[];
+  let flash=0, pipePulse={}, dispRows=0, tgtFlash=[0,0,0], lastShown=[], G=null;
   ltbl.eventMode='static'; ltbl.cursor='pointer';
   ltbl.on('pointertap',ev=>{
     const pos=ev.getLocalPosition(ltbl);
@@ -499,13 +509,24 @@ scenes.S0=(()=>{
   s.enter=()=>{ dispRows=tableRows(); };
   s.onEvent=e=>{
     if(e.t==='insert.arrive'){
-      flash=1;
-      flyChip('INSERT '+(e.vals.length*2048).toLocaleString()+' 行',0x2f9e44,STW()*0.45,-8,36+LTW*0.5,INS_Y+140,0.018);
+      const ty2=ltbl.y?ltbl.y+40:INS_Y+100;
+      flyChip('INSERT '+(e.vals.length*2048).toLocaleString()+' 行',0x2f9e44,-70,ty2,36+LTW*0.45,ty2,0.013,()=>{ flash=1; },true);
     }
     else if(e.t==='table.rows'){ /* dispRows が tick で追いつく */ }
     else if(e.t==='mv.fire'){
+      pipePulse[e.mv]=1;
+      const sg=G&&G.segs.find(s2=>s2.mv===e.mv);
+      if(sg){
+        const mid=(sg.x1+sg.x2)/2;
+        flyChip(e.inLbl||'ブロック',0x2f9e44,sg.x1,sg.y,mid,sg.y,0.016,()=>{
+          pipePulse[e.mv]=1; // 加工の瞬間にもう一度脈動
+          flyChip(e.outLbl||'集計行',0x7048c8,mid,sg.y,sg.dcx,sg.y,0.016,null,true);
+        },true);
+      }
+    }
+    else if(e.t==='mv.applied'){
       const i={hourly_mv:0,daily_mv:1,trace_id_mv:2}[e.mv];
-      pipePulse[e.mv]=1; tgtFlash[i]=1;
+      if(i!=null) tgtFlash[i]=1;
     }
     else if(e.t==='delete.mask'||e.t==='mutation.rewrite'){ flash=1; }
     else { flash=Math.max(flash,0.6); } // 既定演出: テーブルが点滅
@@ -524,45 +545,49 @@ scenes.S0=(()=>{
     ltbl.x=36; ltbl.y=INS_Y+60;
     if(flash>0) flash=Math.max(0,flash-0.015);
     secL.x=24; secL.y=INS_Y+28; secR.x=MX(); secR.y=INS_Y+28;
-    // 書き込み先テーブル
+    // 書き込み先テーブル: テーブル → MV(線上) → 先テーブル を一直線に
     const eH=Object.keys(mvH).map(Number).sort((a,b)=>a-b);
     const eD=Object.keys(mvD).sort(); const eT=Object.keys(mvT);
+    const x0=36+LTW, yA=ltbl.y+40, yB=ltbl.y+hh-22;
+    const avail=STW()-x0-28, seg=64;
+    const cw=Math.max(120,Math.floor((avail-2*seg)/2));
+    const cwB=Math.min(300,avail-seg-24);
+    const hx=x0+seg, dx=hx+cw+seg, tx=x0+seg;
+    G={segs:[
+      {mv:'hourly_mv',x1:x0,x2:hx,y:yA,dcx:hx+cw*0.5},
+      {mv:'daily_mv',x1:hx+cw,x2:dx,y:yA,dcx:dx+cw*0.5},
+      {mv:'trace_id_mv',x1:x0,x2:tx,y:yB,dcx:tx+cwB*0.5},
+    ]};
     const data=[
-      {nm:'TABLE hourly_counts',rows:eH.slice(0,3).map(h=>fmtT(h)+'〜  '+mvH[h].toLocaleString()),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':''},
-      {nm:'TABLE daily_counts',rows:eD.slice(0,2).map(d=>d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'  '+mvD[d].toLocaleString()),n:eD.length,extra:''},
-      {nm:'TABLE trace_id_ts',rows:eT.slice(-3).map(k=>k+'…  '+fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)+' ・ '+mvT[k].n+' span'),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' トレース':''},
-    ];
-    let y=INS_Y+78;
-    const pipes=[
-      {mv:'hourly_mv',lbl:'MV hourly_mv ▸ INSERT のたび集計 →',fromT:true},
-      {mv:'daily_mv',lbl:'MV daily_mv ▸ カスケード',fromT:false},
-      {mv:'trace_id_mv',lbl:'MV trace_id_mv ▸ 別キーで索引化 →',fromT:true},
+      {nm:'hourly_counts',rows:eH.slice(0,2).map(h=>fmtT(h)+'〜 '+mvH[h].toLocaleString()),n:eH.length,extra:eH.length>2?'+'+(eH.length-2)+' 行':'',gx:hx,gw:cw,cy:yA},
+      {nm:'daily_counts',rows:eD.slice(0,2).map(d=>d.slice(4,6)+'-'+d.slice(6)+' '+mvD[d].toLocaleString()),n:eD.length,extra:'',gx:dx,gw:cw,cy:yA},
+      {nm:'trace_id_ts',rows:eT.slice(-2).map(k=>k+'… '+fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)+' ・ '+mvT[k].n+'sp'),n:eT.length,extra:eT.length>2?'+'+(eT.length-2)+' トレース':'',gx:tx,gw:cwB,cy:yB},
     ];
     edges.clear();
     data.forEach((d,i)=>{
       const o=tgt[i];
-      const body=d.rows.length?d.rows.join('\n')+(d.extra?'\n'+d.extra:''):'(空 — 作成後の INSERT だけ反映)';
-      const hh2=26+Math.max(1,body.split('\n').length)*16+10;
-      panel(o.bg,MW(),hh2,0xf9f6ff,tgtFlash[i]>0?0x9775fa:0xddd0f0,tgtFlash[i]>0?2:1);
-      o.bg.rect(1,1,MW()-2,16).fill(0xeee6fb);
-      o.tx.text=body; o.tx.style.fill=d.n?0x5d4a86:0xadb5bd;
-      o.c.x=MX(); o.c.y=y;
-      const c=chip('s0t'+i,'mv',()=>toast(d.nm+' もただのテーブル。MVはここへ書くパイプ'));
+      const body=d.rows.length?d.rows.join('\n')+(d.extra?'\n'+d.extra:''):'(空 — INSERT 待ち)';
+      const ch2=22+Math.max(1,body.split('\n').length)*15+8;
+      panel(o.bg,d.gw,ch2,0xf9f6ff,tgtFlash[i]>0?0x9775fa:0xddd0f0,tgtFlash[i]>0?2:1);
+      o.bg.rect(1,1,d.gw-2,14).fill(0xeee6fb);
+      o.tx.text=body; o.tx.style.fill=d.n?0x5d4a86:0xadb5bd; o.tx.y=18;
+      o.c.x=d.gx; o.c.y=d.cy-ch2/2;
+      const c=chip('s0t'+i,'mv',()=>toast('TABLE '+d.nm+' もただのテーブル。MV はここへ書き込むパイプ'));
       c.innerHTML=d.nm+' <b>'+d.n+'行</b>';
-      placeChip(c,MX()+MW()/2,y+2);
+      placeChip(c,d.gx+d.gw/2,d.cy-ch2/2-2);
       if(tgtFlash[i]>0) tgtFlash[i]=Math.max(0,tgtFlash[i]-0.02);
-      // パイプ(エッジ): ラベルは宛先カードの真上に縦積み(名前being被り防止)
-      const pp=pipes[i]; const pulse=pipePulse[pp.mv]||0;
-      const midY=y+hh2/2;
-      if(pp.fromT) dotted(edges,36+LTW+10,midY,MX(),midY,pulse>0?0x7048c8:0x5d4a86);
-      else dotted(edges,MX()+MW()/2,y-72,MX()+MW()/2,y-44,pulse>0?0x7048c8:0x5d4a86);
+    });
+    // パイプ: 実線+矢印、ラベルは線の直上
+    G.segs.forEach((sg,i)=>{
+      const pulse=pipePulse[sg.mv]||0;
+      const col=pulse>0?0x7048c8:0xb9a6dd;
+      edges.moveTo(sg.x1,sg.y).lineTo(sg.x2-7,sg.y).stroke({width:pulse>0?2.5:1.5,color:col});
+      edges.poly([sg.x2,sg.y,sg.x2-8,sg.y-4.5,sg.x2-8,sg.y+4.5]).fill(col);
       const ec=chip('s0e'+i,'mv',null);
-      ec.textContent=pp.lbl;
-      ec.style.opacity=pulse>0?'1':'0.85';
-      ec.style.transform=pulse>0?'translate(-50%,-100%) scale(1.1)':'translate(-50%,-100%)';
-      placeChip(ec,MX()+MW()/2,y-20);
-      if(pulse>0) pipePulse[pp.mv]=Math.max(0,pulse-0.012);
-      y+=hh2+78;
+      ec.textContent='MV '+sg.mv;
+      ec.style.transform=pulse>0?'translate(-50%,-100%) scale(1.12)':'translate(-50%,-100%)';
+      placeChip(ec,(sg.x1+sg.x2)/2,sg.y-5);
+      if(pulse>0) pipePulse[sg.mv]=Math.max(0,pulse-0.01);
     });
     const tc=chip('s0tbl','',()=>zoomTo('S1'));
     tc.innerHTML='TABLE otel_events · '+Math.round(dispRows).toLocaleString()+'行';
