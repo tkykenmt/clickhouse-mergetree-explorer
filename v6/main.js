@@ -625,7 +625,7 @@ scenes.S0=(()=>{
     c.on('pointertap',()=>tableInsp(TKEYS[i]));
     return {c,bg,tx}; });
   const secL=textV('TABLE — 論理(このNodeのテーブルとMVパイプ)',11,0x9a9a90,false);
-  const secR=textV('DERIVED TABLES — MV(パイプ)の書き込み先',11,0x9a9a90,false);
+  const secR=textV('',11,0x9a9a90,false);
   s.cont.addChild(secL,secR);
   let flash=0, pipePulse={}, dispRows=0, tgtFlash=[0,0,0], lastShown=[], G=null;
   ltbl.eventMode='static'; ltbl.cursor='pointer';
@@ -652,10 +652,10 @@ scenes.S0=(()=>{
       pipePulse[e.mv]=1;
       const sg=G&&G.segs.find(s2=>s2.mv===e.mv);
       if(sg){
-        const mid=(sg.x1+sg.x2)/2;
-        flyChip(e.inLbl||'ブロック',0x2f9e44,sg.x1,sg.y,mid,sg.y,0.016,()=>{
+        const midY=(sg.y1+sg.y2)/2;
+        flyChip(e.inLbl||'ブロック',0x2f9e44,sg.x,sg.y1-26,sg.x,midY,0.016,()=>{
           pipePulse[e.mv]=1; // 加工の瞬間にもう一度脈動
-          flyChip(e.outLbl||'集計行',0x7048c8,mid,sg.y,sg.dcx,sg.y,0.016,null,true);
+          flyChip(e.outLbl||'集計行',0x7048c8,sg.x,midY,sg.x,sg.dcy,0.016,null,true);
         },true);
       }
     }
@@ -693,47 +693,53 @@ scenes.S0=(()=>{
     // 書き込み先テーブル: テーブル → MV(線上) → 先テーブル を一直線に
     const eH=Object.keys(mvH).map(Number).sort((a,b)=>a-b);
     const eD=Object.keys(mvD).sort(); const eT=Object.keys(mvT);
-    const x0=36+LTW, yA=ltbl.y+40, yB=ltbl.y+hh-22;
-    const avail=STW()-x0-28, seg=64;
-    const cw=Math.max(120,Math.floor((avail-2*seg)/2));
-    const cwB=Math.min(300,avail-seg-24);
-    const hx=x0+seg, dx=hx+cw+seg, tx=x0+seg;
-    G={rawCy:rawY+26,rawBtm:rawY+rawH,trX:36+130,tblY:ltbl.y,segs:[
-      {mv:'hourly_mv',x1:x0,x2:hx,y:yA,dcx:hx+cw*0.5},
-      {mv:'daily_mv',x1:hx+cw,x2:dx,y:yA,dcx:dx+cw*0.5},
-      {mv:'trace_id_mv',x1:x0,x2:tx,y:yB,dcx:tx+cwB*0.5},
-    ]};
-    const data=[
-      {key:'hourly_counts',nm:'hourly_counts',hdr:'hour     count()',rows:eH.slice(0,3).map(h=>fmtT(h).padEnd(9)+mvH[h].toLocaleString()),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':'',gx:hx,gw:cw,cy:yA},
-      {key:'daily_counts',nm:'daily_counts',hdr:'day      count()',rows:eD.slice(0,2).map(d2=>(d2.slice(4,6)+'-'+d2.slice(6)).padEnd(9)+mvD[d2].toLocaleString()),n:eD.length,extra:'',gx:dx,gw:cw,cy:yA},
-      {key:'trace_id_ts',nm:'trace_id_ts',hdr:'TraceId      Start–End      n',rows:eT.slice(-3).map(k=>(k+'…').padEnd(13)+(fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)).padEnd(14)+mvT[k].n),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' 行':'',gx:tx,gw:cwB,cy:yB},
+    G={rawCy:rawY+26,rawBtm:rawY+rawH,trX:36+Math.floor((LTW-28)/2)/2,tblY:ltbl.y,segs:[]};
+    // 派生テーブル: データの流れは上→下(INSERT は落ちて積もる)
+    const colW=Math.floor((LTW-28)/2), lx=36, rx2=36+colW+28;
+    const lcx=lx+colW/2, rcx=rx2+colW/2;
+    const topY=ltbl.y+hh+68;
+    const bodies=[
+      {key:'hourly_counts',nm:'hourly_counts',hdr:'hour     count()',rows:eH.slice(0,3).map(h=>fmtT(h).padEnd(9)+mvH[h].toLocaleString()),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':''},
+      {key:'daily_counts',nm:'daily_counts',hdr:'day      count()',rows:eD.slice(0,2).map(d2=>(d2.slice(4,6)+'-'+d2.slice(6)).padEnd(9)+mvD[d2].toLocaleString()),n:eD.length,extra:''},
+      {key:'trace_id_ts',nm:'trace_id_ts',hdr:'TraceId      Start–End      n',rows:eT.slice(-3).map(k=>(k+'…').padEnd(13)+(fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)).padEnd(14)+mvT[k].n),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' 行':''},
+    ];
+    const geom=b=>{ const body=b.rows.length?b.rows.join('\n')+(b.extra?'\n'+b.extra:''):'(空 — INSERT 待ち)';
+      return {body,h:7+(1+body.split('\n').length)*16+10}; };
+    const q0=geom(bodies[0]), q1=geom(bodies[1]), q2=geom(bodies[2]);
+    const pos=[
+      {x:lx,y:topY,w:colW,body:q0.body,h:q0.h},
+      {x:lx,y:topY+q0.h+64,w:colW,body:q1.body,h:q1.h},
+      {x:rx2,y:topY,w:colW,body:q2.body,h:q2.h},
+    ];
+    G.segs=[
+      {mv:'hourly_mv',x:lcx,y1:ltbl.y+hh,y2:topY,dcy:topY+30,side:'L'},
+      {mv:'daily_mv',x:lcx,y1:topY+q0.h,y2:topY+q0.h+64,dcy:topY+q0.h+64+30,side:'L'},
+      {mv:'trace_id_mv',x:rcx,y1:ltbl.y+hh,y2:topY,dcy:topY+30,side:'R'},
     ];
     edges.clear();
-    data.forEach((d,i)=>{
-      const o=tgt[i];
-      const body=d.rows.length?d.rows.join('\n')+(d.extra?'\n'+d.extra:''):'(空 — INSERT 待ち)';
-      const lines=1+body.split('\n').length;
-      const ch2=7+lines*16+10;
-      panel(o.bg,d.gw,ch2,0xffffff,tgtFlash[i]>0?0x9775fa:0xd9dbe0,tgtFlash[i]>0?2:1);
-      o.bg.rect(1,1,d.gw-2,22).fill(0xfff9db);
-      o.tx.text=d.hdr+'\n'+body;
+    bodies.forEach((d,i)=>{
+      const o=tgt[i], q=pos[i];
+      panel(o.bg,q.w,q.h,0xffffff,tgtFlash[i]>0?0x9775fa:0xd9dbe0,tgtFlash[i]>0?2:1);
+      o.bg.rect(1,1,q.w-2,22).fill(0xfff9db);
+      o.tx.text=d.hdr+'\n'+q.body;
       o.tx.style.fill=d.n?0x2a2e39:0x9aa0a8;
-      o.c.x=d.gx; o.c.y=d.cy-ch2/2;
+      o.c.x=q.x; o.c.y=q.y;
       const c=chip('s0t'+i,'mv',()=>tableInsp(d.key));
       c.innerHTML='TABLE '+d.nm+' <b>'+d.n+'行</b>';
-      placeChip(c,d.gx+d.gw/2,d.cy-ch2/2-2);
+      placeChip(c,q.x+q.w/2,q.y-2);
       if(tgtFlash[i]>0) tgtFlash[i]=Math.max(0,tgtFlash[i]-0.02);
     });
-    // パイプ: 実線+矢印、ラベルは線の直上
+    // パイプ: 縦の実線+下向き矢印、ラベルは線の脇
     G.segs.forEach((sg,i)=>{
       const pulse=pipePulse[sg.mv]||0;
       const col=pulse>0?0x7048c8:0xb9a6dd;
-      edges.moveTo(sg.x1,sg.y).lineTo(sg.x2-7,sg.y).stroke({width:pulse>0?2.5:1.5,color:col});
-      edges.poly([sg.x2,sg.y,sg.x2-8,sg.y-4.5,sg.x2-8,sg.y+4.5]).fill(col);
+      edges.moveTo(sg.x,sg.y1).lineTo(sg.x,sg.y2-7).stroke({width:pulse>0?2.5:1.5,color:col});
+      edges.poly([sg.x,sg.y2,sg.x-4.5,sg.y2-8,sg.x+4.5,sg.y2-8]).fill(col);
       const ec=chip('s0e'+i,'mv',()=>tableInsp(sg.mv));
-      ec.textContent='MV '+sg.mv;
-      ec.style.transform=pulse>0?'translate(-50%,-100%) scale(1.12)':'translate(-50%,-100%)';
-      placeChip(ec,(sg.x1+sg.x2)/2,sg.y-5);
+      ec.textContent='MV '+sg.mv+' ▸';
+      const base=sg.side==='L'?'translate(-100%,-50%)':'translate(0,-50%)';
+      ec.style.transform=pulse>0?base+' scale(1.12)':base;
+      placeChip(ec,sg.side==='L'?sg.x-10:sg.x+10,(sg.y1+sg.y2)/2);
       if(pulse>0) pipePulse[sg.mv]=Math.max(0,pulse-0.01);
     });
     // 取り込みパイプ(縦): otel_raw → transform_mv → otel_events
