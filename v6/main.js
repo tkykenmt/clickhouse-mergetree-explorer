@@ -15,6 +15,9 @@ const CELLFG={norm:0x2a2e39,hit:0x2b8a3e,dead:0xc3c6cc,skip:0xd9480f,del:0xc92a2
 function fmtT(v){ return (8+Math.floor(v/60))+':'+String(v%60).padStart(2,'0'); }
 const SVC=['frontend','checkout','cart','auth','search'];
 const svcOf=v=>SVC[v%SVC.length];
+const keyCmp=(a,b)=>{ const sa=svcOf(a),sb=svcOf(b); return sa<sb?-1:sa>sb?1:a-b; }; // ORDER BY (ServiceName, Timestamp)
+const keySort=a=>[...a].sort(keyCmp);
+const SVCTINT={frontend:0xe9eef8,checkout:0xfdeee2,cart:0xe6f4ea,auth:0xf3ecfa,search:0xfbf6df};
 const SPANOF={frontend:'GET /product',checkout:'POST /checkout',cart:'POST /cart/add',auth:'POST /login',search:'GET /search'};
 const TRWIN=15; // 縮尺ルール: 同じ15分窓の行は1つのトレースのスパン
 const traceIdOf=(d,v)=>('00000000'+((((+d)*2654435761)^(Math.floor(v/TRWIN)*40503+0x9e37))>>>0).toString(16)).slice(-8);
@@ -29,11 +32,11 @@ function seqRun(steps){ let t=0; for(const [d,fn] of steps){ t+=d; setTimeout(fn
 /* ---------- 1. sim(座標なし) ---------- */
 let parts=[], seq=0, busy=false, projOn=false, mutSeq=6;
 let mvH={}, mvD={}, mvT={}, trSeq=0;
-let PRED=600, SVCF='', IDXT='set', ENG='mt';
+let PRED=600, SVCF='', IDXT='minmax', ENG='mt';
 function seedParts(){
-  const mk=(vals,lvl,name,day)=>{ seq++; parts.push({id:seq,name,day,granules:mkGranules(vals.sort((a,b)=>a-b)),lvl,del:{},upd:{}}); };
-  mk([60,180,600,120,500,880,60,900,700,240],1,YDAY+'_1_3_1',YDAY);
-  mk([40,100,400,40,700,400,40,500,900,50,300,600],2,TODAY+'_1_5_2',TODAY);
+  const mk=(vals,lvl,name,day)=>{ seq++; parts.push({id:seq,name,day,granules:mkGranules(keySort(vals)),lvl,del:{},upd:{}}); };
+  mk([60,181,602,123,504,880,64,903,700,247],1,YDAY+'_1_3_1',YDAY);
+  mk([40,101,402,43,704,400,44,500,901,52,303,600],2,TODAY+'_1_5_2',TODAY);
   mk([61,300,600,62,500,901,63,902,620],0,TODAY+'_6_6_0',TODAY);
 }
 const actParts=()=>parts.filter(p=>!p.dying);
@@ -58,7 +61,7 @@ function doInsert(){
     const ns=2+Math.floor(Math.random()*3);
     for(let j=0;j<ns;j++) vals.push(w*TRWIN+Math.floor(Math.random()*TRWIN));
   }
-  const sorted=[...vals].sort((a,b)=>a-b);
+  const sorted=keySort(vals);
   showSql('INSERT INTO otel_events (Timestamp, ServiceName, …) VALUES '+vals.slice(0,3).map(v=>"('"+fmtT(v)+"', '"+svcOf(v)+"', …)").join(', ')+' …  -- '+(mkGranules(sorted).length*8192).toLocaleString()+' イベント');
   showMsg('実行中…');
   emit('insert.arrive',{vals:[...vals]});
@@ -87,7 +90,7 @@ function doMerge(){
   setTimeout(()=>{
     let vals=group.flatMap(p=>liveVals(p));
     if(ENG==='rmt'){ const seen=new Set(); vals=vals.filter(v=>!seen.has(v)&&seen.add(v)); }
-    vals.sort((a,b)=>a-b);
+    vals=keySort(vals);
     group.forEach(p=>p.dying=true);
     seq++; const lvl=Math.max(...group.map(p=>p.lvl))+1;
     const np={id:seq,name:day+'_'+Math.min(...group.map(p=>p.id))+'_'+seq+'_'+lvl,day,granules:mkGranules(vals),lvl,del:{},upd:{}};
@@ -174,26 +177,41 @@ function doSelect(){
   const act=actParts();
   const cut=act.filter(p=>p.day<TODAY).map(p=>p.id);
   const kept=act.filter(p=>p.day===TODAY);
+  // 主キー = (ServiceName, Timestamp)。境界キー(各granuleの先頭)だけで判定する
   const plan=kept.map(p=>{
-    const gs=p.granules; let from=gs.length;
-    for(let i=0;i<gs.length;i++){ const hi=(i+1<gs.length)?gs[i+1][0]:961; if(hi>PRED){ from=i; break; } }
-    return {pid:p.id,from,to:gs.length-1};
+    const gs=p.granules, keep=[];
+    for(let i=0;i<gs.length;i++){
+      const lo=gs[i][0], nx=(i+1<gs.length)?gs[i+1][0]:null;
+      const sameSvc=nx!=null&&svcOf(lo)===svcOf(nx);
+      if(SVCF){
+        const sHi=nx!=null?svcOf(nx):'\uffff';
+        if(!(svcOf(lo)<=SVCF&&SVCF<=sHi)) continue;                    // サービスの接頭辞で除外
+        if(sameSvc&&svcOf(lo)===SVCF&&nx<=PRED) continue;             // ブロック内は ts 単調 → 除外可
+      } else {
+        if(sameSvc&&nx<=PRED) continue;                                // 一般化排他: 単一サービス内だけ除外できる
+      }
+      keep.push(i);
+    }
+    return {pid:p.id,keep};
   });
   const scan=[], skipped=[];
   plan.forEach(pl=>{
     const p=kept.find(q=>q.id===pl.pid);
-    for(let gi=pl.from;gi<=pl.to;gi++){
+    pl.keep.forEach(gi=>{
       const g=p.granules[gi];
-      const anySvc=!SVCF||g.some((v,ci)=>svcOf(v)===SVCF&&!p.del[gi*GPR+ci]);
-      const fp=IDXT==='bloom'&&SVCF&&!anySvc&&(gi%3===0);
-      if(anySvc||fp) scan.push({pid:pl.pid,gi,fp}); else if(SVCF) skipped.push({pid:pl.pid,gi});
-    }
+      if(IDXT==='minmax'&&Math.max.apply(null,g)<PRED){ skipped.push({pid:pl.pid,gi}); return; }
+      scan.push({pid:pl.pid,gi});
+    });
   });
   const total=kept.reduce((s,p)=>s+p.granules.length,0)+act.filter(p=>p.day<TODAY).reduce((s,p)=>s+p.granules.length,0);
   seqRun([
     [900,()=>emit('prune.partition',{cut,kept:kept.map(p=>p.id)})],
-    [1300,()=>emit('prune.primary',{plan})],
-    [1300,()=>emit('prune.skip',{skipped,scanN:scan.length,total})],
+    [1300,()=>emit('prune.primary',{plan,note:SVCF?
+      "① 主キー先頭は ServiceName — service='"+SVCF+"' のブロックを二分探索で特定(そのブロック内は ts も単調)":
+      '① 主キー先頭は ServiceName — ts だけでは接頭辞が欠け、単一サービスに収まる granule しか排除できない(一般化排他)'})],
+    [1300,()=>emit('prune.skip',{skipped,scanN:scan.length,total,note:IDXT==='minmax'?
+      '② skip idx minmax(Timestamp): granule ごとの ts の min–max で「含み得ない」granule を読む前に落とす':
+      '② skip idx なし: 主キーで残った granule を全部読む'})],
     [1100,()=>{
       const tileHit=(p,gi,ci,v)=>v>=PRED&&(!SVCF||svcOf(v)===SVCF)&&!p.del[gi*GPR+ci];
       laneRun(scan,total,tileHit,()=>{
@@ -227,18 +245,18 @@ function doTraceSelect(){
     }],
     [1300,()=>{
       const kept=act.filter(p=>p.day===TODAY);
-      const plan=[], scan=[];
+      const plan=kept.map(p=>({pid:p.id,keep:p.granules.map((_,i)=>i)}));
+      const scan=[], skipped=[];
       kept.forEach(p=>{
-        const gs=p.granules; let from=-1,to=-1;
-        for(let i=0;i<gs.length;i++){
-          const lo=gs[i][0], hi=(i+1<gs.length)?gs[i+1][0]:961;
-          if(hi>r.s&&lo<=r.e){ if(from<0) from=i; to=i; }
-        }
-        if(from<0){ plan.push({pid:p.id,from:gs.length,to:gs.length}); return; }
-        plan.push({pid:p.id,from,to});
-        for(let gi=from;gi<=to;gi++) scan.push({pid:p.id,gi});
+        p.granules.forEach((g,gi)=>{
+          const mn=Math.min.apply(null,g), mx=Math.max.apply(null,g);
+          if(mx<r.s||mn>r.e) skipped.push({pid:p.id,gi}); else scan.push({pid:p.id,gi});
+        });
       });
-      emit('prune.primary',{plan});
+      emit('prune.primary',{plan,note:'① 主キーは (ServiceName, …, Timestamp) — TraceId も時刻も接頭辞に無いので、主キーでは絞れない'});
+      setTimeout(()=>{
+        emit('prune.skip',{skipped,scanN:scan.length,total,note:'② trace_id_ts がくれた Start–End を minmax(Timestamp) に当て、範囲外の granule を落とす'});
+      },1300);
       setTimeout(()=>{
         const tileHit=(p,gi,ci,v)=>p.day===TODAY&&Math.floor(v/TRWIN)===w&&!p.del[gi*GPR+ci];
         laneRun(scan,total,tileHit,()=>{
@@ -252,7 +270,7 @@ function doTraceSelect(){
             note:rows.length+' spans ・ 読んだのは '+scan.length+' / '+total+' granule',
             toast:'trace_id_ts が Start–End をくれるから、主キー(Timestamp)の枝刈りが効いて '+scan.length+' / '+total+' granule で済む。TraceId 直では時刻の手掛かりが無く全 granule が候補になる'};
         });
-      },1100);
+      },2500);
     }],
   ]);
 }
@@ -418,8 +436,8 @@ function updatePartView(v,p,marks,hitFn){
   panel(v.bg,w,h,0xffffff,p.flash>0?0x2b8a3e:(pruned?0xe8e8e4:0xd9dbe0),p.flash>0?2:1,8);
   v.cont.alpha=pruned?0.45:1;
   v.hd.text=(p.hasProj?'⚡ projection ':'')+(pruned?'✂ partition 対象外':'');
-  v.idxT.text='primary.idx\n'+p.granules.map(g=>fmtT(g[0])).join('\n');
-  v.skT.text='skip('+IDXT+')\n'+p.granules.map(g=>[...new Set(g.map(x=>svcOf(x)[0]))].join('')).join('\n');
+  v.idxT.text='primary.idx\n'+p.granules.map(g=>svcOf(g[0]).slice(0,2)+' '+fmtT(g[0])).join('\n');
+  v.skT.text=IDXT==='minmax'?('minmax(ts)\n'+p.granules.map(g=>fmtT(Math.min.apply(null,g))+'–'+fmtT(Math.max.apply(null,g))).join('\n')):'skip idx\n(なし)';
   p.granules.forEach((g,gi)=>{
     g.forEach((val,ci)=>{
       const key=gi+'_'+ci;
@@ -435,14 +453,15 @@ function updatePartView(v,p,marks,hitFn){
       if(p.del[dk]) st='del'; else if(p.upd[dk]) st='upd';
       if(marks){
         if(pruned) st='dead';
+        else if(marks.pkKeep&&!marks.pkKeep.has(gi)) st='dead';
         else if(marks.skip&&marks.skip.has(gi)) st='skip';
-        else if(marks.ranged&&(gi<marks.ranged.from||gi>marks.ranged.to)) st='dead';
         else if(marks.scanned&&marks.scanned.has(gi)){
           const hit=hitFn?hitFn(p,gi,ci,val):(val>=PRED&&(!SVCF||svcOf(val)===SVCF)&&!p.del[dk]);
           st=hit?'hit':'dead';
         }
       }
-      cell.g.clear(); cell.g.roundRect(x,y,CELL,CELLH,4).fill(CELLBG[st]).stroke({width:1,color:0xdde0e4});
+      const bgc=(st==='norm')?(SVCTINT[svcOf(val)]||CELLBG.norm):CELLBG[st];
+      cell.g.clear(); cell.g.roundRect(x,y,CELL,CELLH,4).fill(bgc).stroke({width:1,color:0xdde0e4});
       cell.t.text=fmtT(val); cell.t.style.fill=CELLFG[st];
       cell.t.x=x+CELL/2-cell.t.width/2; cell.t.y=y+CELLH/2-cell.t.height/2;
     });
@@ -592,7 +611,7 @@ scenes.S1=(()=>{
     if(insBatch){
       strip.roundRect(16,INS_Y+18,STW()-32,36,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
       const sc=chip('s1strip','',null);
-      sc.textContent=insPhase==='arrive'?'INSERT ブロック(届いた順)':insPhase==='sorted'?'ソート済み → 8,192行ごとに granule 区切り':'新しい Part へ';
+      sc.textContent=insPhase==='arrive'?'INSERT ブロック(届いた順)':insPhase==='sorted'?'ORDER BY (ServiceName, Timestamp) でソート → granule 区切り':'新しい Part へ';
       placeChip(sc,STW()/2,INS_Y+16);
       stripTiles.removeChildren().forEach(c=>c.destroy());
       const list=insPhase==='arrive'?insBatch:[...insBatch];
@@ -665,11 +684,11 @@ scenes.S2=(()=>{
     if(e.t==='query.start'){ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); resRows=null; lk=null; curHit=null; LKUP=0; setStage(1); }
     else if(e.t==='trace.lookup'){ lk=e; LKUP=1; const w=Math.floor(e.s/TRWIN); curHit=(p,gi,ci,v)=>p.day===TODAY&&Math.floor(v/TRWIN)===w&&!p.del[gi*GPR+ci]; toast('⓪ まず trace_id_ts を TraceId で引く(ORDER BY の先頭なので一発)→ Start–End の時間範囲を得る'); }
     else if(e.t==='prune.partition'){ e.cut.forEach(id=>{ marks.set(id,Object.assign(getM(id),{pruned:true})); }); toast('① Partition 枝刈り: 日付条件に合わない Partition は索引すら見ない'); }
-    else if(e.t==='prune.primary'){ e.plan.forEach(pl=>{ marks.set(pl.pid,Object.assign(getM(pl.pid),{ranged:{from:pl.from,to:pl.to}})); }); toast('① primary.idx の二分探索で各 Part の読む範囲(granule range)を確定'); }
+    else if(e.t==='prune.primary'){ e.plan.forEach(pl=>{ getM(pl.pid).pkKeep=new Set(pl.keep); }); toast(e.note||'① 主キーの境界だけで読む granule を確定'); }
     else if(e.t==='prune.skip'){
       e.skipped.forEach(sk=>{ const m=getM(sk.pid); m.skip=m.skip||new Set(); m.skip.add(sk.gi); });
       setStage(2);
-      toast('② skip idx('+IDXT+'): ServiceName が居ない granule を読む前に落とす'+(IDXT==='bloom'?'(bloom は偽陽性あり)':'(set は正確)'));
+      toast(e.note||'② skip idx で読む前に落とす');
     }
     else if(e.t==='scan.assign'){ e.queues.forEach((q,i)=>{ lanes[i].q=q.map(x=>({pid:x.pid,gi:x.gi})); }); setStage(3); toast('③ 生き残り granule を '+LANES+' レーン(= max_threads のCPUスレッド)のキューへ配分'); }
     else if(e.t==='scan.granule'){
@@ -795,7 +814,7 @@ document.getElementById('bProj').onclick=doProj;
 document.getElementById('bSel').onclick=doSelect;
 document.getElementById('bTid').onclick=doTraceSelect;
 document.getElementById('engSel').onchange=e=>{ ENG=e.target.value; toast(ENG==='rmt'?'ReplacingMergeTree: マージ時に同じ Timestamp の行を置換(重複排除)':'MergeTree: 追記のみ'); };
-document.getElementById('idxSel').onchange=e=>{ IDXT=e.target.value; };
+document.getElementById('idxSel').onchange=e=>{ IDXT=e.target.value; toast(IDXT==='minmax'?'minmax(Timestamp): 主キー先頭が ServiceName の並びで、時刻条件を救う skip idx':'skip idx なし: 主キーだけで戦う(時刻だけの検索が重くなる)'); };
 const predR=document.getElementById('predR');
 if(predR){ predR.oninput=e=>{ PRED=+e.target.value; const lb=document.getElementById('predV'); if(lb) lb.textContent=fmtT(PRED); showSql(SQLQ()+';'); }; }
 const svcSel=document.getElementById('svcSel');
@@ -820,7 +839,7 @@ function showDefault(){ showSql(SQLQ()+';'); showMsg('待機中'); resShown=fals
 function renderShelf(){
   const g=actParts().reduce((s,p)=>s+p.granules.length,0);
   const el0=document.getElementById('tc0');
-  el0.innerHTML='<div class="tn">otel_events <b>'+(g*8192).toLocaleString()+'</b></div><div class="ts">Part ×'+actParts().length+' ・ granule ×'+g+' ・ ORDER BY Timestamp</div>';
+  el0.innerHTML='<div class="tn">otel_events <b>'+(g*8192).toLocaleString()+'</b></div><div class="ts">Part ×'+actParts().length+' ・ granule ×'+g+' ・ ORDER BY (ServiceName, Timestamp)</div>';
   el0.onclick=()=>zoomTo('S1');
   const mk=(id,nm,rows,sub)=>{ const el=document.getElementById(id);
     el.innerHTML='<div class="tn">'+nm+' <b>'+rows+'行</b></div><div class="ts">'+sub+'</div>';
