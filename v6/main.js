@@ -350,6 +350,30 @@ function openInsp(html){
 }
 addEventListener('keydown',e=>{ if(e.key==='Escape') insp.classList.remove('open'); });
 const TBLINFO={
+  otel_raw:{t:'TABLE otel_raw',
+    d:'コレクタが書き込む受け口。ENGINE = Null は /dev/null で、行を1行も溜めない — ただし着いたブロックに対して MV は発火する。既定の ClickStack は otel_events へ直書きだが、変換を挟む本番構成では、この「手前のワイドテーブル」を置くのが定石(公式 schema-design、ClickHouse 自身の 19PiB ログ基盤も同型)。',
+    ddl:`CREATE TABLE otel_raw
+(
+  -- otel_events と同じワイドスキーマ
+  Timestamp DateTime64(9),
+  TraceId String, SpanId String, ...,
+  ResourceAttributes Map(...),
+  SpanAttributes     Map(...)
+)
+ENGINE = Null  -- 溜めない。MVだけ発火`,
+    live:()=>'0 行(常に) ・ Part なし'},
+  transform_mv:{t:'MATERIALIZED VIEW transform_mv',
+    d:'受け口に着いたブロックを列に解いて(型付け・抽出・整形)otel_events へ書く変換トリガ。スキーマを変えたくなったら ALTER TABLE ... MODIFY QUERY でこの MV を差し替える。',
+    ddl:`CREATE MATERIALIZED VIEW transform_mv
+TO otel_events AS
+SELECT
+  Timestamp, TraceId, SpanId,
+  ParentSpanId, SpanName, SpanKind,
+  ServiceName,
+  ResourceAttributes, SpanAttributes,
+  Duration, StatusCode
+FROM otel_raw`,
+    live:()=>'発火 '+EVLOG.filter(e=>e.t==='insert.arrive').length+' 回'},
   otel_events:{t:'TABLE otel_events',
     d:'OTel のスパンを列に解いて置くワイドテーブル。到着は JSON(行クリックで見える)、格納は型付き列+Map 列。ORDER BY の先頭が ServiceName なので、時刻だけの検索は主キーが効かず minmax skip idx が救う。',
     ddl:`CREATE TABLE otel_events
@@ -589,6 +613,12 @@ scenes.S0=(()=>{
   ltblTx.x=14; ltblTx.y=7;
   const ltbl=new PIXI.Container(); ltbl.addChild(ltblBg,ltblTx); s.cont.addChild(ltbl);
   const edges=new PIXI.Graphics(); s.cont.addChild(edges);
+  const rawBg=new PIXI.Graphics(), rawTx=textV('',11.5,0x8a8a80);
+  rawTx.x=12; rawTx.y=24;
+  const raw=new PIXI.Container(); raw.addChild(rawBg,rawTx); s.cont.addChild(raw);
+  raw.eventMode='static'; raw.cursor='pointer';
+  raw.on('pointertap',()=>tableInsp('otel_raw'));
+  let rawFlash=0, rawPulse=0;
   const TKEYS=['hourly_counts','daily_counts','trace_id_ts'];
   const tgt=[0,1,2].map((_,i)=>{ const c=new PIXI.Container(); const bg=new PIXI.Graphics(); const tx=textV('',11.5,0x2a2e39); tx.x=10; tx.y=6; c.addChild(bg,tx); s.cont.addChild(c);
     c.eventMode='static'; c.cursor='pointer';
@@ -610,8 +640,12 @@ scenes.S0=(()=>{
   s.enter=()=>{ dispRows=tableRows(); };
   s.onEvent=e=>{
     if(e.t==='insert.arrive'){
-      const ty2=ltbl.y?ltbl.y+40:INS_Y+100;
-      flyChip('INSERT '+(e.vals.length*2048).toLocaleString()+' 行',0x2f9e44,-70,ty2,36+LTW*0.45,ty2,0.013,()=>{ flash=1; },true);
+      const cy2=G?G.rawCy:INS_Y+80;
+      flyChip('INSERT '+(e.vals.length*2048).toLocaleString()+' 行(JSON)',0x2f9e44,-70,cy2,36+LTW*0.45,cy2,0.013,()=>{ rawFlash=1; },true);
+    }
+    else if(e.t==='insert.sorted'){
+      rawPulse=1;
+      if(G) flyChip('列に解いてソート',0x7048c8,G.trX,G.rawBtm,G.trX,G.tblY-6,0.02,()=>{ flash=1; },true);
     }
     else if(e.t==='table.rows'){ /* dispRows が tick で追いつく */ }
     else if(e.t==='mv.fire'){
@@ -641,9 +675,19 @@ scenes.S0=(()=>{
       +shown.map(r=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+(traceIdOf(r.d,r.v)+'…').padEnd(11)+(spanIdOf(r.d,r.v)+'…').padEnd(11)+SPANOF[svcOf(r.v)].padEnd(17)+svcOf(r.v).padEnd(13)+(durOf(r.v)+'ms').padEnd(10)+statOf(r.v)).join('\n')
       +'\n… 全 '+Math.round(dispRows).toLocaleString()+' 行 ・ 他の列: ParentSpanId, SpanKind, Attributes(Map), Events…';
     const hh=7+(shown.length+2)*17+12;
+    // 受け口(ENGINE = Null)
+    const rawY=INS_Y+56, rawH=46;
+    panel(rawBg,LTW,rawH,0xfcfcf8,rawFlash>0?0x2b8a3e:0xdcdcd2,rawFlash>0?2:1);
+    rawBg.rect(1,1,LTW-2,18).fill(0xf1f1e8);
+    rawTx.text='ENGINE = Null — 行を溜めない受け口。着いたブロックに MV だけが発火する';
+    raw.x=36; raw.y=rawY;
+    if(rawFlash>0) rawFlash=Math.max(0,rawFlash-0.02);
+    const rc=chip('s0raw','',()=>tableInsp('otel_raw'));
+    rc.innerHTML='TABLE otel_raw <b>0行</b>';
+    placeChip(rc,36+LTW/2,rawY-2);
     panel(ltblBg,LTW,hh,0xffffff,flash>0?0x2b8a3e:0xd9dbe0,flash>0?2:1);
     ltblBg.rect(1,1,LTW-2,24).fill(0xfff9db);
-    ltbl.x=36; ltbl.y=INS_Y+60;
+    ltbl.x=36; ltbl.y=rawY+rawH+52;
     if(flash>0) flash=Math.max(0,flash-0.015);
     secL.x=24; secL.y=INS_Y+28; secR.x=MX(); secR.y=INS_Y+28;
     // 書き込み先テーブル: テーブル → MV(線上) → 先テーブル を一直線に
@@ -654,7 +698,7 @@ scenes.S0=(()=>{
     const cw=Math.max(120,Math.floor((avail-2*seg)/2));
     const cwB=Math.min(300,avail-seg-24);
     const hx=x0+seg, dx=hx+cw+seg, tx=x0+seg;
-    G={segs:[
+    G={rawCy:rawY+26,rawBtm:rawY+rawH,trX:36+130,tblY:ltbl.y,segs:[
       {mv:'hourly_mv',x1:x0,x2:hx,y:yA,dcx:hx+cw*0.5},
       {mv:'daily_mv',x1:hx+cw,x2:dx,y:yA,dcx:dx+cw*0.5},
       {mv:'trace_id_mv',x1:x0,x2:tx,y:yB,dcx:tx+cwB*0.5},
@@ -692,12 +736,24 @@ scenes.S0=(()=>{
       placeChip(ec,(sg.x1+sg.x2)/2,sg.y-5);
       if(pulse>0) pipePulse[sg.mv]=Math.max(0,pulse-0.01);
     });
+    // 取り込みパイプ(縦): otel_raw → transform_mv → otel_events
+    {
+      const px2=G.trX, y1=G.rawBtm, y2v=ltbl.y;
+      const col=rawPulse>0?0x2b8a3e:0xb9c2ae;
+      edges.moveTo(px2,y1).lineTo(px2,y2v-7).stroke({width:rawPulse>0?2.5:1.5,color:col});
+      edges.poly([px2,y2v,px2-4.5,y2v-8,px2+4.5,y2v-8]).fill(col);
+      const tec=chip('s0tr','mv',()=>tableInsp('transform_mv'));
+      tec.textContent='MV transform_mv ▸ 列に解く';
+      tec.style.transform=rawPulse>0?'translate(-100%,-50%) scale(1.08)':'translate(-100%,-50%)';
+      placeChip(tec,px2-10,(y1+y2v)/2);
+      if(rawPulse>0) rawPulse=Math.max(0,rawPulse-0.01);
+    }
     const tc=chip('s0tbl','',()=>tableInsp('otel_events'));
     tc.innerHTML='TABLE otel_events · '+Math.round(dispRows).toLocaleString()+'行';
-    placeChip(tc,36+LTW/2,INS_Y+62);
+    placeChip(tc,36+LTW/2,ltbl.y+2);
     const zc=chip('s0zoom','warn',()=>zoomTo('S1'));
     zc.textContent='⊕ 中を見る(Part / granule)';
-    placeChip(zc,36+LTW/2,INS_Y+60+ (7+(shown.length+2)*17+12) +14);
+    placeChip(zc,36+LTW/2,ltbl.y+hh+14);
   };
   return s;
 })();
@@ -966,6 +1022,9 @@ document.getElementById('bReset').onclick=()=>{
 function showDefault(){ showSql(SQLQ()+';'); showMsg('待機中'); resShown=false; }
 function renderShelf(){
   const g=actParts().reduce((s,p)=>s+p.granules.length,0);
+  const elR=document.getElementById('tcR');
+  if(elR){ elR.innerHTML='<div class="tn">otel_raw <b>0行</b></div><div class="ts">ENGINE = Null ・ 受け口(実体なし)</div>';
+    elR.onclick=()=>tableInsp('otel_raw'); }
   const el0=document.getElementById('tc0');
   el0.innerHTML='<div class="tn">otel_events <b>'+(g*8192).toLocaleString()+'</b></div><div class="ts">Part ×'+actParts().length+' ・ granule ×'+g+' ・ ORDER BY (ServiceName, Timestamp)</div>';
   el0.onclick=()=>tableInsp('otel_events');
@@ -978,6 +1037,7 @@ function renderShelf(){
   const pk=(id,nm,path)=>{ const el=document.getElementById(id);
     el.innerHTML='<div class="tn">'+nm+'</div><div class="ts">'+path+'</div>';
     el.onclick=()=>tableInsp(nm); };
+  pk('mvp0','transform_mv','otel_raw → otel_events ・ 列に解く');
   pk('mvp1','hourly_mv','otel_events → hourly_counts ・ GROUP BY hour');
   pk('mvp2','daily_mv','hourly_counts → daily_counts');
   pk('mvp3','trace_id_mv','otel_events → trace_id_ts ・ GROUP BY TraceId で min/max');
