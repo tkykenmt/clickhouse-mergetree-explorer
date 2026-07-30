@@ -24,7 +24,7 @@ canvas{display:block}
 #hud{position:fixed;top:0;left:0;bottom:0;width:392px;z-index:10;pointer-events:none;
   background:#1f1f1c;border-right:1px solid #3a3a35;padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
 #hud>*{pointer-events:auto}
-#appbar{height:auto;flex-wrap:wrap;row-gap:8px}
+#hud #appbar{height:auto;flex-wrap:wrap;row-gap:8px}
 #hud>*{flex-shrink:0} /* overflow:hidden な子(console)が縦潰れしないように */
 #sqlbar{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #steps{overflow-x:auto;scrollbar-width:none}
@@ -40,10 +40,19 @@ canvas{display:block}
 .tcard .ts{font:10.5px var(--ui);color:var(--faint);margin-top:3px}
 .tcard.mvc{border-left:2px solid #8a6fb0}
 .tcard.main{border-left:2px solid var(--accent)}
+#client{position:fixed;left:404px;right:14px;top:12px;z-index:9;background:var(--surface);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden;box-shadow:0 3px 12px #00000022}
+#client .clbl{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint);padding:0 0 0 12px;white-space:nowrap}
+#cstat{font:600 10.5px var(--ui);color:var(--faint);white-space:nowrap;padding:0 10px;max-width:300px;overflow:hidden;text-overflow:ellipsis}
+#rescard{position:fixed;z-index:9;display:none;background:#23231f;border:1px solid #3a3a35;border-radius:8px;
+  box-shadow:0 4px 16px #00000033;overflow:hidden}
+#rescard .rhd{font:600 9.5px var(--ui);letter-spacing:.12em;color:#8b8b84;padding:7px 12px 5px;border-bottom:1px solid #3a3a35}
+#rescard #resgrid{height:auto;max-height:200px}
 #toast{left:408px}
 @media (max-width:900px){
   #hud{width:100%;bottom:auto;max-height:46vh;border-right:none;border-bottom:1px solid #3a3a35}
   #toast{left:10px}
+  #client{left:10px;right:10px;top:calc(46vh + 10px)}
 }
 /*OLD*/ #hud-old{position:fixed;top:0;left:0;right:0;z-index:10;pointer-events:none;
   background:linear-gradient(#1a1a17f5 78%,#1a1a1700);padding:0 20px 18px}
@@ -114,6 +123,24 @@ canvas{display:block}
 </style>
 </head>
 <body>
+<div id="client">
+  <div id="sqlrow">
+    <span class="clbl">CLIENT</span>
+    <div id="sqlbar"></div>
+    <span id="cstat"></span>
+    <button class="btn primary" id="bSel">▶ 実行</button>
+  </div>
+  <div id="steps">
+    <span class="step" data-s="1">① 索引分析(二分探索)</span><i></i>
+    <span class="step" data-s="2">② 対象 granule だけ読む</span><i></i>
+    <span class="step" data-s="3">③ レーン並列処理(SIMD)</span><i></i>
+    <span class="step" data-s="4">④ マージして結果を返す</span>
+  </div>
+</div>
+<div id="rescard">
+  <div class="rhd">RESULT — クライアントに返る</div>
+  <div id="resgrid"></div>
+</div>
 <div id="hud">
   <div id="appbar">
     <h1>MergeTree <b>Explorer</b></h1><span class="ver">V5</span>
@@ -124,19 +151,6 @@ canvas{display:block}
     <select id="idxSel" class="sel"><option value="set">set</option><option value="bloom">bloom_filter</option></select>
     <button class="btn" id="bAmb">▶ 自動再生</button>
     <button class="btn" id="bReset" title="最初からやり直す">⟳</button>
-  </div>
-  <div id="console">
-    <div id="sqlrow">
-      <div id="sqlbar"></div>
-      <button class="btn primary" id="bSel">▶ 実行</button>
-    </div>
-    <div id="resgrid"></div>
-    <div id="steps">
-      <span class="step" data-s="1">① 索引分析(二分探索)</span><i></i>
-      <span class="step" data-s="2">② 対象 granule だけ読む</span><i></i>
-      <span class="step" data-s="3">③ レーン並列処理(SIMD)</span><i></i>
-      <span class="step" data-s="4">④ マージして結果を返す</span>
-    </div>
   </div>
   <div id="toolbar">
     <span class="grp"><span class="glbl">解像度</span>
@@ -166,10 +180,13 @@ canvas{display:block}
   <div id="shelf">
     <span class="shlbl">TABLES</span>
     <div class="tcard main" id="tc0"></div>
-    <span class="shlbl">MATERIALIZED VIEWS</span>
-    <div class="tcard mvc" id="tc1"></div>
-    <div class="tcard mvc" id="tc2"></div>
-    <div class="tcard mvc" id="tc3"></div>
+    <div class="tcard" id="tc1"></div>
+    <div class="tcard" id="tc2"></div>
+    <div class="tcard" id="tc3"></div>
+    <span class="shlbl">MATERIALIZED VIEWS — テーブル間のパイプ</span>
+    <div class="tcard mvc" id="mvp1"></div>
+    <div class="tcard mvc" id="mvp2"></div>
+    <div class="tcard mvc" id="mvp3"></div>
   </div>
 </div>
 <canvas id="cv"></canvas>
@@ -191,7 +208,7 @@ function resize(){ DPR=window.devicePixelRatio||1; W=window.innerWidth; H=window
   MOB=W<700; CELL=MOB?24:34; CELLH=MOB?19:24; IDXW=MOB?78:104; SKW=MOB?72:88;
   if(window.__pxResize) window.__pxResize();
   if(window.__ready){ updateTop(); layout(); } }
-function updateTop(){ INS_Y=24; } // ステージ上端は固定(レールはステージ外)
+function updateTop(){ INS_Y=MOB?88:104; } // ステージ上端は固定(レールはステージ外)
 window.addEventListener('resize',resize); resize();
 
 const MONO=()=>getComputedStyle(document.body).getPropertyValue('--mono');
@@ -222,8 +239,14 @@ function laneGeom(i){
   }
   // デスクトップ: レーンは右列に縦積み(Parts 左列と左右で分かれる)
   const px=24+partW(null)+36;
-  const w=Math.min(520, W-px-24);
+  const sw=W-404-12; // 実効ステージ幅(レール分を引く)
+  const w=Math.max(260, Math.min(520, sw-px-40-250));
   return {x:px, y:INS_Y+94+i*132, w, h:120};
+}
+function resGeom(){ // 結果カード = パイプラインの最下流(レーンの右)
+  if(MOB){ const g=laneGeom(LANES-1); return {x:(W-300)/2, y:g.y+g.h+14, w:300}; }
+  const g=laneGeom(0), sw=W-404-12;
+  return {x:g.x+g.w+16, y:g.y+8, w:Math.max(220, Math.min(280, sw-(g.x+g.w)-30))};
 }
 function granRowPos(p,gi){ return {x:p.x+24, y:p.y+30+gi*(CELLH+GAP)}; }
 function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.push(vals.slice(i,i+GPR)); return gs; }
@@ -417,6 +440,9 @@ const BUCKET=60; // 1時間の帯(値 = 8:00 からの経過分)
 function fmtT(v){ return (8+Math.floor(v/60))+':'+String(v%60).padStart(2,'0'); }
 const SVC=['frontend','checkout','cart','auth','search'];
 const svcOf=v=>SVC[v%SVC.length];
+const SPANOF={frontend:'GET /product',checkout:'POST /checkout',cart:'POST /cart/add',auth:'POST /login',search:'GET /search'};
+const traceIdOf=(v,i)=>('00000000'+(((v*2654435761)^(i*40503+0x9e37))>>>0).toString(16)).slice(-8);
+const durOf=v=>((v*7919)%420+12);
 const SVA=['fe','ch','ca','au','se'];
 let IDXT='set'; // skip index の種類: set(正確) / bloom_filter(偽陽性あり)
 function granSvcs(g){ const s=new Set(); g.forEach(v=>{ if(v!=null) s.add(v%SVC.length); }); return s; }
@@ -551,7 +577,7 @@ function startProcess(act,keptN,total){
       showSql(SQLQ()+'  -- ④ 部分集計をマージ → '+rows.length+' 行の結果を返す');
       toast('④ 各レーンの部分集計(user_id を '+BUCKET+' 刻みの帯 = bucket ごとの件数)をマージし、1つの結果テーブルとしてクライアントへ返す。読んだのは '+keptN+' / '+total+' granule');
       let got=0;
-      const mx=W/2, my=INS_Y+30; // ノード上端の合流点(マージが済んだ瞬間、上の結果ペインが埋まる)
+      const rg=resGeom(); const mx=rg.x+rg.w/2, my=rg.y+26; // 合流点 = 右端の結果カード
       lanes.forEach(l=>{
         const g=laneGeom(l.i);
         const sum=Object.keys(l.partial).reduce((s,b)=>s+l.partial[b],0);
@@ -560,7 +586,7 @@ function startProcess(act,keptN,total){
           done:()=>{ got++; if(got===LANES){
             result={rows};
             showResult(['toStartOfHour(ts)','count()'], rows.map(r=>[fmtT(r[0])+'〜', r[1].toLocaleString()]), rows.length+' rows');
-            toast('④ 時間帯ごとの部分集計をマージ → 結果は上の結果ペイン(=クライアント)へ。SQL → 索引 → granule → レーン → マージ → 結果、がクエリの一生');
+            toast('④ 時間帯ごとの部分集計をマージ → 結果は右端の RESULT カードとしてクライアントへ返る。SQL → 索引 → granule → レーン → マージ → 結果、と左から右がクエリの一生');
           } }});
       });
       setTimeout(()=>{ busy=false; },1800);
@@ -864,17 +890,19 @@ const sqlEl=document.getElementById('sqlbar'), toastEl=document.getElementById('
 let toastT=null;
 function showSql(s){ sqlEl.textContent=s; }
 const resEl=document.getElementById('resgrid');
+const cstatEl=document.getElementById('cstat'), rescEl=document.getElementById('rescard');
+let resShown=false;
 function showResult(cols,rows,note){
   let html='<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
   rows.forEach(r=>{ html+='<tr>'+r.map(v=>'<td>'+v+'</td>').join('')+'</tr>'; });
   html+='</table>';
   if(note) html+='<div class="msg">'+note+'</div>';
-  resEl.innerHTML=html;
+  resEl.innerHTML=html; resShown=true; cstatEl.textContent=note||'';
 }
-function showMsg(m){ resEl.innerHTML='<div class="msg">'+m+'</div>'; }
-function showDefaultResult(){ // 初期クエリ = テーブル構造の紹介
-  showSql('SELECT * FROM otel_events LIMIT 10;');
-  showResult(['ts','service','…'], tableSample(10).map(v=>[fmtT(v),svcOf(v),'…']), '10 rows(代表値)');
+function showMsg(m){ cstatEl.textContent=m; }
+function showDefaultResult(){ // 待機中のクライアント
+  showSql(SQLQ()+';');
+  cstatEl.textContent='待機中'; resShown=false;
 }
 let curStage=0;
 function setStage(n){ // 0 = 非表示
@@ -1090,9 +1118,15 @@ function renderShelf(){
   const mk=(id,nm,rows,sub,idn)=>{ const el=document.getElementById(id);
     el.innerHTML='<div class="tn">'+nm+' <b>'+rows+'行</b></div><div class="ts">'+sub+'</div>';
     el.onclick=()=>openInsp('mv',idn); };
-  mk('tc1','hourly_counts',Object.keys(mv).length,'MV ・ INSERT時に集計',1);
-  mk('tc2','daily_counts',Object.keys(mv2).length,'MV ・ hourlyからカスケード',2);
-  mk('tc3','trace_id_ts',Object.keys(mv3).length,'MV ・ 別キー(TraceId)の索引',3);
+  mk('tc1','hourly_counts',Object.keys(mv).length,'ORDER BY hour ・ 集計の受け皿',1);
+  mk('tc2','daily_counts',Object.keys(mv2).length,'ORDER BY day',2);
+  mk('tc3','trace_id_ts',Object.keys(mv3).length,'ReplacingMT ・ ORDER BY TraceId',3);
+  const pk=(id,nm,path,idn)=>{ const el=document.getElementById(id);
+    el.innerHTML='<div class="tn">'+nm+'</div><div class="ts">'+path+'</div>';
+    el.onclick=()=>openInsp('mv',idn); };
+  pk('mvp1','hourly_mv','otel_events → hourly_counts ・ GROUP BY hour',1);
+  pk('mvp2','daily_mv','hourly_counts → daily_counts',2);
+  pk('mvp3','trace_id_mv','otel_events → trace_id_ts ・ 別キーで索引化',3);
 }
 setInterval(renderShelf,400); setTimeout(renderShelf,300);
 let frame=0;
@@ -1130,7 +1164,7 @@ ltblTx.x=14; ltblTx.y=7; ltbl.addChild(ltblTx);
 let ltblFlash=0, ltblRows=-1;
 ltbl.eventMode='static'; ltbl.cursor='pointer';
 ltbl.on('pointertap',e=>{ e.stopPropagation(); const a=parts.filter(q=>!q.dying)[0]; if(a) openInsp('part',a.id); });
-const LTW=250;
+const LTW=470;
 const tblFrame=new PIXI.Graphics(); world.addChildAt(tblFrame,1);
 const tblLb=new PIXI.Text({text:'TABLE otel_events',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:10,fill:0x9aa0ab,letterSpacing:1.2}}); world.addChild(tblLb);
 const edges=new PIXI.Graphics(); world.addChildAt(edges,1);
@@ -1240,7 +1274,7 @@ window.__pixiRender=function(){
   secL.text=(ACT==='query'||RES==='physical')?'STORAGE — 物理(Part / granule)':'TABLE — 論理(サンプル行)';
   secL.x=MOB?10:24; secL.y=INS_Y+54;
   const _lg0=laneGeom(0);
-  secR.text=ACT==='query'?'COMPUTE — CPU コアのレーンと部分集計':'MATERIALIZED VIEWS — 書き込み時に育つ派生テーブル';
+  secR.text=ACT==='query'?'COMPUTE — CPU コアのレーンと部分集計':'DERIVED TABLES — MV(テーブル間のパイプ)の書き込み先';
   secR.x=ACT==='query'?_lg0.x:(24+partW(null)+36+80); secR.y=INS_Y+54; secR.visible=!MOB;
   legend.text='otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts';
   {
@@ -1255,12 +1289,12 @@ window.__pixiRender=function(){
   if(ACT==='storage'&&!PHYS){
     ltbl.visible=true; tblFrame.visible=tblLb.visible=false;
     const act=parts.filter(q=>!q.dying);
-    const rows=act.flatMap(q=>q.granules.flatMap((g,gi)=>g.filter((v,ci)=>!(q.del&&q.del[gi*GPR+ci])))).sort((a,b)=>a-b);
+    const rows=act.flatMap(q=>q.granules.flatMap((g,gi)=>g.filter((v,ci)=>!(q.del&&q.del[gi*GPR+ci])).map(v=>({v,d:q.day})))).sort((a,b)=>(a.d===b.d?a.v-b.v:(a.d<b.d?-1:1)));
     const n=act.reduce((s,q)=>s+q.granules.length,0)*8192;
     if(ltblRows!==rows.length){ if(ltblRows>=0) ltblFlash=1; ltblRows=rows.length; }
     if(ltblFlash>0) ltblFlash=Math.max(0,ltblFlash-0.02);
     const shown=rows.slice(0,9);
-    ltblTx.text='ts     service\n'+shown.map(v=>fmtT(v).padEnd(6)+' '+svcOf(v)).join('\n')+'\n… 全 '+n.toLocaleString()+' 行';
+    ltblTx.text='Timestamp   ServiceName  SpanName        Duration  TraceId\n'+shown.map((r,i)=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+svcOf(r.v).padEnd(13)+SPANOF[svcOf(r.v)].padEnd(16)+(durOf(r.v)+'ms').padEnd(10)+traceIdOf(r.v,i)+'…').join('\n')+'\n… 全 '+n.toLocaleString()+' 行(Timestamp 順)';
     const hh=7+(shown.length+2)*17+12;
     ltblBg.clear();
     ltblBg.roundRect(0,0,LTW,hh,6).fill(0xffffff).stroke({width:ltblFlash>0?2:1,color:ltblFlash>0?0x2b8a3e:0xd9dbe0});
@@ -1350,14 +1384,14 @@ window.__pixiRender=function(){
     const rows2=e2.length?e2.slice(0,2).map(d=>d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'  '+mv2[d].toLocaleString()).join('\n'):'(空)';
     const h1=26+Math.max(1,Math.min(4,e1.length||1))*14+10;
     const h2=26+Math.max(1,Math.min(2,e2.length||1))*14+10;
-    const y2=mg.y+h1+34;
+    const y2=mg.y+h1+48;
     const e3=Object.keys(mv3);
     const rows3=e3.length?e3.slice(-3).map(k=>{const r=mv3[k];return k+'  '+fmtT(r.s)+'–'+fmtT(r.e);}).join('\n'):'(空 — TraceId 検索用の索引)';
     const h3=26+Math.max(1,Math.min(3,e3.length||1))*14+10;
-    const y3=y2+h2+34;
-    [{v:mvV1,y:mg.y,txt:rows1,n:e1.length,fl:mvFlash,nm:'MV hourly_counts',key:'mv1',idn:1,hh:h1},
-     {v:mvV2,y:y2,txt:rows2,n:e2.length,fl:mv2Flash,nm:'MV daily_counts',key:'mv2',idn:2,hh:h2},
-     {v:mvV3,y:y3,txt:rows3,n:e3.length,fl:mv3Flash,nm:'MV trace_id_ts',key:'mv3',idn:3,hh:h3}].forEach(o=>{
+    const y3=y2+h2+48;
+    [{v:mvV1,y:mg.y,txt:rows1,n:e1.length,fl:mvFlash,nm:'TABLE hourly_counts',key:'mv1',idn:1,hh:h1},
+     {v:mvV2,y:y2,txt:rows2,n:e2.length,fl:mv2Flash,nm:'TABLE daily_counts',key:'mv2',idn:2,hh:h2},
+     {v:mvV3,y:y3,txt:rows3,n:e3.length,fl:mv3Flash,nm:'TABLE trace_id_ts',key:'mv3',idn:3,hh:h3}].forEach(o=>{
       o.v.cont.x=mg.x; o.v.cont.y=o.y;
       panel(o.v.bg,w1,o.hh,0xf9f6ff,o.fl>0?0x9775fa:0xddd0f0,6);
       o.v.bg.rect(1,1,w1-2,16).fill(0xeee6fb);
@@ -1375,12 +1409,12 @@ window.__pixiRender=function(){
       const ex0=PHYS?tx1:(36+LTW+10);
       dotted(edges,ex0,Math.min(pb,mg.y+h1/2+40),mg.x,mg.y+h1/2,0x5d4a86);
       dotted(edges,mg.x+w1/2,mg.y+h1,mg.x+w1/2,y2,0x5d4a86);
-      const ce1=chip('e1','mv',()=>openInsp('mv',1)); ce1.textContent='INSERT 時に自動集計 →';
+      const ce1=chip('e1','mv',()=>openInsp('mv',1)); ce1.textContent='MV hourly_mv ▸ INSERT のたび集計 →';
       placeChip(ce1,(ex0+mg.x)/2,Math.min(pb,mg.y+h1/2+40)-4);
-      const ce2=chip('e2','mv',()=>openInsp('mv',2)); ce2.textContent='カスケード';
+      const ce2=chip('e2','mv',()=>openInsp('mv',2)); ce2.textContent='MV daily_mv ▸ カスケード';
       placeChip(ce2,mg.x+w1/2,(mg.y+h1+y2)/2+8);
       dotted(edges,ex0,Math.min(pb,y3+h3/2),mg.x,y3+h3/2,0x5d4a86);
-      const ce3=chip('e3','mv',()=>openInsp('mv',3)); ce3.textContent='別キー(TraceId)で索引化 →';
+      const ce3=chip('e3','mv',()=>openInsp('mv',3)); ce3.textContent='MV trace_id_mv ▸ 別キーで索引化 →';
       placeChip(ce3,(ex0+mg.x)/2,Math.min(pb,y3+h3/2)-4);
     }
   }
@@ -1394,6 +1428,10 @@ window.__pixiRender=function(){
   });
   flyViews.forEach((m,id)=>{ if(m.__seen!==frame){ m.destroy({children:true}); flyViews.delete(id); } });
   chips.forEach((c,k)=>{ if(c.__seen!==frame){ c.remove(); chips.delete(k); } });
+  const _rg=resGeom(), _rshow=(ACT==='query'&&resShown);
+  if(rescEl.__st!==(_rshow?1:0)+':'+(_rg.x|0)){ rescEl.__st=(_rshow?1:0)+':'+(_rg.x|0);
+    rescEl.style.display=_rshow?'block':'none';
+    rescEl.style.left=(_rg.x+world.x)+'px'; rescEl.style.top=(_rg.y+world.y)+'px'; rescEl.style.width=_rg.w+'px'; }
   app.render();
 };
 })().catch(e=>{ document.title='PXERR: '+(e&&e.message||e); console.error(e); });
