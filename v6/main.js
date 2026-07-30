@@ -349,6 +349,103 @@ function openInsp(html){
   document.getElementById('inspx').onclick=()=>insp.classList.remove('open');
 }
 addEventListener('keydown',e=>{ if(e.key==='Escape') insp.classList.remove('open'); });
+const TBLINFO={
+  otel_events:{t:'TABLE otel_events',
+    d:'OTel のスパンを列に解いて置くワイドテーブル。到着は JSON(行クリックで見える)、格納は型付き列+Map 列。ORDER BY の先頭が ServiceName なので、時刻だけの検索は主キーが効かず minmax skip idx が救う。',
+    ddl:`CREATE TABLE otel_events
+(
+  Timestamp      DateTime64(9) CODEC(Delta, ZSTD),
+  TraceId        String,
+  SpanId         String,
+  ParentSpanId   String,
+  SpanName       LowCardinality(String),
+  SpanKind       LowCardinality(String),
+  ServiceName    LowCardinality(String),
+  ResourceAttributes Map(LowCardinality(String), String),
+  SpanAttributes     Map(LowCardinality(String), String),
+  Duration       UInt64,
+  StatusCode     LowCardinality(String),
+  Events Nested(Timestamp DateTime64(9),
+                Name LowCardinality(String), ...),
+  INDEX idx_ts Timestamp TYPE minmax GRANULARITY 1
+)
+ENGINE = MergeTree
+PARTITION BY toDate(Timestamp)
+ORDER BY (ServiceName, SpanName,
+          toDateTime(Timestamp))`,
+    live:()=>{ const g=actParts().reduce((s,q)=>s+q.granules.length,0);
+      return 'Part ×'+actParts().length+' ・ granule ×'+g+' ・ '+(g*8192).toLocaleString()+' 行'; }},
+  hourly_counts:{t:'TABLE hourly_counts',
+    d:'hourly_mv の書き込み先。MV の実体は常にただのテーブルで、ここは時間帯ごとの件数だけを持つ。同じ hour の行はマージ時に合算される(Summing)。',
+    ddl:`CREATE TABLE hourly_counts
+(
+  hour   DateTime,
+  count  UInt64
+)
+ENGINE = SummingMergeTree
+ORDER BY hour`,
+    live:()=>Object.keys(mvH).length+' 行'},
+  daily_counts:{t:'TABLE daily_counts',
+    d:'daily_mv の書き込み先。集計の集計(カスケード)の受け皿で、日ごとの合計だけを持つ。',
+    ddl:`CREATE TABLE daily_counts
+(
+  day    Date,
+  count  UInt64
+)
+ENGINE = SummingMergeTree
+ORDER BY day`,
+    live:()=>Object.keys(mvD).length+' 行'},
+  trace_id_ts:{t:'TABLE trace_id_ts',
+    d:'trace_id_mv の書き込み先。本体の ORDER BY に TraceId が(実質)無い問題を、TraceId 先頭の別テーブルで解く索引。TraceId 検索はまずここを引いて Start–End を得る。',
+    ddl:`CREATE TABLE trace_id_ts
+(
+  TraceId String,
+  Start   DateTime64(9),
+  End     DateTime64(9),
+  INDEX idx_trace_id TraceId
+    TYPE bloom_filter(0.01) GRANULARITY 1
+)
+ENGINE = MergeTree
+ORDER BY (TraceId, toUnixTimestamp(Start))`,
+    live:()=>Object.keys(mvT).length+' 行(トレース)'},
+  hourly_mv:{t:'MATERIALIZED VIEW hourly_mv',
+    d:'テーブルではなくトリガ。otel_events への INSERT のたび、挿入ブロックだけに SELECT を実行し、結果を hourly_counts へ書く。作成前の過去データは対象外(手動バックフィル)。',
+    ddl:`CREATE MATERIALIZED VIEW hourly_mv
+TO hourly_counts AS
+SELECT
+  toStartOfHour(Timestamp) AS hour,
+  count() AS count
+FROM otel_events
+GROUP BY hour`,
+    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='hourly_mv').length+' 回'},
+  daily_mv:{t:'MATERIALIZED VIEW daily_mv',
+    d:'ソースは hourly_counts。MV の宛先への書き込みもただの INSERT なので、そこに付いた MV が連鎖して発火する(カスケード)。',
+    ddl:`CREATE MATERIALIZED VIEW daily_mv
+TO daily_counts AS
+SELECT
+  toDate(hour) AS day,
+  sum(count) AS count
+FROM hourly_counts
+GROUP BY day`,
+    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='daily_mv').length+' 回'},
+  trace_id_mv:{t:'MATERIALIZED VIEW trace_id_mv',
+    d:'同じワイドテーブルを別キー(TraceId)で引けるように解す MV。GROUP BY は挿入ブロック内でしか畳まれないため、同じ TraceId の行が複数積まれ、読む側が min/max で畳む。',
+    ddl:`CREATE MATERIALIZED VIEW trace_id_mv
+TO trace_id_ts AS
+SELECT
+  TraceId,
+  min(Timestamp) AS Start,
+  max(Timestamp) AS End
+FROM otel_events
+WHERE TraceId != ''
+GROUP BY TraceId`,
+    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='trace_id_mv').length+' 回'},
+};
+function tableInsp(k){
+  const o=TBLINFO[k]; if(!o) return;
+  openInsp('<h2>'+o.t+'</h2><div class="sub">'+o.live()+'</div>'
+    +'<div class="note">'+o.d+'</div><pre>'+o.ddl+'</pre>');
+}
 function spanJSONHtml(r){
   const d=r.d, v=r.v, w=Math.floor(v/TRWIN);
   const kin=liveRows().filter(x=>x.d===d&&Math.floor(x.v/TRWIN)===w);
@@ -492,7 +589,11 @@ scenes.S0=(()=>{
   ltblTx.x=14; ltblTx.y=7;
   const ltbl=new PIXI.Container(); ltbl.addChild(ltblBg,ltblTx); s.cont.addChild(ltbl);
   const edges=new PIXI.Graphics(); s.cont.addChild(edges);
-  const tgt=[0,1,2].map(()=>{ const c=new PIXI.Container(); const bg=new PIXI.Graphics(); const tx=textV('',11.5,0x5d4a86); tx.x=10; tx.y=22; c.addChild(bg,tx); s.cont.addChild(c); return {c,bg,tx}; });
+  const TKEYS=['hourly_counts','daily_counts','trace_id_ts'];
+  const tgt=[0,1,2].map((_,i)=>{ const c=new PIXI.Container(); const bg=new PIXI.Graphics(); const tx=textV('',11.5,0x2a2e39); tx.x=10; tx.y=6; c.addChild(bg,tx); s.cont.addChild(c);
+    c.eventMode='static'; c.cursor='pointer';
+    c.on('pointertap',()=>tableInsp(TKEYS[i]));
+    return {c,bg,tx}; });
   const secL=textV('TABLE — 論理(このNodeのテーブルとMVパイプ)',11,0x9a9a90,false);
   const secR=textV('DERIVED TABLES — MV(パイプ)の書き込み先',11,0x9a9a90,false);
   s.cont.addChild(secL,secR);
@@ -559,21 +660,23 @@ scenes.S0=(()=>{
       {mv:'trace_id_mv',x1:x0,x2:tx,y:yB,dcx:tx+cwB*0.5},
     ]};
     const data=[
-      {nm:'hourly_counts',rows:eH.slice(0,2).map(h=>fmtT(h)+'〜 '+mvH[h].toLocaleString()),n:eH.length,extra:eH.length>2?'+'+(eH.length-2)+' 行':'',gx:hx,gw:cw,cy:yA},
-      {nm:'daily_counts',rows:eD.slice(0,2).map(d=>d.slice(4,6)+'-'+d.slice(6)+' '+mvD[d].toLocaleString()),n:eD.length,extra:'',gx:dx,gw:cw,cy:yA},
-      {nm:'trace_id_ts',rows:eT.slice(-2).map(k=>k+'… '+fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)+' ・ '+mvT[k].n+'sp'),n:eT.length,extra:eT.length>2?'+'+(eT.length-2)+' トレース':'',gx:tx,gw:cwB,cy:yB},
+      {key:'hourly_counts',nm:'hourly_counts',hdr:'hour     count()',rows:eH.slice(0,3).map(h=>fmtT(h).padEnd(9)+mvH[h].toLocaleString()),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':'',gx:hx,gw:cw,cy:yA},
+      {key:'daily_counts',nm:'daily_counts',hdr:'day      count()',rows:eD.slice(0,2).map(d2=>(d2.slice(4,6)+'-'+d2.slice(6)).padEnd(9)+mvD[d2].toLocaleString()),n:eD.length,extra:'',gx:dx,gw:cw,cy:yA},
+      {key:'trace_id_ts',nm:'trace_id_ts',hdr:'TraceId      Start–End      n',rows:eT.slice(-3).map(k=>(k+'…').padEnd(13)+(fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)).padEnd(14)+mvT[k].n),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' 行':'',gx:tx,gw:cwB,cy:yB},
     ];
     edges.clear();
     data.forEach((d,i)=>{
       const o=tgt[i];
       const body=d.rows.length?d.rows.join('\n')+(d.extra?'\n'+d.extra:''):'(空 — INSERT 待ち)';
-      const ch2=22+Math.max(1,body.split('\n').length)*15+8;
-      panel(o.bg,d.gw,ch2,0xf9f6ff,tgtFlash[i]>0?0x9775fa:0xddd0f0,tgtFlash[i]>0?2:1);
-      o.bg.rect(1,1,d.gw-2,14).fill(0xeee6fb);
-      o.tx.text=body; o.tx.style.fill=d.n?0x5d4a86:0xadb5bd; o.tx.y=18;
+      const lines=1+body.split('\n').length;
+      const ch2=7+lines*16+10;
+      panel(o.bg,d.gw,ch2,0xffffff,tgtFlash[i]>0?0x9775fa:0xd9dbe0,tgtFlash[i]>0?2:1);
+      o.bg.rect(1,1,d.gw-2,22).fill(0xfff9db);
+      o.tx.text=d.hdr+'\n'+body;
+      o.tx.style.fill=d.n?0x2a2e39:0x9aa0a8;
       o.c.x=d.gx; o.c.y=d.cy-ch2/2;
-      const c=chip('s0t'+i,'mv',()=>toast('TABLE '+d.nm+' もただのテーブル。MV はここへ書き込むパイプ'));
-      c.innerHTML=d.nm+' <b>'+d.n+'行</b>';
+      const c=chip('s0t'+i,'mv',()=>tableInsp(d.key));
+      c.innerHTML='TABLE '+d.nm+' <b>'+d.n+'行</b>';
       placeChip(c,d.gx+d.gw/2,d.cy-ch2/2-2);
       if(tgtFlash[i]>0) tgtFlash[i]=Math.max(0,tgtFlash[i]-0.02);
     });
@@ -583,13 +686,13 @@ scenes.S0=(()=>{
       const col=pulse>0?0x7048c8:0xb9a6dd;
       edges.moveTo(sg.x1,sg.y).lineTo(sg.x2-7,sg.y).stroke({width:pulse>0?2.5:1.5,color:col});
       edges.poly([sg.x2,sg.y,sg.x2-8,sg.y-4.5,sg.x2-8,sg.y+4.5]).fill(col);
-      const ec=chip('s0e'+i,'mv',null);
+      const ec=chip('s0e'+i,'mv',()=>tableInsp(sg.mv));
       ec.textContent='MV '+sg.mv;
       ec.style.transform=pulse>0?'translate(-50%,-100%) scale(1.12)':'translate(-50%,-100%)';
       placeChip(ec,(sg.x1+sg.x2)/2,sg.y-5);
       if(pulse>0) pipePulse[sg.mv]=Math.max(0,pulse-0.01);
     });
-    const tc=chip('s0tbl','',()=>zoomTo('S1'));
+    const tc=chip('s0tbl','',()=>tableInsp('otel_events'));
     tc.innerHTML='TABLE otel_events · '+Math.round(dispRows).toLocaleString()+'行';
     placeChip(tc,36+LTW/2,INS_Y+62);
     const zc=chip('s0zoom','warn',()=>zoomTo('S1'));
@@ -865,16 +968,16 @@ function renderShelf(){
   const g=actParts().reduce((s,p)=>s+p.granules.length,0);
   const el0=document.getElementById('tc0');
   el0.innerHTML='<div class="tn">otel_events <b>'+(g*8192).toLocaleString()+'</b></div><div class="ts">Part ×'+actParts().length+' ・ granule ×'+g+' ・ ORDER BY (ServiceName, Timestamp)</div>';
-  el0.onclick=()=>zoomTo('S1');
+  el0.onclick=()=>tableInsp('otel_events');
   const mk=(id,nm,rows,sub)=>{ const el=document.getElementById(id);
     el.innerHTML='<div class="tn">'+nm+' <b>'+rows+'行</b></div><div class="ts">'+sub+'</div>';
-    el.onclick=()=>zoomTo('S0'); };
+    el.onclick=()=>tableInsp(nm); };
   mk('tc1','hourly_counts',Object.keys(mvH).length,'ORDER BY hour ・ 集計の受け皿');
   mk('tc2','daily_counts',Object.keys(mvD).length,'ORDER BY day');
   mk('tc3','trace_id_ts',Object.keys(mvT).length,'ORDER BY (TraceId, Start) ・ TraceId→時間範囲');
   const pk=(id,nm,path)=>{ const el=document.getElementById(id);
     el.innerHTML='<div class="tn">'+nm+'</div><div class="ts">'+path+'</div>';
-    el.onclick=()=>zoomTo('S0'); };
+    el.onclick=()=>tableInsp(nm); };
   pk('mvp1','hourly_mv','otel_events → hourly_counts ・ GROUP BY hour');
   pk('mvp2','daily_mv','hourly_counts → daily_counts');
   pk('mvp3','trace_id_mv','otel_events → trace_id_ts ・ GROUP BY TraceId で min/max');
