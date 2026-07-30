@@ -16,8 +16,9 @@ function fmtT(v){ return (8+Math.floor(v/60))+':'+String(v%60).padStart(2,'0'); 
 const SVC=['frontend','checkout','cart','auth','search'];
 const svcOf=v=>SVC[v%SVC.length];
 const SPANOF={frontend:'GET /product',checkout:'POST /checkout',cart:'POST /cart/add',auth:'POST /login',search:'GET /search'};
-const traceIdOf=(v,i)=>('00000000'+(((v*2654435761)^(i*40503+0x9e37))>>>0).toString(16)).slice(-8);
-const spanIdOf=(v,i)=>('00000000'+(((v*97561)^(i*7561+0x51f3))>>>0).toString(16)).slice(-8);
+const TRWIN=15; // 縮尺ルール: 同じ15分窓の行は1つのトレースのスパン
+const traceIdOf=(d,v)=>('00000000'+((((+d)*2654435761)^(Math.floor(v/TRWIN)*40503+0x9e37))>>>0).toString(16)).slice(-8);
+const spanIdOf=(d,v)=>('00000000'+((((+d)*97561)^(v*7561+0x51f3))>>>0).toString(16)).slice(-8);
 const durOf=v=>((v*7919)%420+12);
 const statOf=v=>durOf(v)>380?'Error':'Ok';
 function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.push(vals.slice(i,i+GPR)); return gs; }
@@ -49,8 +50,14 @@ function emit(t,pl){ const e=Object.assign({t},pl||{}); EVLOG.push(e); routeEven
 function doInsert(){
   if(busy) return toast('実行中です','warn');
   busy=true;
-  const n=8+Math.floor(Math.random()*5);
-  const vals=Array.from({length:n},()=>Math.floor(Math.random()*960));
+  // トレース形のバッチ: 2〜3トレース × 各2〜4スパン(同じ15分窓に届く)
+  const vals=[];
+  const nt=2+Math.floor(Math.random()*2);
+  for(let k=0;k<nt;k++){
+    const w=Math.floor(Math.random()*64);
+    const ns=2+Math.floor(Math.random()*3);
+    for(let j=0;j<ns;j++) vals.push(w*TRWIN+Math.floor(Math.random()*TRWIN));
+  }
   const sorted=[...vals].sort((a,b)=>a-b);
   showSql('INSERT INTO otel_events (Timestamp, ServiceName, …) VALUES '+vals.slice(0,3).map(v=>"('"+fmtT(v)+"', '"+svcOf(v)+"', …)").join(', ')+' …  -- '+(mkGranules(sorted).length*8192).toLocaleString()+' イベント');
   showMsg('実行中…');
@@ -60,7 +67,10 @@ function doInsert(){
     [1100,()=>{ seq++; const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,granules:mkGranules(sorted),lvl:0,del:{},upd:{}}; parts.push(p); emit('part.born',{pid:p.id}); }],
     [900,()=>{ sorted.forEach(v=>{ const h=Math.floor(v/60)*60; mvH[h]=(mvH[h]||0)+2048; }); emit('mv.fire',{mv:'hourly_mv',src:'otel_events',dst:'hourly_counts'}); }],
     [800,()=>{ mvD[TODAY]=(mvD[TODAY]||0)+sorted.length*2048; emit('mv.fire',{mv:'daily_mv',src:'hourly_counts',dst:'daily_counts'}); }],
-    [700,()=>{ trSeq++; mvT['tr-'+trSeq]={s:sorted[0],e:sorted[sorted.length-1]}; emit('mv.fire',{mv:'trace_id_mv',src:'otel_events',dst:'trace_id_ts'}); }],
+    [700,()=>{ sorted.forEach(v=>{ const tid=traceIdOf(TODAY,v);
+      const r=mvT[tid]||(mvT[tid]={s:v,e:v,n:0});
+      r.s=Math.min(r.s,v); r.e=Math.max(r.e,v); r.n++; });
+      emit('mv.fire',{mv:'trace_id_mv',src:'otel_events',dst:'trace_id_ts'}); }],
     [700,()=>{ emit('table.rows',{total:tableRows()}); showMsg('Ok.('+(sorted.length*2048).toLocaleString()+' 行 → 新しい Part)'); busy=false; }],
   ]);
 }
@@ -373,7 +383,7 @@ scenes.S0=(()=>{
     const pick=Math.max(1,Math.floor(rows.length/9));
     const shown=rows.filter((_,i)=>i%pick===0).slice(0,9);
     ltblTx.text='Timestamp   TraceId    SpanId     SpanName         ServiceName  Duration  Status\n'
-      +shown.map((r,i)=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+(traceIdOf(r.v,i)+'…').padEnd(11)+(spanIdOf(r.v,i)+'…').padEnd(11)+SPANOF[svcOf(r.v)].padEnd(17)+svcOf(r.v).padEnd(13)+(durOf(r.v)+'ms').padEnd(10)+statOf(r.v)).join('\n')
+      +shown.map(r=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+(traceIdOf(r.d,r.v)+'…').padEnd(11)+(spanIdOf(r.d,r.v)+'…').padEnd(11)+SPANOF[svcOf(r.v)].padEnd(17)+svcOf(r.v).padEnd(13)+(durOf(r.v)+'ms').padEnd(10)+statOf(r.v)).join('\n')
       +'\n… 全 '+Math.round(dispRows).toLocaleString()+' 行 ・ 他の列: ParentSpanId, SpanKind, Attributes(Map), Events…';
     const hh=7+(shown.length+2)*17+12;
     panel(ltblBg,LTW,hh,0xffffff,flash>0?0x2b8a3e:0xd9dbe0,flash>0?2:1);
@@ -387,7 +397,7 @@ scenes.S0=(()=>{
     const data=[
       {nm:'TABLE hourly_counts',rows:eH.slice(0,3).map(h=>fmtT(h)+'〜  '+mvH[h].toLocaleString()),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':''},
       {nm:'TABLE daily_counts',rows:eD.slice(0,2).map(d=>d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'  '+mvD[d].toLocaleString()),n:eD.length,extra:''},
-      {nm:'TABLE trace_id_ts',rows:eT.slice(-3).map(k=>k+'  '+fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)),n:eT.length,extra:''},
+      {nm:'TABLE trace_id_ts',rows:eT.slice(-3).map(k=>k+'…  '+fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)+' ・ '+mvT[k].n+' span'),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' トレース':''},
     ];
     let y=INS_Y+78;
     const pipes=[
