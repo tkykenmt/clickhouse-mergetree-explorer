@@ -70,8 +70,8 @@ function doInsert(){
   showSql('-- exporter が発行(ネイティブプロトコルのバルク INSERT)\nINSERT INTO otel_raw (Timestamp, TraceId, SpanId, SpanName, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode, ...) VALUES\n'+vals.slice(0,3).map(v=>"  ('2026-07-29 "+fmtT(v)+"', '"+traceIdOf(TODAY,v)+"…', '"+spanIdOf(TODAY,v)+"…', '"+SPANOF[svcOf(v)]+"', '"+svcOf(v)+"', {...}, {...}, "+durOf(v)+"000000, 'OK', ...)").join(',\n')+',\n  … -- '+(sorted.length*2048).toLocaleString()+' 行');
   emit('insert.arrive',{vals:[...vals]});
   seqRun([
-    [1100,()=>emit('insert.sorted',{vals:sorted})],
-    [1100,()=>{ seq++; const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,granules:mkGranules(sorted),lvl:0,del:{},upd:{}}; parts.push(p); emit('part.born',{pid:p.id}); }],
+    [1500,()=>emit('insert.sorted',{vals:sorted})],
+    [1600,()=>{ seq++; const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,granules:mkGranules(sorted),lvl:0,del:{},upd:{}}; parts.push(p); emit('part.born',{pid:p.id}); }],
     [900,()=>{ const hrs=new Set(sorted.map(v=>Math.floor(v/60)+'|'+svcOf(v))).size;
       emit('mv.fire',{mv:'otel_traces_1h_mv',src:'otel_traces',dst:'otel_traces_1h',
         inLbl:(sorted.length*2048).toLocaleString()+' 行のブロック',outLbl:'GROUP BY (hour, Service) → 状態 '+hrs+' 行'}); }],
@@ -494,6 +494,40 @@ WHERE TraceId != ''
 GROUP BY TraceId`,
     live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='otel_traces_trace_id_ts_mv').length+' 回'},
 };
+function partInsp(p){
+  const gs=p.granules;
+  const idx=gs.map((g,i)=>String(i).padStart(2)+'  '+svcOf(g[0]).padEnd(10)+fmtT(g[0])).join('\n');
+  openInsp('<h2>PART '+p.name+'</h2><div class="sub">granule ×'+gs.length+' ・ マージ世代 L'+p.lvl+' ・ 不変(immutable)</div>'
+    +'<div class="note">Part はディレクトリ。列ごとの .bin、granule 境界の .mrk2、疎索引 primary.idx、skip 索引が同居する。'
+    +'書き換えは常に新しい Part を生む(mutation は _'+mutSeq+' のように版が上がる)。</div>'
+    +'<pre>'+p.name+'/\n  Timestamp.bin  ServiceName.bin  SpanName.bin …\n'
+    +'  Timestamp.mrk2  ServiceName.mrk2 …   ← granule 境界のオフセット\n'
+    +'  primary.idx                          ← granule ごと先頭キー(常駐)\n'
+    +'  skp_idx_ts.idx2                      ← minmax(Timestamp)\n'
+    +'  partition.dat / minmax_Timestamp.idx ← パーティション枝刈り用</pre>'
+    +'<div class="sub">primary.idx(granule → 先頭キー)</div><pre>gi  ServiceName  Timestamp\n'+idx+'</pre>'
+    +'<div class="note">granule の行をクリックすると、その granule の中身が見える。</div>');
+}
+function granuleInsp(p,gi){
+  const g=p.granules[gi], lo=gi*8192, hi=lo+8191;
+  const rows=g.map((v,ci)=>{ const del=p.del[gi*GPR+ci], upd=p.upd[gi*GPR+ci];
+    return fmtT(v).padEnd(7)+svcOf(v).padEnd(11)+SPANOF[svcOf(v)].padEnd(16)+(durOf(v)+'ms').padEnd(8)
+      +(del?'← _row_exists=0':upd?'← 更新済み':''); }).join('\n');
+  const mn=Math.min.apply(null,g), mx=Math.max.apply(null,g);
+  const co=(gi*45+p.id*7)*1024, uo=gi*8192*42;
+  openInsp('<h2>granule '+gi+' <span style="color:#98a0b3">/ rows '+lo.toLocaleString()+'–'+hi.toLocaleString()+'</span></h2>'
+    +'<div class="sub">'+p.name+' ・ 8,192 行の窓(既定の index_granularity)</div>'
+    +'<div class="note">granule は行の窓であって、行を個別に指す索引は無い。読むときはこの窓ごと .bin から取り出す。'
+    +'下の行は縮尺表示(1 行 = 2,048 行ぶんの代表値)。</div>'
+    +'<pre>Timestamp  ServiceName  SpanName        Duration\n'+rows+'</pre>'
+    +'<div class="sub">この granule を指す部品</div>'
+    +'<pre>primary.idx[' +gi+ ']   = ('+svcOf(g[0])+', '+fmtT(g[0])+')   ← 先頭行のキーだけ\n'
+    +'skp_idx_ts    = minmax '+fmtT(mn)+'–'+fmtT(mx)+'\n'
+    +'Timestamp.mrk2['+gi+'] = (圧縮内 '+co.toLocaleString()+', 展開後 '+uo.toLocaleString()+', 行 8192)</pre>'
+    +'<div class="note">mark が2段オフセットなのは、granule の境界と圧縮ブロックの境界が一致しないから。'
+    +'primary.idx で「この granule が候補か」を決め、minmax で落とし、生き残ったものだけ mark 経由で .bin を読む。'
+    +'(オフセットの数値はこの画面用の縮尺)</div>');
+}
 function tableInsp(k){
   const o=TBLINFO[k]; if(!o) return;
   openInsp('<h2>'+o.t+'</h2><div class="sub">'+o.live()+'</div>'
@@ -823,7 +857,9 @@ scenes.S1=(()=>{
   const secL=textV('STORAGE — otel_traces の中(Partition ⊃ Part ⊃ granule)',11,0x9a9a90,false);
   s.cont.addChild(secL);
   const stubs=[0,1,2].map(()=>{ const g=new PIXI.Graphics(); s.cont.addChild(g); return g; });
-  let stubPulse=[0,0,0], insBatch=null, insPhase='', flyPend=false, segC={};
+  let stubPulse=[0,0,0], insBatch=null, insPhase='', segC={};
+  let sTiles=[], sPhase='', bornPid=0;
+  const clearS=()=>{ sTiles.forEach(o=>o.c.destroy({children:true})); sTiles=[]; sPhase=''; bornPid=0; };
   const rawB=new PIXI.Container();
   const rawBg2=new PIXI.Graphics();
   const rawT2=textV('TABLE otel_raw ・ ENGINE = Null — Part を持たない(発火のみ)',10.5,0x8a8a80);
@@ -847,15 +883,34 @@ scenes.S1=(()=>{
     return list.map((p,k)=>{ const pos={p,x:24,y}; y+=partH(p)+18; return pos; })[i];
   }
   s.enter=()=>{ insBatch=null; insPhase=''; };
-  s.exit=()=>{ stripTiles.removeChildren().forEach(c=>c.destroy()); };
+  s.exit=()=>{ clearS(); };
   s.onEvent=e=>{
-    if(e.t==='insert.arrive'){ insBatch=e.vals; insPhase='arrive'; }
-    else if(e.t==='insert.sorted'){ insBatch=e.vals; insPhase='sorted'; }
+    if(e.t==='insert.arrive'){
+      clearS(); sPhase='arrive';
+      e.vals.forEach((v,i)=>{
+        const c=new PIXI.Container(), g=new PIXI.Graphics(), tx2=textV(fmtT(v),10,0x2a2e39);
+        g.roundRect(0,0,CELL,22,4).fill(0xfff3bf).stroke({width:1,color:0xdad9d0});
+        c.addChild(g,tx2); tx2.x=CELL/2-tx2.width/2; tx2.y=4;
+        stripTiles.addChild(c);
+        const x0=30+i*(CELL+4);
+        sTiles.push({v,c,g,x:x0,y:INS_Y+116,tx:x0,ty:INS_Y+116,arc:0,p:1,sc:0,d:i*4,k:null});
+      });
+    }
+    else if(e.t==='insert.sorted'){
+      sPhase='sorted';
+      const order=e.vals, used={};
+      sTiles.forEach(o=>{
+        let idx=0;
+        for(let i=0;i<order.length;i++){ if(order[i]===o.v&&!used[i]){ used[i]=1; idx=i; break; } }
+        o.k=idx; o.tx=30+idx*(CELL+4);
+        o.arc=14+Math.min(52,Math.abs(o.tx-o.x)*0.28); o.p=0;
+        o.g.clear(); o.g.roundRect(0,0,CELL,22,4).fill(SVCTINT[svcOf(o.v)]||0xd3f9d8).stroke({width:1,color:0xc7cbb8});
+      });
+    }
     else if(e.t==='part.born'){
-      const p=parts.find(x=>x.id===e.pid); if(p) p.flash=1;
-      flyPend=true;
-      insPhase='fly';
-      setTimeout(()=>{ insBatch=null; insPhase=''; },900);
+      const p=parts.find(x=>x.id===e.pid); if(p){ p.flash=1; p.filling=1; }
+      sPhase='born'; bornPid=e.pid;
+      setTimeout(()=>{ const q=parts.find(x=>x.id===e.pid); if(q) q.filling=0; clearS(); },1500);
     }
     else if(e.t==='mv.fire'){
       const i={otel_traces_1h_mv:0,otel_traces_trace_id_ts_mv:1}[e.mv];
@@ -922,22 +977,30 @@ scenes.S1=(()=>{
 
     // INSERT 帯
     strip.clear();
-    if(insBatch){
-      strip.roundRect(16,INS_Y+74,STW()-32,36,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
+    if(sTiles.length){
+      strip.roundRect(16,INS_Y+104,STW()-32,46,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
       const sc=chip('s1strip','',null);
-      sc.textContent=insPhase==='arrive'?'OTLP バッチ(届いた順)':insPhase==='sorted'?'ORDER BY (ServiceName, Timestamp) でソート → granule 区切り':'新しい Part へ';
-      placeChip(sc,STW()/2,INS_Y+72);
-      stripTiles.removeChildren().forEach(c=>c.destroy());
-      const list=insPhase==='arrive'?insBatch:[...insBatch];
-      list.forEach((v,i)=>{
-        const t=textV(fmtT(v),10,0x2a2e39);
-        const g=new PIXI.Graphics(); g.roundRect(0,0,CELL,20,4).fill(insPhase==='arrive'?0xfff3bf:0xd3f9d8).stroke({width:1,color:0xdad9d0});
-        const c=new PIXI.Container(); c.addChild(g,t); t.x=CELL/2-t.width/2; t.y=3;
-        c.x=30+i*(CELL+4); c.y=INS_Y+82; stripTiles.addChild(c);
+      sc.textContent=sPhase==='arrive'?'OTLP バッチが届く(到着順・未ソート)'
+        :sPhase==='sorted'?'ORDER BY (ServiceName, Timestamp) でソート中'
+        :'8,192 行ごとに granule へ区切って新しい Part に書き出す';
+      placeChip(sc,STW()/2,INS_Y+102);
+      if(sPhase==='sorted'){
+        for(let k=0;k*GPR<sTiles.length;k++){
+          const n=Math.min(GPR,sTiles.length-k*GPR);
+          strip.roundRect(30+k*GPR*(CELL+4)-4,INS_Y+111,n*(CELL+4)+2,32,4).stroke({width:1,color:0x8fa07e,alpha:0.85});
+        }
+      }
+      sTiles.forEach(o=>{
+        if(o.d>0){ o.d--; o.c.alpha=0; return; }
+        o.sc=Math.min(1,o.sc+0.16); o.c.alpha=1;
+        o.x+=(o.tx-o.x)*0.18; o.y+=(o.ty-o.y)*0.18;
+        o.p=Math.min(1,o.p+0.045);
+        o.c.x=o.x; o.c.y=o.y-Math.sin(Math.PI*o.p)*o.arc;
+        o.c.scale.set(o.sc);
       });
-    } else { const sc=chips.get('s1strip'); if(sc){sc.remove(); chips.delete('s1strip');} stripTiles.removeChildren().forEach(c=>c.destroy()); }
+    } else { const sc=chips.get('s1strip'); if(sc){sc.remove(); chips.delete('s1strip');} }
     // Parts
-    let yL=INS_Y+150, yR=INS_Y+150; const seen=new Set();
+    let yL=INS_Y+192, yR=INS_Y+192; const seen=new Set();
     actParts().forEach(p=>{
       let v=views.get(p.id);
       if(!v){ v=buildPartView(); views.set(p.id,v); s.cont.addChild(v.cont); }
@@ -945,13 +1008,27 @@ scenes.S1=(()=>{
       const left=yL<=yR, px=left?24:538, py=left?yL:yR;
       v.cont.x=px; v.cont.y=py;
       updatePartView(v,p,null);
-      const c=chip('s1p'+p.id,'',()=>toast('Part '+p.name+' — 不変。書き換えは常に新しい Part(_'+mutSeq+') が生まれる'));
+      v.cont.alpha=p.filling?0.32:1;
+      if(!v.cont.__wired){
+        v.cont.eventMode='static'; v.cont.cursor='pointer';
+        v.cont.on('pointertap',ev2=>{
+          const lp=ev2.getLocalPosition(v.cont), pp=v.cont.__p; if(!pp) return;
+          const gi2=Math.floor((lp.y-30)/(CELLH+GAP));
+          if(gi2>=0&&gi2<pp.granules.length&&lp.x>=18&&lp.x<=24+GPR*(CELL+GAP)) granuleInsp(pp,gi2);
+          else partInsp(pp);
+        });
+        v.cont.__wired=1;
+      }
+      v.cont.__p=p;
+      if(bornPid===p.id){
+        sTiles.forEach(o=>{ if(o.k==null) return;
+          const nx=px+24+(o.k%GPR)*(CELL+GAP), ny=py+30+Math.floor(o.k/GPR)*(CELLH+GAP);
+          if(o.tx!==nx||o.ty!==ny){ o.tx=nx; o.ty=ny; if(!o.flew){ o.arc=34; o.p=0; o.flew=1; } }
+        });
+      }
+      const c=chip('s1p'+p.id,'',()=>partInsp(p));
       c.textContent=p.name+' · '+p.granules.length+'g';
       placeChip(c,px+partW()/2,py-2);
-      if(flyPend&&p.flash>0.92){
-        flyChip('granule 区切り → 新 Part',0x2f9e44,STW()/2,INS_Y+116,px+partW()/2,py+34,0.02,null,true);
-        flyPend=false;
-      }
       if(left) yL=py+partH(p)+18; else yR=py+partH(p)+18;
     });
     const y=Math.max(yL,yR);
@@ -959,23 +1036,25 @@ scenes.S1=(()=>{
     // TABLE 囲み(2列ぶんの幅)
     const fw2=538+470-14+12;
     frameG.clear();
-    frameG.roundRect(14,INS_Y+118,fw2,Math.max(120,y-INS_Y-118-4),10).stroke({width:1.5,color:0xcfd2c8});
+    frameG.roundRect(14,INS_Y+160,fw2,Math.max(120,y-INS_Y-160-4),10).stroke({width:1.5,color:0xcfd2c8});
     // 取り込み矢印: otel_raw → 枠
-    frameG.moveTo(154,INS_Y+64).lineTo(154,INS_Y+111).stroke({width:1.5,color:0xb9c2ae});
-    frameG.poly([154,INS_Y+118,149.5,INS_Y+110,158.5,INS_Y+110]).fill(0xb9c2ae);
+    frameG.moveTo(154,INS_Y+64).lineTo(154,INS_Y+94).stroke({width:1.5,color:0xb9c2ae});
+    frameG.poly([154,INS_Y+101,149.5,INS_Y+93,158.5,INS_Y+93]).fill(0xb9c2ae);
+    frameG.moveTo(154,INS_Y+150).lineTo(154,INS_Y+153).stroke({width:1.5,color:0xb9c2ae});
+    frameG.poly([154,INS_Y+160,149.5,INS_Y+152,158.5,INS_Y+152]).fill(0xb9c2ae);
     const trc=chip('s1tr','mv',()=>tableInsp('transform_mv'));
     trc.textContent='MV transform_mv ▸ 列に解く';
     trc.style.transform='translate(0,-50%)';
-    placeChip(trc,164,INS_Y+90);
+    placeChip(trc,164,INS_Y+80);
     const mg3=chip('s1merge','warn',()=>doMerge());
     mg3.textContent='⇄ マージ';
-    placeChip(mg3,14+fw2-60,INS_Y+114);
+    placeChip(mg3,14+fw2-60,INS_Y+156);
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
     fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
-    placeChip(fc,14+fw2/2,INS_Y+114);
+    placeChip(fc,14+fw2/2,INS_Y+156);
     // 派生テーブルの物理層も上→下(S0 と同じ2列・granuleタイルで)
     const colW2=470, lxx=24, rxx=24+colW2+44;
-    const fR=14+538+470-14+12, fbF=INS_Y+118+Math.max(120,y-INS_Y-118-4);
+    const fR=14+538+470-14+12, fbF=INS_Y+160+Math.max(120,y-INS_Y-160-4);
     const cy0=fbF+70;
     [{mv:'otel_traces_1h_mv',x:lxx+colW2/2,side:'L'},{mv:'otel_traces_trace_id_ts_mv',x:rxx+colW2/2,side:'R'}].forEach((sg,i)=>{
       const g=stubs[i], pu=stubPulse[i]>0, col=pu?0x7048c8:0xb9a6dd;
