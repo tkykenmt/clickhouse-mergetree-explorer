@@ -823,6 +823,13 @@ scenes.S1=(()=>{
   s.cont.addChild(secL);
   const stubs=[0,1,2].map(()=>{ const g=new PIXI.Graphics(); s.cont.addChild(g); return g; });
   let stubPulse=[0,0,0], insBatch=null, insPhase='';
+  const colB=new PIXI.Container();
+  const colBg2=new PIXI.Graphics();
+  const colT2=textV('OTel Collector',11,0xe8e6dc); colT2.x=12; colT2.y=7;
+  const colH2=textV('OTLP/HTTP ▸ クリックでバッチ送信',10,0x9a9a90); colH2.y=8;
+  colB.addChild(colBg2,colT2,colH2); s.cont.addChild(colB);
+  colB.eventMode='static'; colB.cursor='pointer';
+  colB.on('pointertap',()=>{ if(busy){ toast('実行中です','warn'); return; } doInsert(); });
   const hViews=new Map();
   const mkZone=()=>{ const cont=new PIXI.Container(),bg=new PIXI.Graphics(),tx=textV('',11.5,0x2a2e39); tx.x=12; tx.y=24; cont.addChild(bg,tx); s.cont.addChild(cont); return {cont,bg,tx}; };
   const tZone=mkZone(), dZone=mkZone();
@@ -847,6 +854,7 @@ scenes.S1=(()=>{
   };
   s.tick=()=>{
     if(false&&S1T==='otel_traces_1h'){
+      colB.visible=false;
       frameG.clear(); strip.clear(); stubs.forEach(g=>g.clear());
       stripTiles.removeChildren().forEach(c=>c.destroy());
       secL.text='STORAGE — otel_traces_1h の中(AggregatingMergeTree)'; secL.x=24; secL.y=INS_Y+2;
@@ -885,25 +893,29 @@ scenes.S1=(()=>{
       return;
     }
     hViews.forEach((v,id)=>{ v.cont.destroy({children:true}); hViews.delete(id); });
-    secL.text='STORAGE — otel_traces の中(Partition ⊃ Part ⊃ granule)';
+    secL.text='';
+    const cw3=partW()+22;
+    panel(colBg2,cw3,30,0x26261f,0x4a4a40,1,8);
+    colH2.x=cw3-12-colH2.width;
+    colB.visible=true; colB.x=14; colB.y=INS_Y;
     // INSERT 帯
     strip.clear();
     if(insBatch){
-      strip.roundRect(16,INS_Y+18,STW()-32,36,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
+      strip.roundRect(16,INS_Y+40,STW()-32,36,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
       const sc=chip('s1strip','',null);
       sc.textContent=insPhase==='arrive'?'OTLP バッチ(届いた順)':insPhase==='sorted'?'ORDER BY (ServiceName, Timestamp) でソート → granule 区切り':'新しい Part へ';
-      placeChip(sc,STW()/2,INS_Y+16);
+      placeChip(sc,STW()/2,INS_Y+38);
       stripTiles.removeChildren().forEach(c=>c.destroy());
       const list=insPhase==='arrive'?insBatch:[...insBatch];
       list.forEach((v,i)=>{
         const t=textV(fmtT(v),10,0x2a2e39);
         const g=new PIXI.Graphics(); g.roundRect(0,0,CELL,20,4).fill(insPhase==='arrive'?0xfff3bf:0xd3f9d8).stroke({width:1,color:0xdad9d0});
         const c=new PIXI.Container(); c.addChild(g,t); t.x=CELL/2-t.width/2; t.y=3;
-        c.x=30+i*(CELL+4); c.y=INS_Y+26; stripTiles.addChild(c);
+        c.x=30+i*(CELL+4); c.y=INS_Y+48; stripTiles.addChild(c);
       });
     } else { const sc=chips.get('s1strip'); if(sc){sc.remove(); chips.delete('s1strip');} stripTiles.removeChildren().forEach(c=>c.destroy()); }
     // Parts
-    let y=INS_Y+66; const seen=new Set();
+    let y=INS_Y+100; const seen=new Set();
     actParts().forEach(p=>{
       let v=views.get(p.id);
       if(!v){ v=buildPartView(); views.set(p.id,v); s.cont.addChild(v.cont); }
@@ -918,16 +930,16 @@ scenes.S1=(()=>{
     views.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); views.delete(id); } });
     // TABLE 囲み
     frameG.clear();
-    frameG.roundRect(14,INS_Y+50,partW()+22,Math.max(120,y-INS_Y-50-4),10).stroke({width:1.5,color:0xcfd2c8});
+    frameG.roundRect(14,INS_Y+84,partW()+22,Math.max(120,y-INS_Y-84-4),10).stroke({width:1.5,color:0xcfd2c8});
     const mg3=chip('s1merge','warn',()=>doMerge());
     mg3.textContent='⇄ マージ';
-    placeChip(mg3,24+partW()-50,INS_Y+44);
+    placeChip(mg3,24+partW()-50,INS_Y+80);
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
     fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
-    placeChip(fc,24+partW()/2,INS_Y+44);
+    placeChip(fc,24+partW()/2,INS_Y+80);
     // 派生テーブルの物理層も上→下(S0 と同じ2列・granuleタイルで)
     const colW2=470, lxx=24, rxx=24+colW2+44;
-    const fR=14+partW()+22, fbF=INS_Y+50+Math.max(120,y-INS_Y-50-4);
+    const fR=14+partW()+22, fbF=INS_Y+84+Math.max(120,y-INS_Y-84-4);
     const cy0=fbF+70;
     [{mv:'otel_traces_1h_mv',x:lxx+colW2/2,side:'L'},{mv:'otel_traces_trace_id_ts_mv',x:rxx+colW2/2,side:'R'}].forEach((sg,i)=>{
       const g=stubs[i], pu=stubPulse[i]>0, col=pu?0x7048c8:0xb9a6dd;
