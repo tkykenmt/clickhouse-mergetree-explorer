@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MergeTree Explorer V6 | ClickHouse が動いて見える(イベント駆動シーン)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Inconsolata:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#1a1a17; --surface:#232320; --surface2:#2b2b27; --line:#3a3a35; --line2:#4a4a44;
+  --ink:#ffffff; --muted:#b3b6bd; --faint:#7a7a74;
+  --accent:#faff69; --ok:#74e09a; --okbg:#1d4a32; --warn:#ffb46f; --danger:#ffbaba; --info:#7fc8e8;
+  --mono:"Inconsolata","SFMono Regular",Menlo,Consolas,monospace;
+  --ui:"Inter","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+  /* 旧名の互換(JS が参照) */
+  --panel:#232320ee; --yellow:#faff69; --cyan:#7fc8e8; --green:#74e09a; --red:#ffbaba; --dim:#7a7a74; --jp:var(--ui);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--ui)}
+canvas{display:block}
+
+/* ===== V5 シェル: 左=計器レール / 右=紙のステージ ===== */
+#hud{position:fixed;top:0;left:0;bottom:0;width:392px;z-index:10;pointer-events:none;
+  background:#1f1f1c;border-right:1px solid #3a3a35;padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+#hud>*{pointer-events:auto}
+#hud #appbar{height:auto;flex-wrap:wrap;row-gap:8px}
+#hud>*{flex-shrink:0} /* overflow:hidden な子(console)が縦潰れしないように */
+#sqlbar{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#steps{overflow-x:auto;scrollbar-width:none}
+#toolbar{margin-top:0;gap:10px}
+#toolbar .grp .glbl{display:block;width:100%}
+.where{flex-wrap:wrap}
+#shelf{display:flex;flex-direction:column;gap:8px}
+#shelf .shlbl{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint)}
+.tcard{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}
+.tcard:hover{border-color:var(--line2)}
+.tcard .tn{font:600 12px var(--mono);color:var(--ink);display:flex;justify-content:space-between}
+.tcard .tn b{color:var(--ok);font-weight:700}
+.tcard .ts{font:10.5px var(--ui);color:var(--faint);margin-top:3px}
+.tcard.mvc{border-left:2px solid #8a6fb0}
+.tcard.main{border-left:2px solid var(--accent)}
+#client{position:fixed;left:404px;right:14px;top:12px;z-index:9;background:var(--surface);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden;box-shadow:0 3px 12px #00000022}
+#client .clbl{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint);padding:0 0 0 12px;white-space:nowrap}
+#cstat{font:600 10.5px var(--ui);color:var(--faint);white-space:nowrap;padding:0 10px;max-width:300px;overflow:hidden;text-overflow:ellipsis}
+#rescard{position:fixed;z-index:9;display:none;background:#23231f;border:1px solid #3a3a35;border-radius:8px;
+  box-shadow:0 4px 16px #00000033;overflow:hidden}
+#rescard .rhd{font:600 9.5px var(--ui);letter-spacing:.12em;color:#8b8b84;padding:7px 12px 5px;border-bottom:1px solid #3a3a35}
+#rescard #resgrid{height:auto;max-height:200px}
+#crumb{position:fixed;left:404px;top:64px;z-index:8;display:flex;gap:4px;align-items:center;
+  font:600 11px var(--mono);color:#8b8b84;pointer-events:auto}
+#crumb .cr{background:#ffffffd9;border:1px solid #d9dbe0;border-radius:5px;padding:2px 9px;color:#4a4e58;cursor:pointer}
+#crumb .cr.on{background:#fff9db;border-color:#d9c964;color:#6b5d00;cursor:default}
+#crumb .sep{color:#b9bcc4}
+#toast{left:408px}
+@media (max-width:900px){
+  #hud{width:100%;bottom:auto;max-height:46vh;border-right:none;border-bottom:1px solid #3a3a35}
+  #toast{left:10px}
+  #client{left:10px;right:10px;top:calc(46vh + 10px)}
+}
+/*OLD*/ #hud-old{position:fixed;top:0;left:0;right:0;z-index:10;pointer-events:none;
+  background:linear-gradient(#1a1a17f5 78%,#1a1a1700);padding:0 20px 18px}
+#hud>*{pointer-events:auto}
+/* アプリバー */
+#appbar{display:flex;align-items:center;gap:14px;height:52px}
+#appbar h1{font-size:15px;font-weight:700;letter-spacing:.01em;margin:0;white-space:nowrap}
+#appbar h1 b{color:var(--accent)}
+#appbar .ver{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint);border:1px solid var(--line);border-radius:3px;padding:2px 6px}
+#appbar .sp{flex:1}
+.sel{background:var(--surface);color:var(--muted);border:1px solid var(--line);border-radius:6px;
+  font:600 11.5px var(--mono);padding:5px 6px;cursor:pointer}
+.sel:hover{border-color:var(--line2)}
+.lbl{font:600 10px var(--ui);letter-spacing:.1em;color:var(--faint)}
+/* コンソール(クライアント) */
+#console{background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+#sqlrow{display:flex;align-items:center;gap:0;border-bottom:1px solid var(--line)}
+#sqlbar{flex:1;padding:9px 14px;font:600 12.5px var(--mono);color:var(--ink);
+  white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+#sqlbar::before{content:"❯ ";color:var(--accent);font-weight:700}
+.btn{background:var(--surface2);border:1px solid var(--line);color:var(--ink);border-radius:6px;
+  padding:6px 12px;font:600 11.5px var(--ui);cursor:pointer;white-space:nowrap;touch-action:manipulation}
+.btn:hover{border-color:var(--line2);background:#31312c}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1c1c05}
+.btn.primary:hover{background:#f2f75e}
+#bSel{margin:6px 10px 6px 0;padding:6px 16px}
+#resgrid{height:96px;overflow:auto;padding:6px 14px;font:12px var(--mono);color:var(--muted);background:#1f1f1c}
+#resgrid table{border-collapse:collapse}
+#resgrid th{color:var(--faint);text-align:left;font-size:10px;border-bottom:1px solid var(--line);padding:1px 26px 2px 0;font-weight:700}
+#resgrid td{padding:1px 26px 1px 0;white-space:nowrap;color:var(--ink)}
+#resgrid .msg{color:var(--faint);font-size:11px;padding:2px 0}
+/* 実行タイムライン(シグネチャ: 計器のスイープ) */
+#steps{display:none;align-items:center;gap:0;padding:7px 14px;border-top:1px solid var(--line);font:600 10.5px var(--ui)}
+#steps.show{display:flex}
+#steps .step{color:var(--faint);white-space:nowrap;padding:0 2px;letter-spacing:.02em}
+#steps .step.on{color:var(--accent)}
+#steps .step.done{color:var(--ok)}
+#steps .step.done::after{content:" ✓";font-size:9px}
+#steps i{flex:1;height:1px;background:var(--line);margin:0 8px;font-size:0;position:relative;min-width:14px}
+#steps .step.done+i{background:var(--ok);opacity:.45}
+#steps .step.on~i{background:var(--line)}
+/* ツールバー(操作グループ) */
+#toolbar{display:flex;align-items:center;gap:18px;margin-top:10px;flex-wrap:wrap}
+.grp{display:flex;align-items:center;gap:6px}
+.grp .glbl{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint);margin-right:2px}
+.where{display:flex;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:4px 10px;font:600 11.5px var(--mono);color:var(--muted)}
+.where input[type=range]{width:104px;accent-color:var(--accent)}
+.where b{color:var(--ink);min-width:42px;font-weight:700}
+#toast{position:fixed;left:20px;right:auto;bottom:14px;transform:none;background:var(--surface);
+  border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:6px;padding:7px 12px;
+  font:12px var(--ui);color:var(--muted);z-index:10;opacity:0;transition:opacity .2s;max-width:min(720px,88vw)}
+#toast.on{opacity:1}
+#toast.warn{border-left-color:var(--danger);color:var(--danger)}
+@media (prefers-reduced-motion:reduce){ *{transition:none!important;animation:none!important} }
+@media (max-width:700px){
+  #hud{padding:0 10px 12px}
+  #appbar{height:44px;gap:8px}
+  #appbar h1{font-size:13px}
+  #resgrid{height:64px;font-size:10.5px;padding:4px 10px}
+  #sqlbar{font-size:11px;padding:7px 10px}
+  #steps{font-size:9.5px;overflow-x:auto;scrollbar-width:none}
+  .btn{padding:6px 9px;font-size:11px}
+  .where input[type=range]{width:64px}
+  #toolbar{gap:10px}
+  #toast{font-size:11px;left:10px;bottom:8px}
+}
+</style>
+</head>
+<body>
+<div id="client">
+  <div id="sqlrow">
+    <span class="clbl">CLIENT</span>
+    <div id="sqlbar"></div>
+    <span id="cstat"></span>
+    <button class="btn primary" id="bSel">▶ 実行</button>
+  </div>
+  <div id="steps">
+    <span class="step" data-s="1">① 索引分析(二分探索)</span><i></i>
+    <span class="step" data-s="2">② 対象 granule だけ読む</span><i></i>
+    <span class="step" data-s="3">③ レーン並列処理(SIMD)</span><i></i>
+    <span class="step" data-s="4">④ マージして結果を返す</span>
+  </div>
+</div>
+<div id="rescard">
+  <div class="rhd">RESULT — クライアントに返る</div>
+  <div id="resgrid"></div>
+</div>
+<div id="hud">
+  <div id="appbar">
+    <h1>MergeTree <b>Explorer</b></h1><span class="ver">V6</span>
+    <span class="sp"></span>
+    <span class="lbl">ENGINE</span>
+    <select id="engSel" class="sel"><option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option></select>
+    <span class="lbl">SKIP IDX</span>
+    <select id="idxSel" class="sel"><option value="set">set</option><option value="bloom">bloom_filter</option></select>
+    <button class="btn" id="bAmb">▶ 自動再生</button>
+    <button class="btn" id="bReset" title="最初からやり直す">⟳</button>
+  </div>
+  <div id="toolbar">
+    <span class="grp"><span class="glbl">書き込み</span>
+      <button class="btn" id="bIns">＋ INSERT</button>
+      <button class="btn" id="bMerge">⇄ マージ</button>
+    </span>
+    <span class="grp"><span class="glbl">変異</span>
+      <button class="btn" id="bDel">🗑 DELETE</button>
+      <button class="btn" id="bUpd">✏️ UPDATE</button>
+    </span>
+    <span class="grp"><span class="glbl">スキーマ</span>
+      <button class="btn" id="bProj">⚡ PROJECTION</button>
+    </span>
+    <span class="where">
+      <span>WHERE ts ≧</span>
+      <input type="range" id="predR" min="0" max="960" step="15" value="600">
+      <b id="predV">18:00</b>
+      <span>AND service =</span>
+      <select id="svcSel" class="sel" style="border:none;background:transparent;padding:2px 0;color:var(--info)">
+        <option value="">(すべて)</option><option>frontend</option><option>checkout</option><option>cart</option><option>auth</option><option>search</option>
+      </select>
+    </span>
+  </div>
+  <div id="shelf">
+    <span class="shlbl">TABLES</span>
+    <div class="tcard main" id="tc0"></div>
+    <div class="tcard" id="tc1"></div>
+    <div class="tcard" id="tc2"></div>
+    <div class="tcard" id="tc3"></div>
+    <span class="shlbl">MATERIALIZED VIEWS — テーブル間のパイプ</span>
+    <div class="tcard mvc" id="mvp1"></div>
+    <div class="tcard mvc" id="mvp2"></div>
+    <div class="tcard mvc" id="mvp3"></div>
+  </div>
+</div>
+<canvas id="cv"></canvas>
+<div id="crumb"></div>
+<div id="toast"></div>
+
+
+<script src="./pixi.min.js"></script>
+<script src="./main.js"></script>
+</body>
+</html>
