@@ -649,8 +649,8 @@ scenes.S0=(()=>{
   s.enter=()=>{ dispRows=tableRows(); };
   s.onEvent=e=>{
     if(e.t==='insert.arrive'){
-      const cy2=G?G.rawCy:INS_Y+80;
-      flyChip('OTLP バッチ '+(e.vals.length*2048).toLocaleString()+' 行(JSON)',0x2f9e44,-70,cy2,36+LTW*0.45,cy2,0.013,()=>{ rawFlash=1; },true);
+      const cx2=36+LTW*0.5, cy2=G?G.rawCy:INS_Y+80;
+      flyChip('OTLP バッチ '+(e.vals.length*2048).toLocaleString()+' 行(JSON)',0x2f9e44,cx2,-44,cx2,cy2,0.014,()=>{ rawFlash=1; },true);
     }
     else if(e.t==='insert.sorted'){
       rawPulse=1;
