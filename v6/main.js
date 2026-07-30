@@ -318,9 +318,9 @@ await app.init({canvas:cv,resizeTo:window,backgroundAlpha:0,antialias:true,resol
 let W=innerWidth,H=innerHeight,MOB=W<=900;
 const world=new PIXI.Container(); app.stage.addChild(world);
 const paper=new PIXI.Graphics(); world.addChild(paper);
-const INS_Y=104;
-function STW(){ return W-(MOB?0:404)-12; }
-function railOff(){ if(MOB){ world.x=0; world.y=Math.min(innerHeight*0.46,420)+64; } else { world.x=404; world.y=0; } }
+const INS_Y=16;
+function STW(){ return W-26; }
+function railOff(){ world.x=12; /* world.y はバー実高から ticker が毎フレーム決める */ }
 addEventListener('resize',()=>{ W=innerWidth; H=innerHeight; MOB=W<=900; railOff(); if(cur) cur.layout(); });
 railOff();
 
@@ -1029,38 +1029,22 @@ document.getElementById('bReset').onclick=()=>{
   toast('初期状態に戻した');
 };
 function showDefault(){ showSql(SQLQ()+';'); showMsg('待機中'); resShown=false; }
-function renderShelf(){
-  const g=actParts().reduce((s,p)=>s+p.granules.length,0);
-  const elR=document.getElementById('tcR');
-  if(elR){ elR.innerHTML='<div class="tn">otel_raw <b>0行</b></div><div class="ts">ENGINE = Null ・ 受け口(実体なし)</div>';
-    elR.onclick=()=>tableInsp('otel_raw'); }
-  const el0=document.getElementById('tc0');
-  el0.innerHTML='<div class="tn">otel_traces <b>'+(g*8192).toLocaleString()+'</b></div><div class="ts">Part ×'+actParts().length+' ・ granule ×'+g+' ・ ORDER BY (ServiceName, Timestamp)</div>';
-  el0.onclick=()=>tableInsp('otel_traces');
-  const mk=(id,nm,rows,sub)=>{ const el=document.getElementById(id);
-    el.innerHTML='<div class="tn">'+nm+' <b>'+rows+'行</b></div><div class="ts">'+sub+'</div>';
-    el.onclick=()=>tableInsp(nm); };
-  mk('tc1','otel_traces_1h',Object.keys(mvH).length,'AggregatingMT ・ (hour, Service) ・ 状態列');
-  mk('tc2','otel_traces_1d',Object.keys(mvD).length,'階層ロールアップ(1h→1d)');
-  mk('tc3','otel_traces_trace_id_ts',Object.keys(mvT).length,'ORDER BY (TraceId, Start) ・ TraceId→時間範囲');
-  const pk=(id,nm,path)=>{ const el=document.getElementById(id);
-    el.innerHTML='<div class="tn">'+nm+'</div><div class="ts">'+path+'</div>';
-    el.onclick=()=>tableInsp(nm); };
-  pk('mvp0','transform_mv','otel_raw → otel_traces ・ 列に解く');
-  pk('mvp1','otel_traces_1h_mv','otel_traces → otel_traces_1h ・ 状態を積む');
-  pk('mvp2','otel_traces_1d_mv','otel_traces_1h → otel_traces_1d ・ 既定外の一般パターン');
-  pk('mvp3','otel_traces_trace_id_ts_mv','otel_traces → otel_traces_trace_id_ts ・ GROUP BY TraceId で min/max');
-}
-setInterval(renderShelf,400);
+
 
 seedParts(); showDefault();
 switchTo('S0');
 const clientEl=document.getElementById('client');
+const tb2El=document.getElementById('toolbar2');
 app.ticker.add(()=>{
   frame++;
-  if(frame%20===0) crumbEl.style.top=(clientEl.offsetHeight+20)+'px';
+  if(frame%10===0||frame<5){
+    const ch=clientEl.offsetHeight, top2=12+ch+8;
+    tb2El.style.top=top2+'px';
+    crumbEl.style.top=(top2+tb2El.offsetHeight+10)+'px';
+    world.y=top2+tb2El.offsetHeight+40;
+  }
   paper.clear();
-  paper.roundRect(6,8,STW(),innerHeight-16-(MOB?world.y:0),12).fill(0xf8f8f6).stroke({width:1,color:0xe2e2dd});
+  paper.roundRect(0,0,STW(),Math.max(200,innerHeight-world.y-10),12).fill(0xf8f8f6).stroke({width:1,color:0xe2e2dd});
   if(cur) cur.tick();
   tickFly();
   chips.forEach((c,k)=>{ if(c.__seen!==frame){ c.remove(); chips.delete(k); } });
