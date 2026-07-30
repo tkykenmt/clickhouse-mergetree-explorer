@@ -753,13 +753,13 @@ function renderShelf(){
     el.onclick=()=>zoomTo('S0'); };
   mk('tc1','hourly_counts',Object.keys(mvH).length,'ORDER BY hour ・ 集計の受け皿');
   mk('tc2','daily_counts',Object.keys(mvD).length,'ORDER BY day');
-  mk('tc3','trace_id_ts',Object.keys(mvT).length,'ReplacingMT ・ ORDER BY TraceId');
+  mk('tc3','trace_id_ts',Object.keys(mvT).length,'ORDER BY (TraceId, Start) ・ TraceId→時間範囲');
   const pk=(id,nm,path)=>{ const el=document.getElementById(id);
     el.innerHTML='<div class="tn">'+nm+'</div><div class="ts">'+path+'</div>';
     el.onclick=()=>zoomTo('S0'); };
   pk('mvp1','hourly_mv','otel_events → hourly_counts ・ GROUP BY hour');
   pk('mvp2','daily_mv','hourly_counts → daily_counts');
-  pk('mvp3','trace_id_mv','otel_events → trace_id_ts ・ 別キーで索引化');
+  pk('mvp3','trace_id_mv','otel_events → trace_id_ts ・ GROUP BY TraceId で min/max');
 }
 setInterval(renderShelf,400);
 
