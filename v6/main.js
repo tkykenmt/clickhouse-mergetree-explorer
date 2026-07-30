@@ -19,8 +19,8 @@ const keyCmp=(a,b)=>{ const sa=svcOf(a),sb=svcOf(b); return sa<sb?-1:sa>sb?1:a-b
 const keySort=a=>[...a].sort(keyCmp);
 const SVCTINT={frontend:0xe9eef8,checkout:0xfdeee2,cart:0xe6f4ea,auth:0xf3ecfa,search:0xfbf6df};
 const SPANOF={frontend:'GET /product',checkout:'POST /checkout',cart:'POST /cart/add',auth:'POST /login',search:'GET /search'};
-const Z=1.18;                        // 全体拡大率
-let SCROLL=0, YBASE=120, CONTENT_H=700;
+let Z=1.18;                          // 全体拡大率(SPは自動フィット+ピンチ可変)
+let SCROLL=0, SCROLLX=0, YBASE=120, CONTENT_H=700;
 const TRWIN=15; // 縮尺ルール: 同じ15分窓の行は1つのトレースのスパン
 const traceIdOf=(d,v)=>('00000000'+((((+d)*2654435761)^(Math.floor(v/TRWIN)*40503+0x9e37))>>>0).toString(16)).slice(-8);
 const spanIdOf=(d,v)=>('00000000'+((((+d)*97561)^(v*7561+0x51f3))>>>0).toString(16)).slice(-8);
@@ -345,7 +345,8 @@ world.scale.set(Z);
 const paper=new PIXI.Graphics(); world.addChild(paper);
 const INS_Y=16;
 function STW(){ return (W-26)/Z; }
-function railOff(){ world.x=12; /* world.y はバー実高から ticker が毎フレーム決める */ }
+function fitZ(){ Z=(W<=900)?Math.max(0.5,Math.min(1.18,(W-26)/690)):1.18; world.scale.set(Z); }
+function railOff(){ fitZ(); }
 addEventListener('resize',()=>{ W=innerWidth; H=innerHeight; MOB=W<=900; railOff(); if(cur) cur.layout(); });
 railOff();
 
@@ -1239,8 +1240,31 @@ function measureBars(){
   const maxS=Math.max(0, CONTENT_H*Z-(innerHeight-YBASE)+50);
   if(SCROLL>maxS) SCROLL=maxS;
   world.y=YBASE-SCROLL;
+  const maxX=Math.max(0,1040*Z-(W-24));
+  if(SCROLLX>maxX) SCROLLX=maxX;
+  world.x=12-SCROLLX;
 }
-addEventListener('wheel',e=>{ SCROLL=Math.max(0,SCROLL+e.deltaY); measureBars(); },{passive:true});
+addEventListener('wheel',e=>{ SCROLL=Math.max(0,SCROLL+e.deltaY); SCROLLX=Math.max(0,SCROLLX+e.deltaX); measureBars(); },{passive:true});
+let tchs=null;
+addEventListener('touchstart',e=>{
+  if(e.touches.length===1) tchs={x:e.touches[0].clientX,y:e.touches[0].clientY};
+  else if(e.touches.length===2){ const dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY; tchs={pd:Math.hypot(dx,dy)}; }
+},{passive:true});
+addEventListener('touchend',()=>{ tchs=null; },{passive:true});
+addEventListener('touchmove',e=>{
+  if(!tchs) return;
+  if(e.touches.length===1&&tchs.x!=null){
+    const t0=e.touches[0];
+    SCROLL=Math.max(0,SCROLL-(t0.clientY-tchs.y));
+    SCROLLX=Math.max(0,SCROLLX-(t0.clientX-tchs.x));
+    tchs.x=t0.clientX; tchs.y=t0.clientY; measureBars();
+  } else if(e.touches.length===2&&tchs.pd){
+    const dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY;
+    const d=Math.hypot(dx,dy);
+    Z=Math.max(0.45,Math.min(2.2,Z*d/tchs.pd));
+    tchs.pd=d; world.scale.set(Z); measureBars();
+  }
+},{passive:true});
 addEventListener('resize',measureBars);
 app.ticker.add(()=>{
   frame++;

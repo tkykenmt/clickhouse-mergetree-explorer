@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>MergeTree Explorer V6 | ClickHouse が動いて見える(イベント駆動シーン)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Inconsolata:wght@400;600;700&display=swap" rel="stylesheet">
@@ -18,7 +18,7 @@
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--ui)}
-canvas{display:block}
+canvas{display:block;touch-action:none}
 
 /* ===== V5 シェル: 左=計器レール / 右=紙のステージ ===== */
 #hud{position:fixed;top:0;left:0;bottom:0;width:392px;z-index:10;pointer-events:none;
