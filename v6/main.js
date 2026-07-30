@@ -62,26 +62,25 @@ function doInsert(){
     for(let j=0;j<ns;j++) vals.push(w*TRWIN+Math.floor(Math.random()*TRWIN));
   }
   const sorted=keySort(vals);
-  showSql('INSERT INTO otel_events (Timestamp, ServiceName, …) VALUES '+vals.slice(0,3).map(v=>"('"+fmtT(v)+"', '"+svcOf(v)+"', …)").join(', ')+' …  -- '+(mkGranules(sorted).length*8192).toLocaleString()+' イベント');
-  showMsg('実行中…');
+  showMsg('collector が OTLP バッチ受信 → exporter が otel_raw へバルク INSERT');
   emit('insert.arrive',{vals:[...vals]});
   seqRun([
     [1100,()=>emit('insert.sorted',{vals:sorted})],
     [1100,()=>{ seq++; const p={id:seq,name:TODAY+'_'+seq+'_'+seq+'_0',day:TODAY,granules:mkGranules(sorted),lvl:0,del:{},upd:{}}; parts.push(p); emit('part.born',{pid:p.id}); }],
-    [900,()=>{ const hrs=new Set(sorted.map(v=>Math.floor(v/60))).size;
-      emit('mv.fire',{mv:'hourly_mv',src:'otel_events',dst:'hourly_counts',
-        inLbl:(sorted.length*2048).toLocaleString()+' 行のブロック',outLbl:'GROUP BY hour → '+hrs+' 行'}); }],
-    [1800,()=>{ sorted.forEach(v=>{ const h=Math.floor(v/60)*60; mvH[h]=(mvH[h]||0)+2048; }); emit('mv.applied',{mv:'hourly_mv'}); }],
-    [900,()=>emit('mv.fire',{mv:'daily_mv',src:'hourly_counts',dst:'daily_counts',
+    [900,()=>{ const hrs=new Set(sorted.map(v=>Math.floor(v/60)+'|'+svcOf(v))).size;
+      emit('mv.fire',{mv:'otel_traces_1h_mv',src:'otel_traces',dst:'otel_traces_1h',
+        inLbl:(sorted.length*2048).toLocaleString()+' 行のブロック',outLbl:'GROUP BY (hour, Service) → 状態 '+hrs+' 行'}); }],
+    [1800,()=>{ sorted.forEach(v=>{ const k=String(Math.floor(v/60)*60).padStart(4,'0')+'|'+svcOf(v); const r=mvH[k]||(mvH[k]={c:0,d:0}); r.c+=2048; r.d+=durOf(v)*2048; }); emit('mv.applied',{mv:'otel_traces_1h_mv'}); }],
+    [900,()=>emit('mv.fire',{mv:'otel_traces_1d_mv',src:'otel_traces_1h',dst:'otel_traces_1d',
         inLbl:'hourly の増分',outLbl:'day 合計 → 1 行'})],
-    [1800,()=>{ mvD[TODAY]=(mvD[TODAY]||0)+sorted.length*2048; emit('mv.applied',{mv:'daily_mv'}); }],
+    [1800,()=>{ mvD[TODAY]=(mvD[TODAY]||0)+sorted.length*2048; emit('mv.applied',{mv:'otel_traces_1d_mv'}); }],
     [900,()=>{ const tn=new Set(sorted.map(v=>Math.floor(v/TRWIN))).size;
-      emit('mv.fire',{mv:'trace_id_mv',src:'otel_events',dst:'trace_id_ts',
+      emit('mv.fire',{mv:'otel_traces_trace_id_ts_mv',src:'otel_traces',dst:'otel_traces_trace_id_ts',
         inLbl:(sorted.length*2048).toLocaleString()+' 行のブロック',outLbl:'GROUP BY TraceId → '+tn+' 行'}); }],
     [1800,()=>{ sorted.forEach(v=>{ const tid=traceIdOf(TODAY,v);
       const r=mvT[tid]||(mvT[tid]={s:v,e:v,n:0});
       r.s=Math.min(r.s,v); r.e=Math.max(r.e,v); r.n++; });
-      emit('mv.applied',{mv:'trace_id_mv'}); }],
+      emit('mv.applied',{mv:'otel_traces_trace_id_ts_mv'}); }],
     [900,()=>{ emit('table.rows',{total:tableRows()}); showMsg('Ok.('+(sorted.length*2048).toLocaleString()+' 行 → 新しい Part)'); busy=false; }],
   ]);
 }
@@ -92,7 +91,7 @@ function doMerge(){
   if(!day) return toast('マージ対象がない。同じ Partition に Part が2つ以上必要(INSERT を)','warn');
   busy=true;
   const group=byDay[day];
-  showSql("OPTIMIZE TABLE otel_events PARTITION '"+day+"'  -- Partition は跨がない");
+  showSql("OPTIMIZE TABLE otel_traces PARTITION '"+day+"'  -- Partition は跨がない");
   showMsg('OPTIMIZE 実行中…');
   emit('merge.start',{pids:group.map(p=>p.id),day});
   setTimeout(()=>{
@@ -116,7 +115,7 @@ function doDelete(){
   let n=0;
   actParts().forEach(p=>p.granules.forEach((g,gi)=>g.forEach((v,ci)=>{ const k=gi*GPR+ci; if(!p.del[k]&&svcOf(v)===target){ p.del[k]=1; n++; } })));
   if(!n) return toast("service='"+target+"' の行が残っていない",'warn');
-  showSql("DELETE FROM otel_events WHERE ServiceName = '"+target+"'  -- 軽量削除(_row_exists でマスク)");
+  showSql("DELETE FROM otel_traces WHERE ServiceName = '"+target+"'  -- 軽量削除(_row_exists でマスク)");
   emit('delete.mask',{svc:target,tiles:n});
   emit('table.rows',{total:tableRows()});
   showMsg('Ok.('+(n*2048).toLocaleString()+' 行をマスク。実体はマージで消える)');
@@ -125,7 +124,7 @@ function doUpdate(){
   if(busy) return toast('実行中です','warn');
   const target=SVCF||'frontend';
   busy=true; mutSeq++;
-  showSql("ALTER TABLE otel_events UPDATE SpanAttributes['tier'] = 'vip' WHERE ServiceName = '"+target+"'  -- mutation");
+  showSql("ALTER TABLE otel_traces UPDATE SpanAttributes['tier'] = 'vip' WHERE ServiceName = '"+target+"'  -- mutation");
   showMsg('mutation 実行中…(is_done = 0)');
   emit('mutation.start',{svc:target});
   setTimeout(()=>{
@@ -143,14 +142,14 @@ function doUpdate(){
 function doProj(){
   if(projOn) return toast('PROJECTION は作成済み','warn');
   projOn=true; actParts().forEach(p=>p.hasProj=true);
-  showSql('ALTER TABLE otel_events ADD PROJECTION by_service (SELECT * ORDER BY ServiceName)');
+  showSql('ALTER TABLE otel_traces ADD PROJECTION by_service (SELECT * ORDER BY ServiceName)');
   emit('projection.built',{});
   showMsg('Ok.(各 Part の中に ServiceName 順のコピーが育つ)');
 }
 function SQLQ(){
-  return "SELECT toStartOfHour(Timestamp) AS h, count() FROM otel_events WHERE Timestamp >= '2026-07-29 "+fmtT(PRED)+"'"+(SVCF?" AND ServiceName = '"+SVCF+"'":'')+' GROUP BY h ORDER BY h';
+  return "SELECT toStartOfHour(Timestamp) AS h, count() FROM otel_traces WHERE Timestamp >= '2026-07-29 "+fmtT(PRED)+"'"+(SVCF?" AND ServiceName = '"+SVCF+"'":'')+' GROUP BY h ORDER BY h';
 }
-let LKUP=0; // trace_id_ts ルックアップカードの分だけレーンを下げる(S2が設定)
+let LKUP=0; // otel_traces_trace_id_ts ルックアップカードの分だけレーンを下げる(S2が設定)
 function laneRun(scan,total,tileHit,buildRows){
   const queues=[[],[],[]];
   scan.forEach((s,i)=>queues[i%LANES].push(s));
@@ -237,10 +236,10 @@ function doSelect(){
 function doTraceSelect(){
   if(busy) return toast('実行中です','warn');
   const keys=Object.keys(mvT);
-  if(!keys.length) return toast('trace_id_ts が空。まず INSERT を(MV は作成後の INSERT だけ反映)','warn');
+  if(!keys.length) return toast('otel_traces_trace_id_ts が空。まず INSERT を(MV は作成後の INSERT だけ反映)','warn');
   const tid=keys[keys.length-1], r=mvT[tid], w=Math.floor(r.s/TRWIN);
   busy=true;
-  const sql="WITH '"+tid+"…' AS tid, (SELECT min(Start) FROM trace_id_ts WHERE TraceId = tid) AS s, (SELECT max(End)+1 FROM trace_id_ts WHERE TraceId = tid) AS e SELECT Timestamp, ServiceName, SpanName FROM otel_events WHERE Timestamp >= s AND Timestamp < e";
+  const sql="WITH '"+tid+"…' AS tid, (SELECT min(Start) FROM otel_traces_trace_id_ts WHERE TraceId = tid) AS s, (SELECT max(End)+1 FROM otel_traces_trace_id_ts WHERE TraceId = tid) AS e SELECT Timestamp, ServiceName, SpanName FROM otel_traces WHERE Timestamp >= s AND Timestamp < e";
   emit('query.start',{sql,mode:'trace'});
   showSql(sql+';'); showMsg('実行中…');
   const act=actParts();
@@ -263,7 +262,7 @@ function doTraceSelect(){
       });
       emit('prune.primary',{plan,note:'① 主キーは (ServiceName, …, Timestamp) — TraceId も時刻も接頭辞に無いので、主キーでは絞れない'});
       setTimeout(()=>{
-        emit('prune.skip',{skipped,scanN:scan.length,total,note:'② trace_id_ts がくれた Start–End を minmax(Timestamp) に当て、範囲外の granule を落とす'});
+        emit('prune.skip',{skipped,scanN:scan.length,total,note:'② otel_traces_trace_id_ts がくれた Start–End を minmax(Timestamp) に当て、範囲外の granule を落とす'});
       },1300);
       setTimeout(()=>{
         const tileHit=(p,gi,ci,v)=>p.day===TODAY&&Math.floor(v/TRWIN)===w&&!p.del[gi*GPR+ci];
@@ -276,7 +275,7 @@ function doTraceSelect(){
           const rows=spans.map(v=>[fmtT(v),svcOf(v),SPANOF[svcOf(v)]]);
           return {cols:['Timestamp','ServiceName','SpanName'],rows,
             note:rows.length+' spans ・ 読んだのは '+scan.length+' / '+total+' granule',
-            toast:'trace_id_ts が Start–End をくれるから、主キー(Timestamp)の枝刈りが効いて '+scan.length+' / '+total+' granule で済む。TraceId 直では時刻の手掛かりが無く全 granule が候補になる'};
+            toast:'otel_traces_trace_id_ts が Start–End をくれるから、主キー(Timestamp)の枝刈りが効いて '+scan.length+' / '+total+' granule で済む。TraceId 直では時刻の手掛かりが無く全 granule が候補になる'};
         });
       },2500);
     }],
@@ -351,10 +350,10 @@ function openInsp(html){
 addEventListener('keydown',e=>{ if(e.key==='Escape') insp.classList.remove('open'); });
 const TBLINFO={
   otel_raw:{t:'TABLE otel_raw',
-    d:'コレクタが書き込む受け口。ENGINE = Null は /dev/null で、行を1行も溜めない — ただし着いたブロックに対して MV は発火する。既定の ClickStack は otel_events へ直書きだが、変換を挟む本番構成では、この「手前のワイドテーブル」を置くのが定石(公式 schema-design、ClickHouse 自身の 19PiB ログ基盤も同型)。',
+    d:'コレクタが書き込む受け口。ENGINE = Null は /dev/null で、行を1行も溜めない — ただし着いたブロックに対して MV は発火する。既定の ClickStack は otel_traces へ直書きだが、変換を挟む本番構成では、この「手前のワイドテーブル」を置くのが定石(公式 schema-design、ClickHouse 自身の 19PiB ログ基盤も同型)。',
     ddl:`CREATE TABLE otel_raw
 (
-  -- otel_events と同じワイドスキーマ
+  -- otel_traces と同じワイドスキーマ
   Timestamp DateTime64(9),
   TraceId String, SpanId String, ...,
   ResourceAttributes Map(...),
@@ -363,9 +362,9 @@ const TBLINFO={
 ENGINE = Null  -- 溜めない。MVだけ発火`,
     live:()=>'0 行(常に) ・ Part なし'},
   transform_mv:{t:'MATERIALIZED VIEW transform_mv',
-    d:'受け口に着いたブロックを列に解いて(型付け・抽出・整形)otel_events へ書く変換トリガ。スキーマを変えたくなったら ALTER TABLE ... MODIFY QUERY でこの MV を差し替える。',
+    d:'受け口に着いたブロックを列に解いて(型付け・抽出・整形)otel_traces へ書く変換トリガ。スキーマを変えたくなったら ALTER TABLE ... MODIFY QUERY でこの MV を差し替える。',
     ddl:`CREATE MATERIALIZED VIEW transform_mv
-TO otel_events AS
+TO otel_traces AS
 SELECT
   Timestamp, TraceId, SpanId,
   ParentSpanId, SpanName, SpanKind,
@@ -374,9 +373,9 @@ SELECT
   Duration, StatusCode
 FROM otel_raw`,
     live:()=>'発火 '+EVLOG.filter(e=>e.t==='insert.arrive').length+' 回'},
-  otel_events:{t:'TABLE otel_events',
+  otel_traces:{t:'TABLE otel_traces',
     d:'OTel のスパンを列に解いて置くワイドテーブル。到着は JSON(行クリックで見える)、格納は型付き列+Map 列。ORDER BY の先頭が ServiceName なので、時刻だけの検索は主キーが効かず minmax skip idx が救う。',
-    ddl:`CREATE TABLE otel_events
+    ddl:`CREATE TABLE otel_traces
 (
   Timestamp      DateTime64(9) CODEC(Delta, ZSTD),
   TraceId        String,
@@ -399,29 +398,31 @@ ORDER BY (ServiceName, SpanName,
           toDateTime(Timestamp))`,
     live:()=>{ const g=actParts().reduce((s,q)=>s+q.granules.length,0);
       return 'Part ×'+actParts().length+' ・ granule ×'+g+' ・ '+(g*8192).toLocaleString()+' 行'; }},
-  hourly_counts:{t:'TABLE hourly_counts',
-    d:'hourly_mv の書き込み先。MV の実体は常にただのテーブルで、ここは時間帯ごとの件数だけを持つ。同じ hour の行はマージ時に合算される(Summing)。',
-    ddl:`CREATE TABLE hourly_counts
+  otel_traces_1h:{t:'TABLE otel_traces_1h',
+    d:'チャート・アラート加速用のロールアップ。AggregatingMergeTree に count と avgState(Duration) の部分集計状態を積み、HyperDX が EXPLAIN ESTIMATE で最小コストのビューを自動選択する(2025-12 に ClickStack 本体機能化)。実物のドキュメント例は1分粒度(otel_traces_1m)— この画面は縮尺で1時間。',
+    ddl:`CREATE TABLE otel_traces_1h
 (
-  hour   DateTime,
-  count  UInt64
+  Timestamp   DateTime,
+  ServiceName LowCardinality(String),
+  count       SimpleAggregateFunction(sum, UInt64),
+  avg__Duration AggregateFunction(avg, UInt64)
 )
-ENGINE = SummingMergeTree
-ORDER BY hour`,
-    live:()=>Object.keys(mvH).length+' 行'},
-  daily_counts:{t:'TABLE daily_counts',
-    d:'daily_mv の書き込み先。集計の集計(カスケード)の受け皿で、日ごとの合計だけを持つ。',
-    ddl:`CREATE TABLE daily_counts
+ENGINE = AggregatingMergeTree
+ORDER BY (Timestamp, ServiceName)`,
+    live:()=>Object.keys(mvH).length+' 行(状態)'},
+  otel_traces_1d:{t:'TABLE otel_traces_1d',
+    d:'階層ロールアップ(1h → 1d)の受け皿。ClickStack の既定には無い一般パターン。ソースは otel_traces_1h で、MV の宛先への書き込みもただの INSERT なので連鎖発火する(カスケード)。',
+    ddl:`CREATE TABLE otel_traces_1d
 (
   day    Date,
-  count  UInt64
+  count  SimpleAggregateFunction(sum, UInt64)
 )
-ENGINE = SummingMergeTree
+ENGINE = AggregatingMergeTree
 ORDER BY day`,
     live:()=>Object.keys(mvD).length+' 行'},
-  trace_id_ts:{t:'TABLE trace_id_ts',
-    d:'trace_id_mv の書き込み先。本体の ORDER BY に TraceId が(実質)無い問題を、TraceId 先頭の別テーブルで解く索引。TraceId 検索はまずここを引いて Start–End を得る。',
-    ddl:`CREATE TABLE trace_id_ts
+  otel_traces_trace_id_ts:{t:'TABLE otel_traces_trace_id_ts',
+    d:'otel_traces_trace_id_ts_mv の書き込み先。本体の ORDER BY に TraceId が(実質)無い問題を、TraceId 先頭の別テーブルで解く索引。TraceId 検索はまずここを引いて Start–End を得る。',
+    ddl:`CREATE TABLE otel_traces_trace_id_ts
 (
   TraceId String,
   Start   DateTime64(9),
@@ -432,38 +433,40 @@ ORDER BY day`,
 ENGINE = MergeTree
 ORDER BY (TraceId, toUnixTimestamp(Start))`,
     live:()=>Object.keys(mvT).length+' 行(トレース)'},
-  hourly_mv:{t:'MATERIALIZED VIEW hourly_mv',
-    d:'テーブルではなくトリガ。otel_events への INSERT のたび、挿入ブロックだけに SELECT を実行し、結果を hourly_counts へ書く。作成前の過去データは対象外(手動バックフィル)。',
-    ddl:`CREATE MATERIALIZED VIEW hourly_mv
-TO hourly_counts AS
+  otel_traces_1h_mv:{t:'MATERIALIZED VIEW otel_traces_1h_mv',
+    d:'テーブルではなくトリガ。otel_traces への INSERT のたび、挿入ブロックだけを (hour, Service) で畳み、部分集計状態(avgState 等)を otel_traces_1h へ書く。読む側は avgMerge で畳み直す。作成前の過去データは対象外(バックフィルは Null テーブル経由)。',
+    ddl:`CREATE MATERIALIZED VIEW otel_traces_1h_mv
+TO otel_traces_1h AS
 SELECT
-  toStartOfHour(Timestamp) AS hour,
-  count() AS count
-FROM otel_events
-GROUP BY hour`,
-    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='hourly_mv').length+' 回'},
-  daily_mv:{t:'MATERIALIZED VIEW daily_mv',
-    d:'ソースは hourly_counts。MV の宛先への書き込みもただの INSERT なので、そこに付いた MV が連鎖して発火する(カスケード)。',
-    ddl:`CREATE MATERIALIZED VIEW daily_mv
-TO daily_counts AS
+  toStartOfHour(Timestamp) AS Timestamp,
+  ServiceName,
+  count() AS count,
+  avgState(Duration) AS avg__Duration
+FROM otel_traces
+GROUP BY Timestamp, ServiceName`,
+    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='otel_traces_1h_mv').length+' 回'},
+  otel_traces_1d_mv:{t:'MATERIALIZED VIEW otel_traces_1d_mv',
+    d:'ソースは otel_traces_1h。MV の宛先への書き込みもただの INSERT なので、そこに付いた MV が連鎖して発火する(カスケード)。ClickStack の既定セットには無い、一般の階層ロールアップ。',
+    ddl:`CREATE MATERIALIZED VIEW otel_traces_1d_mv
+TO otel_traces_1d AS
 SELECT
-  toDate(hour) AS day,
+  toDate(Timestamp) AS day,
   sum(count) AS count
-FROM hourly_counts
+FROM otel_traces_1h
 GROUP BY day`,
-    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='daily_mv').length+' 回'},
-  trace_id_mv:{t:'MATERIALIZED VIEW trace_id_mv',
+    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='otel_traces_1d_mv').length+' 回'},
+  otel_traces_trace_id_ts_mv:{t:'MATERIALIZED VIEW otel_traces_trace_id_ts_mv',
     d:'同じワイドテーブルを別キー(TraceId)で引けるように解す MV。GROUP BY は挿入ブロック内でしか畳まれないため、同じ TraceId の行が複数積まれ、読む側が min/max で畳む。',
-    ddl:`CREATE MATERIALIZED VIEW trace_id_mv
-TO trace_id_ts AS
+    ddl:`CREATE MATERIALIZED VIEW otel_traces_trace_id_ts_mv
+TO otel_traces_trace_id_ts AS
 SELECT
   TraceId,
   min(Timestamp) AS Start,
   max(Timestamp) AS End
-FROM otel_events
+FROM otel_traces
 WHERE TraceId != ''
 GROUP BY TraceId`,
-    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='trace_id_mv').length+' 回'},
+    live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='otel_traces_trace_id_ts_mv').length+' 回'},
 };
 function tableInsp(k){
   const o=TBLINFO[k]; if(!o) return;
@@ -491,10 +494,10 @@ function spanJSONHtml(r){
     +'<div class="sub">スパン1本の実体 = OTLP の JSON 表現(縮尺: ID は実際 32/16 桁)</div>'
     +'<pre>'+pre+'</pre>'
     +'<div class="note">収集器から届くのはこの入れ子ドキュメント(ワイヤは protobuf、JSON 表現も標準)。'
-    +'取り込みで <b>列に解かれて</b> otel_events の1行になる — resource/attributes は Map 列。'
+    +'取り込みで <b>列に解かれて</b> otel_traces の1行になる — resource/attributes は Map 列。'
     +'ネストのまま置かず列にするから、列単位のスキャンと圧縮が効く。</div>'
     +'<div class="note">parentSpanId が空 = ルートスパン。同じ traceId を持つスパンは '+kin.length+' 本'
-    +'(縮尺ルール: 同じ15分窓 = 1トレース)。trace_id_ts はこの traceId → 時間範囲の索引。</div>';
+    +'(縮尺ルール: 同じ15分窓 = 1トレース)。otel_traces_trace_id_ts はこの traceId → 時間範囲の索引。</div>';
 }
 const chipStyle=document.createElement('style');
 chipStyle.textContent=`
@@ -619,7 +622,7 @@ scenes.S0=(()=>{
   raw.eventMode='static'; raw.cursor='pointer';
   raw.on('pointertap',()=>tableInsp('otel_raw'));
   let rawFlash=0, rawPulse=0;
-  const TKEYS=['hourly_counts','daily_counts','trace_id_ts'];
+  const TKEYS=['otel_traces_1h','otel_traces_1d','otel_traces_trace_id_ts'];
   const tgt=[0,1,2].map((_,i)=>{ const c=new PIXI.Container(); const bg=new PIXI.Graphics(); const tx=textV('',11.5,0x2a2e39); tx.x=10; tx.y=6; c.addChild(bg,tx); s.cont.addChild(c);
     c.eventMode='static'; c.cursor='pointer';
     c.on('pointertap',()=>tableInsp(TKEYS[i]));
@@ -641,7 +644,7 @@ scenes.S0=(()=>{
   s.onEvent=e=>{
     if(e.t==='insert.arrive'){
       const cy2=G?G.rawCy:INS_Y+80;
-      flyChip('INSERT '+(e.vals.length*2048).toLocaleString()+' 行(JSON)',0x2f9e44,-70,cy2,36+LTW*0.45,cy2,0.013,()=>{ rawFlash=1; },true);
+      flyChip('OTLP バッチ '+(e.vals.length*2048).toLocaleString()+' 行(JSON)',0x2f9e44,-70,cy2,36+LTW*0.45,cy2,0.013,()=>{ rawFlash=1; },true);
     }
     else if(e.t==='insert.sorted'){
       rawPulse=1;
@@ -660,7 +663,7 @@ scenes.S0=(()=>{
       }
     }
     else if(e.t==='mv.applied'){
-      const i={hourly_mv:0,daily_mv:1,trace_id_mv:2}[e.mv];
+      const i={otel_traces_1h_mv:0,otel_traces_1d_mv:1,otel_traces_trace_id_ts_mv:2}[e.mv];
       if(i!=null) tgtFlash[i]=1;
     }
     else if(e.t==='delete.mask'||e.t==='mutation.rewrite'){ flash=1; }
@@ -691,7 +694,7 @@ scenes.S0=(()=>{
     if(flash>0) flash=Math.max(0,flash-0.015);
     secL.x=24; secL.y=INS_Y+28; secR.x=MX(); secR.y=INS_Y+28;
     // 書き込み先テーブル: テーブル → MV(線上) → 先テーブル を一直線に
-    const eH=Object.keys(mvH).map(Number).sort((a,b)=>a-b);
+    const eH=Object.keys(mvH).sort();
     const eD=Object.keys(mvD).sort(); const eT=Object.keys(mvT);
     G={rawCy:rawY+26,rawBtm:rawY+rawH,trX:36+Math.floor((LTW-28)/2)/2,tblY:ltbl.y,segs:[]};
     // 派生テーブル: データの流れは上→下(INSERT は落ちて積もる)
@@ -699,9 +702,9 @@ scenes.S0=(()=>{
     const lcx=lx+colW/2, rcx=rx2+colW/2;
     const topY=ltbl.y+hh+68;
     const bodies=[
-      {key:'hourly_counts',nm:'hourly_counts',hdr:'hour     count()',rows:eH.slice(0,3).map(h=>fmtT(h).padEnd(9)+mvH[h].toLocaleString()),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':''},
-      {key:'daily_counts',nm:'daily_counts',hdr:'day      count()',rows:eD.slice(0,2).map(d2=>(d2.slice(4,6)+'-'+d2.slice(6)).padEnd(9)+mvD[d2].toLocaleString()),n:eD.length,extra:''},
-      {key:'trace_id_ts',nm:'trace_id_ts',hdr:'TraceId      Start–End      n',rows:eT.slice(-3).map(k=>(k+'…').padEnd(13)+(fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)).padEnd(14)+mvT[k].n),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' 行':''},
+      {key:'otel_traces_1h',nm:'otel_traces_1h',hdr:'hour   Service    count   avg(Dur)',rows:eH.slice(0,3).map(k=>{const q=mvH[k]; const hs=+k.split('|')[0], sv=k.split('|')[1]; return fmtT(hs).padEnd(7)+sv.padEnd(11)+q.c.toLocaleString().padEnd(8)+Math.round(q.d/q.c)+'ms';}),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':''},
+      {key:'otel_traces_1d',nm:'otel_traces_1d',hdr:'day      count()',rows:eD.slice(0,2).map(d2=>(d2.slice(4,6)+'-'+d2.slice(6)).padEnd(9)+mvD[d2].toLocaleString()),n:eD.length,extra:''},
+      {key:'otel_traces_trace_id_ts',nm:'otel_traces_trace_id_ts',hdr:'TraceId      Start–End      n',rows:eT.slice(-3).map(k=>(k+'…').padEnd(13)+(fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)).padEnd(14)+mvT[k].n),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' 行':''},
     ];
     const geom=b=>{ const body=b.rows.length?b.rows.join('\n')+(b.extra?'\n'+b.extra:''):'(空 — INSERT 待ち)';
       return {body,h:7+(1+body.split('\n').length)*16+10}; };
@@ -712,9 +715,9 @@ scenes.S0=(()=>{
       {x:rx2,y:topY,w:colW,body:q2.body,h:q2.h},
     ];
     G.segs=[
-      {mv:'hourly_mv',x:lcx,y1:ltbl.y+hh,y2:topY,dcy:topY+30,side:'L'},
-      {mv:'daily_mv',x:lcx,y1:topY+q0.h,y2:topY+q0.h+64,dcy:topY+q0.h+64+30,side:'L'},
-      {mv:'trace_id_mv',x:rcx,y1:ltbl.y+hh,y2:topY,dcy:topY+30,side:'R'},
+      {mv:'otel_traces_1h_mv',x:lcx,y1:ltbl.y+hh,y2:topY,dcy:topY+30,side:'L'},
+      {mv:'otel_traces_1d_mv',x:lcx,y1:topY+q0.h,y2:topY+q0.h+64,dcy:topY+q0.h+64+30,side:'L'},
+      {mv:'otel_traces_trace_id_ts_mv',x:rcx,y1:ltbl.y+hh,y2:topY,dcy:topY+30,side:'R'},
     ];
     edges.clear();
     bodies.forEach((d,i)=>{
@@ -742,7 +745,7 @@ scenes.S0=(()=>{
       placeChip(ec,sg.side==='L'?sg.x-10:sg.x+10,(sg.y1+sg.y2)/2);
       if(pulse>0) pipePulse[sg.mv]=Math.max(0,pulse-0.01);
     });
-    // 取り込みパイプ(縦): otel_raw → transform_mv → otel_events
+    // 取り込みパイプ(縦): otel_raw → transform_mv → otel_traces
     {
       const px2=G.trX, y1=G.rawBtm, y2v=ltbl.y;
       const col=rawPulse>0?0x2b8a3e:0xb9c2ae;
@@ -754,8 +757,8 @@ scenes.S0=(()=>{
       placeChip(tec,px2-10,(y1+y2v)/2);
       if(rawPulse>0) rawPulse=Math.max(0,rawPulse-0.01);
     }
-    const tc=chip('s0tbl','',()=>tableInsp('otel_events'));
-    tc.innerHTML='TABLE otel_events · '+Math.round(dispRows).toLocaleString()+'行';
+    const tc=chip('s0tbl','',()=>tableInsp('otel_traces'));
+    tc.innerHTML='TABLE otel_traces · '+Math.round(dispRows).toLocaleString()+'行';
     placeChip(tc,36+LTW/2,ltbl.y+2);
     const zc=chip('s0zoom','warn',()=>zoomTo('S1'));
     zc.textContent='⊕ 中を見る(Part / granule)';
@@ -771,7 +774,7 @@ scenes.S1=(()=>{
   const frameG=new PIXI.Graphics(); s.cont.addChild(frameG);
   const strip=new PIXI.Graphics(); s.cont.addChild(strip);
   const stripTiles=new PIXI.Container(); s.cont.addChild(stripTiles);
-  const secL=textV('STORAGE — otel_events の中(Partition ⊃ Part ⊃ granule)',11,0x9a9a90,false);
+  const secL=textV('STORAGE — otel_traces の中(Partition ⊃ Part ⊃ granule)',11,0x9a9a90,false);
   s.cont.addChild(secL);
   const stubs=[0,1,2].map(()=>{ const g=new PIXI.Graphics(); s.cont.addChild(g); return g; });
   let stubPulse=[0,0,0], insBatch=null, insPhase='';
@@ -790,7 +793,7 @@ scenes.S1=(()=>{
       insPhase='fly';
       setTimeout(()=>{ insBatch=null; insPhase=''; },900);
     }
-    else if(e.t==='mv.fire'){ const i={hourly_mv:0,daily_mv:1,trace_id_mv:2}[e.mv]; stubPulse[i]=1; }
+    else if(e.t==='mv.fire'){ const i={otel_traces_1h_mv:0,otel_traces_1d_mv:1,otel_traces_trace_id_ts_mv:2}[e.mv]; stubPulse[i]=1; }
     else if(e.t==='part.merged'){ const p=parts.find(x=>x.id===e.into); if(p) p.flash=1; }
     else if(e.t==='delete.mask'||e.t==='mutation.rewrite'){ actParts().forEach(p=>p.flash=Math.max(p.flash||0,0.5)); }
   };
@@ -801,7 +804,7 @@ scenes.S1=(()=>{
     if(insBatch){
       strip.roundRect(16,INS_Y+18,STW()-32,36,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
       const sc=chip('s1strip','',null);
-      sc.textContent=insPhase==='arrive'?'INSERT ブロック(届いた順)':insPhase==='sorted'?'ORDER BY (ServiceName, Timestamp) でソート → granule 区切り':'新しい Part へ';
+      sc.textContent=insPhase==='arrive'?'OTLP バッチ(届いた順)':insPhase==='sorted'?'ORDER BY (ServiceName, Timestamp) でソート → granule 区切り':'新しい Part へ';
       placeChip(sc,STW()/2,INS_Y+16);
       stripTiles.removeChildren().forEach(c=>c.destroy());
       const list=insPhase==='arrive'?insBatch:[...insBatch];
@@ -830,11 +833,11 @@ scenes.S1=(()=>{
     frameG.clear();
     frameG.roundRect(14,INS_Y+50,partW()+22,Math.max(120,y-INS_Y-50-4),10).stroke({width:1.5,color:0xcfd2c8});
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
-    fc.textContent='TABLE otel_events(⊖ テーブル層へ)';
+    fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
     placeChip(fc,24+partW()/2,y+4);
     // MV パイプ口
     const sx=24+partW()+70;
-    ['hourly_mv','daily_mv','trace_id_mv'].forEach((mv,i)=>{
+    ['otel_traces_1h_mv','otel_traces_1d_mv','otel_traces_trace_id_ts_mv'].forEach((mv,i)=>{
       const g=stubs[i]; const yy=INS_Y+90+i*72;
       g.clear();
       g.roundRect(sx,yy,120,40,8).fill(stubPulse[i]>0?0xeee6fb:0xf6f4fb).stroke({width:stubPulse[i]>0?2:1,color:stubPulse[i]>0?0x9775fa:0xddd0f0});
@@ -856,7 +859,7 @@ scenes.S2=(()=>{
   const secL=textV('STORAGE — 枝刈り',11,0x9a9a90,false);
   const secR=textV('COMPUTE — CPU コアのレーン',11,0x9a9a90,false);
   s.cont.addChild(secL,secR);
-  const introG=new PIXI.Graphics(); const introT=textV('otel_events を Part 群に開く…',12,0x6b6b60,false);
+  const introG=new PIXI.Graphics(); const introT=textV('otel_traces を Part 群に開く…',12,0x6b6b60,false);
   s.cont.addChild(introG,introT);
   let marks=new Map(), lanes=[], intro=0, resRows=null, lk=null, curHit=null;
   const lkG=new PIXI.Graphics(); s.cont.addChild(lkG);
@@ -872,7 +875,7 @@ scenes.S2=(()=>{
   s.exit=()=>{ setStage(0); LKUP=0; };
   s.onEvent=e=>{
     if(e.t==='query.start'){ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); resRows=null; lk=null; curHit=null; LKUP=0; setStage(1); }
-    else if(e.t==='trace.lookup'){ lk=e; LKUP=1; const w=Math.floor(e.s/TRWIN); curHit=(p,gi,ci,v)=>p.day===TODAY&&Math.floor(v/TRWIN)===w&&!p.del[gi*GPR+ci]; toast('⓪ まず trace_id_ts を TraceId で引く(ORDER BY の先頭なので一発)→ Start–End の時間範囲を得る'); }
+    else if(e.t==='trace.lookup'){ lk=e; LKUP=1; const w=Math.floor(e.s/TRWIN); curHit=(p,gi,ci,v)=>p.day===TODAY&&Math.floor(v/TRWIN)===w&&!p.del[gi*GPR+ci]; toast('⓪ まず otel_traces_trace_id_ts を TraceId で引く(ORDER BY の先頭なので一発)→ Start–End の時間範囲を得る'); }
     else if(e.t==='prune.partition'){ e.cut.forEach(id=>{ marks.set(id,Object.assign(getM(id),{pruned:true})); }); toast('① Partition 枝刈り: 日付条件に合わない Partition は索引すら見ない'); }
     else if(e.t==='prune.primary'){ e.plan.forEach(pl=>{ getM(pl.pid).pkKeep=new Set(pl.keep); }); toast(e.note||'① 主キーの境界だけで読む granule を確定'); }
     else if(e.t==='prune.skip'){
@@ -901,7 +904,7 @@ scenes.S2=(()=>{
       intro=Math.max(0,intro-0.012);
       introG.clear();
       introG.roundRect(24,INS_Y+60,LTW*0.8,120,10).fill({color:0xffffff,alpha:intro}).stroke({width:1,color:0xd9dbe0,alpha:intro});
-      introT.text='otel_events(論理)を Part 群(物理)に開く…';
+      introT.text='otel_traces(論理)を Part 群(物理)に開く…';
       introT.alpha=intro; introT.x=44; introT.y=INS_Y+80;
     } else { introG.clear(); introT.alpha=0; }
     // Parts(左列)
@@ -918,7 +921,7 @@ scenes.S2=(()=>{
       y+=partH(p)+16;
     });
     views.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); views.delete(id); } });
-    // trace_id_ts ルックアップカード
+    // otel_traces_trace_id_ts ルックアップカード
     if(lk){
       const g0=laneGeom(0);
       lkG.clear();
@@ -927,7 +930,7 @@ scenes.S2=(()=>{
       lkTx.text=lk.tid+'…   Start '+fmtT(lk.s)+' – End '+fmtT(lk.e)+' ・ '+lk.n+' span';
       lkTx.x=g0.x+12; lkTx.y=INS_Y+80; lkTx.visible=true;
       const c=chip('s2lk','mv',null);
-      c.textContent='① TABLE trace_id_ts ▸ TraceId で範囲を特定';
+      c.textContent='① TABLE otel_traces_trace_id_ts ▸ TraceId で範囲を特定';
       placeChip(c,g0.x+g0.w/2,INS_Y+58);
     } else { lkG.clear(); lkTx.visible=false; }
     // レーン
@@ -986,7 +989,7 @@ function renderCrumb(){
   const seg=(lbl,on,fn)=>'<span class="cr'+(on?' on':'')+'" data-go="'+(fn||'')+'">'+lbl+'</span>';
   let html=seg('node-1',false,'')+'<span class="sep">›</span>';
   if(curName==='S0') html+=seg('tables',true);
-  else if(curName==='S1') html+=seg('tables',false,'S0')+'<span class="sep">›</span>'+seg('otel_events',true);
+  else if(curName==='S1') html+=seg('tables',false,'S0')+'<span class="sep">›</span>'+seg('otel_traces',true);
   else html+=seg('tables',false,'S0')+'<span class="sep">›</span>'+seg('クエリ実行',true)+' <span class="cr" data-go="'+zoomBefore+'">⊖ ステージへ戻る</span>';
   crumbEl.innerHTML=html;
   crumbEl.querySelectorAll('.cr').forEach(el=>{
@@ -1032,21 +1035,21 @@ function renderShelf(){
   if(elR){ elR.innerHTML='<div class="tn">otel_raw <b>0行</b></div><div class="ts">ENGINE = Null ・ 受け口(実体なし)</div>';
     elR.onclick=()=>tableInsp('otel_raw'); }
   const el0=document.getElementById('tc0');
-  el0.innerHTML='<div class="tn">otel_events <b>'+(g*8192).toLocaleString()+'</b></div><div class="ts">Part ×'+actParts().length+' ・ granule ×'+g+' ・ ORDER BY (ServiceName, Timestamp)</div>';
-  el0.onclick=()=>tableInsp('otel_events');
+  el0.innerHTML='<div class="tn">otel_traces <b>'+(g*8192).toLocaleString()+'</b></div><div class="ts">Part ×'+actParts().length+' ・ granule ×'+g+' ・ ORDER BY (ServiceName, Timestamp)</div>';
+  el0.onclick=()=>tableInsp('otel_traces');
   const mk=(id,nm,rows,sub)=>{ const el=document.getElementById(id);
     el.innerHTML='<div class="tn">'+nm+' <b>'+rows+'行</b></div><div class="ts">'+sub+'</div>';
     el.onclick=()=>tableInsp(nm); };
-  mk('tc1','hourly_counts',Object.keys(mvH).length,'ORDER BY hour ・ 集計の受け皿');
-  mk('tc2','daily_counts',Object.keys(mvD).length,'ORDER BY day');
-  mk('tc3','trace_id_ts',Object.keys(mvT).length,'ORDER BY (TraceId, Start) ・ TraceId→時間範囲');
+  mk('tc1','otel_traces_1h',Object.keys(mvH).length,'AggregatingMT ・ (hour, Service) ・ 状態列');
+  mk('tc2','otel_traces_1d',Object.keys(mvD).length,'階層ロールアップ(1h→1d)');
+  mk('tc3','otel_traces_trace_id_ts',Object.keys(mvT).length,'ORDER BY (TraceId, Start) ・ TraceId→時間範囲');
   const pk=(id,nm,path)=>{ const el=document.getElementById(id);
     el.innerHTML='<div class="tn">'+nm+'</div><div class="ts">'+path+'</div>';
     el.onclick=()=>tableInsp(nm); };
-  pk('mvp0','transform_mv','otel_raw → otel_events ・ 列に解く');
-  pk('mvp1','hourly_mv','otel_events → hourly_counts ・ GROUP BY hour');
-  pk('mvp2','daily_mv','hourly_counts → daily_counts');
-  pk('mvp3','trace_id_mv','otel_events → trace_id_ts ・ GROUP BY TraceId で min/max');
+  pk('mvp0','transform_mv','otel_raw → otel_traces ・ 列に解く');
+  pk('mvp1','otel_traces_1h_mv','otel_traces → otel_traces_1h ・ 状態を積む');
+  pk('mvp2','otel_traces_1d_mv','otel_traces_1h → otel_traces_1d ・ 既定外の一般パターン');
+  pk('mvp3','otel_traces_trace_id_ts_mv','otel_traces → otel_traces_trace_id_ts ・ GROUP BY TraceId で min/max');
 }
 setInterval(renderShelf,400);
 
