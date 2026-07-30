@@ -73,6 +73,7 @@ canvas{display:block}
   background:#111110;border:1px solid #33332e;border-radius:6px;padding:5px 12px;color:#cdd2dc}
 #searchbar .sb-time b{color:var(--accent)}
 #searchbar .sb-sel{border:none;background:transparent;color:#8ecbe8;padding:0}
+#wbsql{flex:1;min-width:140px;font:600 11px var(--mono);color:#8b8b84;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 #searchbar .btn.run{background:#2f9e44;border-color:#2f9e44;color:#fff;font-weight:700}
 #searchbar .btn.run:hover{background:#37b24d}
 #cstat{margin-left:auto;font:600 10.5px var(--ui);color:var(--faint);white-space:nowrap;
@@ -162,7 +163,14 @@ canvas{display:block}
   <div id="resgrid"></div>
 </div>
 <div id="searchbar">
-  <span class="sb-ico">🔍</span>
+  <span class="sb-ico">🛠</span>
+  <select id="stmtSel" class="sel">
+    <option value="sel">SELECT — 時間帯別カウント</option>
+    <option value="tid">SELECT — トレース取得(trace_id_ts 経由)</option>
+    <option value="del">DELETE — 軽量削除</option>
+    <option value="upd">ALTER … UPDATE — mutation</option>
+    <option value="proj">ALTER … ADD PROJECTION</option>
+  </select>
   <span class="sb-q">ServiceName :
     <select id="svcSel" class="sel sb-sel">
       <option value="">*(すべて)</option><option>frontend</option><option>checkout</option><option>cart</option><option>auth</option><option>search</option>
@@ -172,19 +180,12 @@ canvas{display:block}
     <input type="range" id="predR" min="0" max="960" step="15" value="600">
     <b id="predV">18:00</b>
   </span>
-  <button class="btn run" id="bSel">▶ SELECT</button>
-  <button class="btn" id="bTid">🔎 TraceId 検索</button>
-  <button class="btn" id="bSql" title="いま実行される/された文を見る">❯ SQL</button>
+  <span id="wbsql" title="クリックで全文を見る"></span>
+  <button class="btn run" id="bRun">▶ 実行</button>
+  <button class="btn" id="bSql" title="最後に実行された文">❯ SQL</button>
 </div>
 <div id="toolbar2">
   <span id="brand">MergeTree <b>Explorer</b> <span class="ver">V6</span></span>
-  <span class="grp"><span class="glbl">変異</span>
-    <button class="btn" id="bDel">🗑 DELETE</button>
-    <button class="btn" id="bUpd">✏️ UPDATE</button>
-  </span>
-  <span class="grp"><span class="glbl">スキーマ</span>
-    <button class="btn" id="bProj">⚡ PROJECTION</button>
-  </span>
   <span class="grp"><span class="glbl">ENGINE</span>
     <select id="engSel" class="sel"><option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option></select>
     <span class="glbl">SKIP IDX</span>

@@ -1085,22 +1085,32 @@ function renderCrumb(){
 
 /* ---------- 7. レール配線と初期化 ---------- */
 
-document.getElementById('bDel').onclick=doDelete;
-document.getElementById('bUpd').onclick=doUpdate;
-document.getElementById('bProj').onclick=doProj;
-document.getElementById('bSel').onclick=doSelect;
+let STMT='sel';
+function wbSQL(){
+  if(STMT==='sel') return SQLQ()+';';
+  if(STMT==='tid'){ const ks=Object.keys(mvT); const tid=ks.length?ks[ks.length-1]+'…':'<TraceId>';
+    return "WITH '"+tid+"' AS tid, (SELECT min(Start) FROM otel_traces_trace_id_ts WHERE TraceId = tid) AS s, (SELECT max(End)+1 FROM otel_traces_trace_id_ts WHERE TraceId = tid) AS e SELECT Timestamp, ServiceName, SpanName FROM otel_traces WHERE Timestamp >= s AND Timestamp < e;"; }
+  if(STMT==='del') return "DELETE FROM otel_traces WHERE ServiceName = '"+(SVCF||'checkout')+"';";
+  if(STMT==='upd') return "ALTER TABLE otel_traces UPDATE SpanAttributes['tier'] = 'vip' WHERE ServiceName = '"+(SVCF||'frontend')+"';";
+  return 'ALTER TABLE otel_traces ADD PROJECTION by_service (SELECT * ORDER BY ServiceName);';
+}
+const wbEl=document.getElementById('wbsql');
+function updWb(){ wbEl.textContent=wbSQL(); }
+wbEl.onclick=()=>openInsp('<h2>🛠 Workbench</h2><div class="sub">実行される文(パラメータ連動)</div><pre>'+wbSQL().replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>');
+document.getElementById('stmtSel').onchange=e=>{ STMT=e.target.value; updWb(); };
+document.getElementById('bRun').onclick=()=>{ ({sel:doSelect,tid:doTraceSelect,del:doDelete,upd:doUpdate,proj:doProj})[STMT](); };
 document.getElementById('bSql').onclick=()=>{
   openInsp('<h2>❯ 現在の文</h2><div class="sub">最後に実行された(される)DML/クエリ</div><pre>'
     +CURSQL.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>'
     +'<div class="note">SELECT はツールバーの WHERE と連動する。OTLP バッチの INSERT は人が書くものではなく、collector の exporter が発行する。</div>');
 };
-document.getElementById('bTid').onclick=doTraceSelect;
+
 document.getElementById('engSel').onchange=e=>{ ENG=e.target.value; toast(ENG==='rmt'?'ReplacingMergeTree: マージ時に同じ Timestamp の行を置換(重複排除)':'MergeTree: 追記のみ'); };
 document.getElementById('idxSel').onchange=e=>{ IDXT=e.target.value; toast(IDXT==='minmax'?'minmax(Timestamp): 主キー先頭が ServiceName の並びで、時刻条件を救う skip idx':'skip idx なし: 主キーだけで戦う(時刻だけの検索が重くなる)'); };
 const predR=document.getElementById('predR');
-if(predR){ predR.oninput=e=>{ PRED=+e.target.value; const lb=document.getElementById('predV'); if(lb) lb.textContent=fmtT(PRED); showSql(SQLQ()+';'); }; }
+if(predR){ predR.oninput=e=>{ PRED=+e.target.value; const lb=document.getElementById('predV'); if(lb) lb.textContent=fmtT(PRED); updWb(); }; }
 const svcSel=document.getElementById('svcSel');
-if(svcSel){ svcSel.onchange=e=>{ SVCF=e.target.value; showSql(SQLQ()+';'); }; }
+if(svcSel){ svcSel.onchange=e=>{ SVCF=e.target.value; updWb(); }; }
 const bAmb=document.getElementById('bAmb');
 let demoT=null;
 if(bAmb) bAmb.onclick=()=>{
@@ -1114,7 +1124,7 @@ if(bAmb) bAmb.onclick=()=>{
 document.getElementById('bReset').onclick=()=>{
   if(busy) return toast('実行中です','warn');
   parts=[]; seq=0; mvH={}; mvD={}; mvT={}; trSeq=0; mvHParts=[]; hpSeq=0; S1T='otel_traces'; projOn=false; mutSeq=6;
-  seedParts(); showDefault(); switchTo('S0');
+  seedParts(); showDefault(); updWb(); switchTo('S0');
   toast('初期状態に戻した');
 };
 function showDefault(){ showSql(SQLQ()+';'); showMsg('待機中'); resShown=false; }
