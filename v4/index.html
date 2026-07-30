@@ -168,6 +168,7 @@ const GPR=4;                        // granule あたりの値の数(8192 行の
 let seq=0, parts=[], fly=[], lanes=[], result=null, busy=false, simT=640;
 let mv={}, mvFlash=0;   // MV hourly_counts(書き込み時に集計)
 let mv2={}, mv2Flash=0; // MV daily_counts(hourly からのカスケード)
+let mv3={}, mv3Flash=0; // MV trace_id_ts(別キーの索引化 = ClickStack 流)
 let projOn=false;       // ADD PROJECTION 済みか
 let ENG='mt', mutSeq=6;  // ENGINE(mt/rmt) と mutation バージョン
 let pulse=0;      // 要約カードの実行中表示の鼓動
@@ -212,6 +213,7 @@ function tick(){
   if(parts.length!==before) layout();
   if(mvFlash>0) mvFlash=Math.max(0,mvFlash-0.03);
   if(mv2Flash>0) mv2Flash=Math.max(0,mv2Flash-0.03);
+  if(mv3Flash>0) mv3Flash=Math.max(0,mv3Flash-0.03);
   lanes.forEach(l=>{ if(l.simd>0) l.simd=Math.max(0,l.simd-0.09); if(l.lastAdd) { l.lastAdd.t-=0.02; if(l.lastAdd.t<=0) l.lastAdd=null; } });
   const dones=[]; // done の中で fly.push しても消えないよう、filter 後に実行
   fly=fly.filter(f=>{
@@ -285,7 +287,10 @@ function doInsert(){
                     toast('MV hourly_counts: INSERT と同時に集計済みの行が積まれた。SELECT のたびに数え直さなくてよくなる');
                     const gm=mvGeom(), g2=mv2Geom(), tot=sorted.length*(8192/GPR);
                     fly.push({kind:'chip', col:'#c9a2ff', txt:'カスケード → daily', fx:gm.x+gm.w/2, fy:g2.y-14, txp:g2.x+g2.w/2, typ:g2.y+14, t:0, dt:0.03,
-                      done:()=>{ mv2[TODAY]=(mv2[TODAY]||0)+tot; mv2Flash=1; }}); }});
+                      done:()=>{ mv2[TODAY]=(mv2[TODAY]||0)+tot; mv2Flash=1; }});
+                    // ClickStack 流: 同じ INSERT を別キー(TraceId)で索引化する MV も同時に走る
+                    mv3['tr-'+p.id]={s:Math.min(...sorted),e:Math.max(...sorted),n:sorted.length};
+                    mv3Flash=1; }});
               }
               busy=false;
               setTimeout(()=>{ if(!busy) showDefaultResult(); },2800);
@@ -881,7 +886,7 @@ document.getElementById('bAmb').addEventListener('click',()=>{
 document.getElementById('bReset').addEventListener('click',()=>{
   if(busy){ toast('実行中です。終わってからリセットを','warn'); return; }
   stopDemo();
-  parts=[]; fly=[]; lanes=[]; result=null; seq=0; mv={}; mv2={}; projOn=false; setStage(0);
+  parts=[]; fly=[]; lanes=[]; result=null; seq=0; mv={}; mv2={}; mv3={}; projOn=false; setStage(0);
   seedParts(); layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
   showDefaultResult();
   toast('初期状態に戻した。INSERT → マージ → SELECT をもう一度最初から試せる');
@@ -1007,6 +1012,15 @@ function mvHTML(which){
     h+='</table><div class="note">集計はクエリ時ではなく INSERT と同時(書き込み時)。MV は作成後の INSERT だけを反映し、既存分はバックフィルが必要。</div>';
     return h;
   }
+  if(which===3){
+    const ids=Object.keys(mv3);
+    let h='<h2 style="color:#c9a2ff">MV trace_id_ts(別キーの索引化)</h2><div class="sub">ClickStack の otel_traces_trace_id_mv → otel_traces_trace_id_ts と同じ型。ORDER BY TraceId の ReplacingMergeTree</div>';
+    h+='<table><tr><th>TraceId</th><th>Start–End</th><th>Span 数</th></tr>';
+    if(!ids.length) h+='<tr><td colspan=3 style="color:#57617a">(まだ空)</td></tr>';
+    ids.forEach(k=>{ const r=mv3[k]; h+='<tr><td>'+k+'</td><td>'+fmtT(r.s)+'–'+fmtT(r.e)+'</td><td>'+(r.n*8192/GPR).toLocaleString()+'</td></tr>'; });
+    h+='</table><div class="note">ワイドテーブルは ts 順なので TraceId 検索は全走査になる。そこで MV で TraceId ソートのルックアップ表を「書き込み時に」作っておく。集計(hourly)とは別用途の MV。このデモでは 1 INSERT = 1 トレースに簡略化。</div>';
+    return h;
+  }
   const days=Object.keys(mv2).sort();
   let h='<h2 style="color:#c9a2ff">MV daily_counts</h2><div class="sub">hourly_counts をさらに集計(カスケード)</div>';
   h+='<table><tr><th>日</th><th>count()</th></tr>';
@@ -1117,7 +1131,7 @@ function buildMV(color,idn){
   cont.on('pointertap',e=>{ e.stopPropagation(); openInsp('mv',idn); });
   return {cont,bg,txt,color};
 }
-const mvV1=buildMV(0x5d4a86,1), mvV2=buildMV(0x453763,2);
+const mvV1=buildMV(0x5d4a86,1), mvV2=buildMV(0x453763,2), mvV3=buildMV(0x453763,3);
 
 // 飛行体
 const flyViews=new Map(); let flySeq=0;
@@ -1228,8 +1242,13 @@ window.__pixiRender=function(){
     const h1=26+Math.max(1,Math.min(4,e1.length||1))*14+10;
     const h2=26+Math.max(1,Math.min(2,e2.length||1))*14+10;
     const y2=mg.y+h1+34;
+    const e3=Object.keys(mv3);
+    const rows3=e3.length?e3.slice(-3).map(k=>{const r=mv3[k];return k+'  '+fmtT(r.s)+'–'+fmtT(r.e);}).join('\n'):'(空 — TraceId 検索用の索引)';
+    const h3=26+Math.max(1,Math.min(3,e3.length||1))*14+10;
+    const y3=y2+h2+34;
     [{v:mvV1,y:mg.y,txt:rows1,n:e1.length,fl:mvFlash,nm:'MV hourly_counts',key:'mv1',idn:1,hh:h1},
-     {v:mvV2,y:y2,txt:rows2,n:e2.length,fl:mv2Flash,nm:'MV daily_counts',key:'mv2',idn:2,hh:h2}].forEach(o=>{
+     {v:mvV2,y:y2,txt:rows2,n:e2.length,fl:mv2Flash,nm:'MV daily_counts',key:'mv2',idn:2,hh:h2},
+     {v:mvV3,y:y3,txt:rows3,n:e3.length,fl:mv3Flash,nm:'MV trace_id_ts',key:'mv3',idn:3,hh:h3}].forEach(o=>{
       o.v.cont.x=mg.x; o.v.cont.y=o.y;
       panel(o.v.bg,w1,o.hh,0x232320,o.fl>0?0xc9a2ff:0x4a4460,6);
       o.v.bg.rect(1,1,w1-2,16).fill(0x2b2b27);
@@ -1250,6 +1269,9 @@ window.__pixiRender=function(){
       placeChip(ce1,(tx1+mg.x)/2,Math.min(pb,mg.y+h1/2+40)-4);
       const ce2=chip('e2','mv',()=>openInsp('mv',2)); ce2.textContent='カスケード';
       placeChip(ce2,mg.x+w1/2,(mg.y+h1+y2)/2+8);
+      dotted(edges,tx1,Math.min(pb,y3+h3/2),mg.x,y3+h3/2,0x5d4a86);
+      const ce3=chip('e3','mv',()=>openInsp('mv',3)); ce3.textContent='別キー(TraceId)で索引化 →';
+      placeChip(ce3,(tx1+mg.x)/2,Math.min(pb,y3+h3/2)-4);
     }
   }
   fly.forEach(f=>{
