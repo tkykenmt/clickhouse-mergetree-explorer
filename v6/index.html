@@ -60,7 +60,7 @@ canvas{display:block}
 #toolbar2 .glbl{font:600 9.5px var(--ui);letter-spacing:.1em;color:var(--faint)}
 #toolbar2 .where{display:inline-flex;align-items:center;gap:7px;font:600 11px var(--mono);color:var(--muted)}
 #toolbar2 .where b{color:var(--accent);font:700 11.5px var(--mono)}
-#brand{font:700 12.5px var(--ui);color:#fff;margin-right:4px;white-space:nowrap}
+#brand{font:700 11px var(--ui);color:var(--faint);margin-right:4px;white-space:nowrap}
 #brand b{color:var(--accent)}
 #brand .ver{font:600 9px var(--ui);letter-spacing:.12em;color:var(--faint);border:1px solid var(--line);border-radius:3px;padding:1px 5px;margin-left:5px}
 #steps{position:fixed;left:12px;right:14px;z-index:9;background:var(--surface);
@@ -76,6 +76,8 @@ canvas{display:block}
 #wbsql{flex:1;min-width:140px;font:600 11px var(--mono);color:#8b8b84;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 #searchbar .btn.run{background:#2f9e44;border-color:#2f9e44;color:#fff;font-weight:700}
 #searchbar .btn.run:hover{background:#37b24d}
+#searchbar .grp{display:inline-flex;align-items:center;gap:6px}
+#searchbar .glbl{font:600 9.5px var(--ui);letter-spacing:.1em;color:var(--faint)}
 #cstat{margin-left:auto;font:600 10.5px var(--ui);color:var(--faint);white-space:nowrap;
   max-width:340px;overflow:hidden;text-overflow:ellipsis}
 #toast{left:16px}
@@ -183,19 +185,15 @@ canvas{display:block}
   <span id="wbsql" title="クリックで全文を見る"></span>
   <button class="btn run" id="bRun">▶ 実行</button>
   <button class="btn" id="bSql" title="最後に実行された文">❯ SQL</button>
-</div>
-<div id="toolbar2">
-  <span id="brand">MergeTree <b>Explorer</b> <span class="ver">V6</span></span>
   <span class="grp"><span class="glbl">ENGINE</span>
     <select id="engSel" class="sel"><option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option></select>
-    <span class="glbl">SKIP IDX</span>
+    <span class="glbl">SKIP</span>
     <select id="idxSel" class="sel"><option value="minmax">minmax(ts)</option><option value="none">なし</option></select>
   </span>
-  <span class="grp">
-    <button class="btn" id="bAmb">▶ 自動再生</button>
-    <button class="btn" id="bReset" title="最初からやり直す">⟳</button>
-  </span>
+  <button class="btn" id="bAmb">▶ 自動再生</button>
+  <button class="btn" id="bReset" title="最初からやり直す">⟳</button>
   <span id="cstat"></span>
+  <span id="brand">MergeTree <b>Explorer</b></span>
 </div>
 <canvas id="cv"></canvas>
 <div id="crumb"></div>

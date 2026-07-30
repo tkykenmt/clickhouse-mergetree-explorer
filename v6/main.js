@@ -19,6 +19,8 @@ const keyCmp=(a,b)=>{ const sa=svcOf(a),sb=svcOf(b); return sa<sb?-1:sa>sb?1:a-b
 const keySort=a=>[...a].sort(keyCmp);
 const SVCTINT={frontend:0xe9eef8,checkout:0xfdeee2,cart:0xe6f4ea,auth:0xf3ecfa,search:0xfbf6df};
 const SPANOF={frontend:'GET /product',checkout:'POST /checkout',cart:'POST /cart/add',auth:'POST /login',search:'GET /search'};
+const Z=1.18;                        // 全体拡大率
+let SCROLL=0, YBASE=120, CONTENT_H=700;
 const TRWIN=15; // 縮尺ルール: 同じ15分窓の行は1つのトレースのスパン
 const traceIdOf=(d,v)=>('00000000'+((((+d)*2654435761)^(Math.floor(v/TRWIN)*40503+0x9e37))>>>0).toString(16)).slice(-8);
 const spanIdOf=(d,v)=>('00000000'+((((+d)*97561)^(v*7561+0x51f3))>>>0).toString(16)).slice(-8);
@@ -339,9 +341,10 @@ const app=new PIXI.Application();
 await app.init({canvas:cv,resizeTo:window,backgroundAlpha:0,antialias:true,resolution:Math.min(2,devicePixelRatio||1),autoDensity:true});
 let W=innerWidth,H=innerHeight,MOB=W<=900;
 const world=new PIXI.Container(); app.stage.addChild(world);
+world.scale.set(Z);
 const paper=new PIXI.Graphics(); world.addChild(paper);
 const INS_Y=16;
-function STW(){ return W-26; }
+function STW(){ return (W-26)/Z; }
 function railOff(){ world.x=12; /* world.y はバー実高から ticker が毎フレーム決める */ }
 addEventListener('resize',()=>{ W=innerWidth; H=innerHeight; MOB=W<=900; railOff(); if(cur) cur.layout(); });
 railOff();
@@ -524,7 +527,7 @@ function spanJSONHtml(r){
 const chipStyle=document.createElement('style');
 chipStyle.textContent=`
 .chip3{position:absolute;transform:translate(-50%,-100%);background:#ffffffee;color:#2a2e39;
-  font:600 10px "Inter","Hiragino Kaku Gothic ProN",sans-serif;letter-spacing:.03em;
+  font:600 11.5px "Inter","Hiragino Kaku Gothic ProN",sans-serif;letter-spacing:.03em;
   border:1px solid #c9ccd3;border-radius:4px;padding:2px 8px;white-space:nowrap;pointer-events:auto;cursor:pointer;
   box-shadow:0 1px 3px rgba(20,20,40,.08)}
 .chip3:hover{border-color:#8a8f99}
@@ -541,7 +544,7 @@ function chip(key,cls,onClick){
   if(!c){ c=document.createElement('div'); c.className='chip3 '+(cls||''); c.style.pointerEvents='auto'; ov.appendChild(c); c.onclick=onClick||null; chips.set(key,c); }
   c.__seen=frame; return c;
 }
-function placeChip(c,x,y){ c.style.left=(x+world.x)+'px'; c.style.top=(y+world.y)+'px'; }
+function placeChip(c,x,y){ c.style.left=(x*Z+world.x)+'px'; c.style.top=(y*Z+world.y)+'px'; }
 function textV(str,size,fill,mono=true){
   return new PIXI.Text({text:str,style:{fontFamily:mono?'Inconsolata,Menlo,monospace':'Inter,sans-serif',fontWeight:'600',fontSize:size,fill,lineHeight:size*1.42}});
 }
@@ -801,6 +804,7 @@ scenes.S0=(()=>{
     const z1=chip('s0z1h','warn',()=>{ S1T='otel_traces_1h'; zoomTo('S1'); });
     z1.textContent='⊕ 中を見る(Part / 状態)';
     placeChip(z1,pos[0].x+pos[0].w/2,pos[0].y+pos[0].h+16);
+    CONTENT_H=pos[1].y+pos[1].h+120;
     const zc=chip('s0zoom','warn',()=>{ S1T='otel_traces'; zoomTo('S1'); });
     zc.textContent='⊕ 中を見る(Part / granule)';
     placeChip(zc,36+LTW/2,ltbl.y+hh+14);
@@ -875,6 +879,7 @@ scenes.S1=(()=>{
       nt.textContent=mvHParts.length>1?'同じ (hour, Service) キーが複数 Part に居る → ⇄ マージで状態が結合される':'マージ済み: キーごとに1行。avg の確定は読む側の avgMerge';
       nt.style.opacity='0.8';
       placeChip(nt,24+280,y+34);
+      CONTENT_H=y+130;
       return;
     }
     hViews.forEach((v,id)=>{ v.cont.destroy({children:true}); hViews.delete(id); });
@@ -932,6 +937,7 @@ scenes.S1=(()=>{
       if(stubPulse[i]>0) stubPulse[i]=Math.max(0,stubPulse[i]-0.015);
     });
     if(stubs[2]) stubs[2].clear();
+    CONTENT_H=fb+170;
   };
   return s;
 })();
@@ -1039,6 +1045,7 @@ scenes.S2=(()=>{
       placeChip(cc,g.x+g.w/2,g.y+g.h-8);
     });
     // RESULT カード(DOM)を配置
+    CONTENT_H=Math.max(y+60,laneGeom(2).y+180);
     const rg=resGeom(), show=(resShown&&curName==='S2');
     const st=(show?1:0)+':'+(rg.x|0);
     if(rescEl.__st!==st){ rescEl.__st=st; rescEl.style.display=show?'block':'none';
@@ -1062,7 +1069,7 @@ function switchTo(name){
   // シーン所有のDOMチップを一掃(次フレームのsweepに任せず即時)
   chips.forEach((c,k)=>{ c.remove(); }); chips.clear();
   clearFly();
-  rescEl.style.display='none'; rescEl.__st=null; // S2の持ち物は退場時に隠す
+  rescEl.style.display='none'; rescEl.__st=null; SCROLL=0; // S2の持ち物は退場時に隠す
   curName=name; SCENE=name; cur=scenes[name];
   world.addChild(cur.cont);
   world.addChild(flyC); // 最前面へ
@@ -1132,23 +1139,24 @@ function showDefault(){ showSql(SQLQ()+';'); showMsg('待機中'); resShown=fals
 
 seedParts(); showDefault();
 switchTo('S0');
-const tb2El=document.getElementById('toolbar2');
 const sbEl=document.getElementById('searchbar');
 const stepsEl=document.getElementById('steps');
 function measureBars(){
   let y=12+sbEl.offsetHeight+8;
-  tb2El.style.top=y+'px';
-  y+=tb2El.offsetHeight+8;
   if(stepsEl.classList.contains('show')){ stepsEl.style.top=y+'px'; y+=stepsEl.offsetHeight+8; }
   crumbEl.style.top=(y+2)+'px';
-  world.y=y+44;
+  YBASE=y+40;
+  const maxS=Math.max(0, CONTENT_H*Z-(innerHeight-YBASE)+50);
+  if(SCROLL>maxS) SCROLL=maxS;
+  world.y=YBASE-SCROLL;
 }
+addEventListener('wheel',e=>{ SCROLL=Math.max(0,SCROLL+e.deltaY); measureBars(); },{passive:true});
 addEventListener('resize',measureBars);
 app.ticker.add(()=>{
   frame++;
   if(frame%10===0||frame<5) measureBars();
   paper.clear();
-  paper.roundRect(0,0,STW(),Math.max(200,innerHeight-world.y-10),12).fill(0xf8f8f6).stroke({width:1,color:0xe2e2dd});
+  paper.roundRect(0,0,STW(),Math.max((innerHeight-YBASE)/Z,CONTENT_H+30),12).fill(0xf8f8f6).stroke({width:1,color:0xe2e2dd});
   if(cur) cur.tick();
   tickFly();
   chips.forEach((c,k)=>{ if(c.__seen!==frame){ c.remove(); chips.delete(k); } });
