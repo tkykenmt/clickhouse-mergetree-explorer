@@ -139,6 +139,32 @@ function doProj(){
 function SQLQ(){
   return "SELECT toStartOfHour(Timestamp) AS h, count() FROM otel_events WHERE Timestamp >= '2026-07-29 "+fmtT(PRED)+"'"+(SVCF?" AND ServiceName = '"+SVCF+"'":'')+' GROUP BY h ORDER BY h';
 }
+let LKUP=0; // trace_id_ts ルックアップカードの分だけレーンを下げる(S2が設定)
+function laneRun(scan,total,tileHit,buildRows){
+  const queues=[[],[],[]];
+  scan.forEach((s,i)=>queues[i%LANES].push(s));
+  emit('scan.assign',{queues});
+  let done=0;
+  const finish=()=>{
+    const o=buildRows();
+    emit('agg.merge',{lanes:LANES});
+    setTimeout(()=>{
+      emit('query.result',{rows:o.rows,scanned:scan.length,total});
+      showResult(o.cols,o.rows,o.note);
+      showMsg(o.rows.length+' rows'); busy=false;
+      if(o.toast) toast(o.toast);
+    },1200);
+  };
+  if(!scan.length){ setTimeout(finish,700); return; }
+  queues.forEach((list,li)=>{
+    list.forEach((s,k)=>{ setTimeout(()=>{
+      const p=parts.find(x=>x.id===s.pid); if(!p){ done++; return; }
+      const hits=p.granules[s.gi].reduce((c,v,ci)=>c+(tileHit(p,s.gi,ci,v)?1:0),0);
+      emit('scan.granule',{lane:li,pid:s.pid,gi:s.gi,hits:hits*2048,fp:s.fp});
+      done++; if(done===scan.length) setTimeout(finish,900);
+    },600+k*1000); });
+  });
+}
 function doSelect(){
   if(busy) return toast('実行中です','warn');
   if(!actParts().length) return toast('Part がない。まず INSERT を','warn');
@@ -169,36 +195,67 @@ function doSelect(){
     [1300,()=>emit('prune.primary',{plan})],
     [1300,()=>emit('prune.skip',{skipped,scanN:scan.length,total})],
     [1100,()=>{
-      const queues=[[],[],[]];
-      scan.forEach((s,i)=>queues[i%LANES].push(s));
-      emit('scan.assign',{queues});
-      let done=0;
-      const finish=()=>{
+      const tileHit=(p,gi,ci,v)=>v>=PRED&&(!SVCF||svcOf(v)===SVCF)&&!p.del[gi*GPR+ci];
+      laneRun(scan,total,tileHit,()=>{
         const agg={};
         scan.forEach(s=>{ const p=parts.find(x=>x.id===s.pid); if(!p) return;
-          p.granules[s.gi].forEach((v,ci)=>{ if(v>=PRED&&(!SVCF||svcOf(v)===SVCF)&&!p.del[s.gi*GPR+ci]){ const h=Math.floor(v/60)*60; agg[h]=(agg[h]||0)+2048; } });
+          p.granules[s.gi].forEach((v,ci)=>{ if(tileHit(p,s.gi,ci,v)){ const h=Math.floor(v/60)*60; agg[h]=(agg[h]||0)+2048; } });
         });
         const rows=Object.keys(agg).map(Number).sort((a,b)=>a-b).map(h=>[fmtT(h)+'〜',agg[h].toLocaleString()]);
-        emit('agg.merge',{lanes:LANES});
-        setTimeout(()=>{
-          emit('query.result',{rows,scanned:scan.length,total});
-          showResult(['toStartOfHour(Timestamp)','count()'],rows,rows.length+' rows ・ 読んだのは '+scan.length+' / '+total+' granule');
-          showMsg(rows.length+' rows'); busy=false;
-        },1200);
-      };
-      if(!scan.length){ setTimeout(finish,700); return; }
-      queues.forEach((list,li)=>{
-        list.forEach((s,k)=>{ setTimeout(()=>{
-          const p=parts.find(x=>x.id===s.pid); if(!p){ done++; return; }
-          const hits=p.granules[s.gi].reduce((c,v,ci)=>c+((v>=PRED&&(!SVCF||svcOf(v)===SVCF)&&!p.del[s.gi*GPR+ci])?1:0),0);
-          emit('scan.granule',{lane:li,pid:s.pid,gi:s.gi,hits:hits*2048,fp:s.fp});
-          done++; if(done===scan.length) setTimeout(finish,900);
-        },600+k*1000); });
+        return {cols:['toStartOfHour(Timestamp)','count()'],rows,note:rows.length+' rows ・ 読んだのは '+scan.length+' / '+total+' granule'};
       });
     }],
   ]);
 }
 
+function doTraceSelect(){
+  if(busy) return toast('実行中です','warn');
+  const keys=Object.keys(mvT);
+  if(!keys.length) return toast('trace_id_ts が空。まず INSERT を(MV は作成後の INSERT だけ反映)','warn');
+  const tid=keys[keys.length-1], r=mvT[tid], w=Math.floor(r.s/TRWIN);
+  busy=true;
+  const sql="WITH '"+tid+"…' AS tid, (SELECT min(Start) FROM trace_id_ts WHERE TraceId = tid) AS s, (SELECT max(End)+1 FROM trace_id_ts WHERE TraceId = tid) AS e SELECT Timestamp, ServiceName, SpanName FROM otel_events WHERE Timestamp >= s AND Timestamp < e";
+  emit('query.start',{sql,mode:'trace'});
+  showSql(sql+';'); showMsg('実行中…');
+  const act=actParts();
+  const total=act.reduce((s2,p)=>s2+p.granules.length,0);
+  seqRun([
+    [1000,()=>emit('trace.lookup',{tid,s:r.s,e:r.e,n:r.n})],
+    [2000,()=>{
+      const cut=act.filter(p=>p.day!==TODAY).map(p=>p.id);
+      emit('prune.partition',{cut,kept:act.filter(p=>p.day===TODAY).map(p=>p.id)});
+    }],
+    [1300,()=>{
+      const kept=act.filter(p=>p.day===TODAY);
+      const plan=[], scan=[];
+      kept.forEach(p=>{
+        const gs=p.granules; let from=-1,to=-1;
+        for(let i=0;i<gs.length;i++){
+          const lo=gs[i][0], hi=(i+1<gs.length)?gs[i+1][0]:961;
+          if(hi>r.s&&lo<=r.e){ if(from<0) from=i; to=i; }
+        }
+        if(from<0){ plan.push({pid:p.id,from:gs.length,to:gs.length}); return; }
+        plan.push({pid:p.id,from,to});
+        for(let gi=from;gi<=to;gi++) scan.push({pid:p.id,gi});
+      });
+      emit('prune.primary',{plan});
+      setTimeout(()=>{
+        const tileHit=(p,gi,ci,v)=>p.day===TODAY&&Math.floor(v/TRWIN)===w&&!p.del[gi*GPR+ci];
+        laneRun(scan,total,tileHit,()=>{
+          const spans=[];
+          scan.forEach(s2=>{ const p=parts.find(x=>x.id===s2.pid); if(!p) return;
+            p.granules[s2.gi].forEach((v,ci)=>{ if(tileHit(p,s2.gi,ci,v)) spans.push(v); });
+          });
+          spans.sort((a,b)=>a-b);
+          const rows=spans.map(v=>[fmtT(v),svcOf(v),SPANOF[svcOf(v)]]);
+          return {cols:['Timestamp','ServiceName','SpanName'],rows,
+            note:rows.length+' spans ・ 読んだのは '+scan.length+' / '+total+' granule',
+            toast:'trace_id_ts が Start–End をくれるから、主キー(Timestamp)の枝刈りが効いて '+scan.length+' / '+total+' granule で済む。TraceId 直では時刻の手掛かりが無く全 granule が候補になる'};
+        });
+      },1100);
+    }],
+  ]);
+}
 /* ---------- 4. クライアント(DOM)と共有UI ---------- */
 const sqlEl=document.getElementById('sqlbar'), cstatEl=document.getElementById('cstat');
 const resEl=document.getElementById('resgrid'), rescEl=document.getElementById('rescard');
@@ -354,7 +411,7 @@ function buildPartView(){
   const hd=textV('',10.5,0x9a9a90); hd.x=10; hd.y=8; cont.addChild(hd);
   return {cont,bg,tiles,idxT,skT,hd,cells:new Map()};
 }
-function updatePartView(v,p,marks){
+function updatePartView(v,p,marks,hitFn){
   // marks: {pruned, ranged:{from,to}, skip:Set(gi), scanned:Map(gi->hits), fp:Set(gi)}
   const w=partW(), h=partH(p);
   const pruned=marks&&marks.pruned;
@@ -379,9 +436,10 @@ function updatePartView(v,p,marks){
       if(marks){
         if(pruned) st='dead';
         else if(marks.skip&&marks.skip.has(gi)) st='skip';
-        else if(marks.ranged&&(gi<marks.ranged.from)) st='dead';
+        else if(marks.ranged&&(gi<marks.ranged.from||gi>marks.ranged.to)) st='dead';
         else if(marks.scanned&&marks.scanned.has(gi)){
-          st=(val>=PRED&&(!SVCF||svcOf(val)===SVCF)&&!p.del[dk])?'hit':'dead';
+          const hit=hitFn?hitFn(p,gi,ci,val):(val>=PRED&&(!SVCF||svcOf(val)===SVCF)&&!p.del[dk]);
+          st=hit?'hit':'dead';
         }
       }
       cell.g.clear(); cell.g.roundRect(x,y,CELL,CELLH,4).fill(CELLBG[st]).stroke({width:1,color:0xdde0e4});
@@ -591,18 +649,21 @@ scenes.S2=(()=>{
   s.cont.addChild(secL,secR);
   const introG=new PIXI.Graphics(); const introT=textV('otel_events を Part 群に開く…',12,0x6b6b60,false);
   s.cont.addChild(introG,introT);
-  let marks=new Map(), lanes=[], intro=0, resRows=null;
+  let marks=new Map(), lanes=[], intro=0, resRows=null, lk=null, curHit=null;
+  const lkG=new PIXI.Graphics(); s.cont.addChild(lkG);
+  const lkTx=textV('',11.5,0x5d4a86); s.cont.addChild(lkTx);
   function laneGeom(i){
     const px=24+partW()+36;
     const sw=STW();
     const w=Math.max(250,Math.min(520,sw-px-40-250));
-    return {x:px,y:INS_Y+60+i*126,w,h:114};
+    return {x:px,y:INS_Y+60+LKUP*64+i*126,w,h:114};
   }
   function resGeom(){ const g=laneGeom(0); return {x:g.x+g.w+16,y:g.y+8,w:Math.max(210,Math.min(280,STW()-(g.x+g.w)-30))}; }
-  s.enter=()=>{ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); intro=1; resRows=null; };
-  s.exit=()=>{ setStage(0); };
+  s.enter=()=>{ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); intro=1; resRows=null; lk=null; curHit=null; LKUP=0; };
+  s.exit=()=>{ setStage(0); LKUP=0; };
   s.onEvent=e=>{
-    if(e.t==='query.start'){ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); resRows=null; setStage(1); }
+    if(e.t==='query.start'){ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); resRows=null; lk=null; curHit=null; LKUP=0; setStage(1); }
+    else if(e.t==='trace.lookup'){ lk=e; LKUP=1; const w=Math.floor(e.s/TRWIN); curHit=(p,gi,ci,v)=>p.day===TODAY&&Math.floor(v/TRWIN)===w&&!p.del[gi*GPR+ci]; toast('⓪ まず trace_id_ts を TraceId で引く(ORDER BY の先頭なので一発)→ Start–End の時間範囲を得る'); }
     else if(e.t==='prune.partition'){ e.cut.forEach(id=>{ marks.set(id,Object.assign(getM(id),{pruned:true})); }); toast('① Partition 枝刈り: 日付条件に合わない Partition は索引すら見ない'); }
     else if(e.t==='prune.primary'){ e.plan.forEach(pl=>{ marks.set(pl.pid,Object.assign(getM(pl.pid),{ranged:{from:pl.from,to:pl.to}})); }); toast('① primary.idx の二分探索で各 Part の読む範囲(granule range)を確定'); }
     else if(e.t==='prune.skip'){
@@ -641,13 +702,25 @@ scenes.S2=(()=>{
       if(!v){ v=buildPartView(); views.set(p.id,v); s.cont.addChild(v.cont); }
       seen.add(p.id);
       v.cont.x=24; v.cont.y=y; v.cont.alpha=(1-intro);
-      updatePartView(v,p,marks.get(p.id));
+      updatePartView(v,p,marks.get(p.id),curHit);
       const c=chip('s2p'+p.id,(marks.get(p.id)||{}).pruned?'warn':'',null);
       c.textContent=p.name+(marks.get(p.id)&&marks.get(p.id).pruned?' ✂':'');
       placeChip(c,24+partW()/2,y-2);
       y+=partH(p)+16;
     });
     views.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); views.delete(id); } });
+    // trace_id_ts ルックアップカード
+    if(lk){
+      const g0=laneGeom(0);
+      lkG.clear();
+      lkG.roundRect(g0.x,INS_Y+56,g0.w,52,8).fill(0xf9f6ff).stroke({width:2,color:0x9775fa});
+      lkG.rect(g0.x+1,INS_Y+57,g0.w-2,16).fill(0xeee6fb);
+      lkTx.text=lk.tid+'…   Start '+fmtT(lk.s)+' – End '+fmtT(lk.e)+' ・ '+lk.n+' span';
+      lkTx.x=g0.x+12; lkTx.y=INS_Y+80; lkTx.visible=true;
+      const c=chip('s2lk','mv',null);
+      c.textContent='① TABLE trace_id_ts ▸ TraceId で範囲を特定';
+      placeChip(c,g0.x+g0.w/2,INS_Y+58);
+    } else { lkG.clear(); lkTx.visible=false; }
     // レーン
     lanes.forEach((l,i)=>{
       const g=laneGeom(i), gr=laneG[i];
@@ -720,6 +793,7 @@ document.getElementById('bDel').onclick=doDelete;
 document.getElementById('bUpd').onclick=doUpdate;
 document.getElementById('bProj').onclick=doProj;
 document.getElementById('bSel').onclick=doSelect;
+document.getElementById('bTid').onclick=doTraceSelect;
 document.getElementById('engSel').onchange=e=>{ ENG=e.target.value; toast(ENG==='rmt'?'ReplacingMergeTree: マージ時に同じ Timestamp の行を置換(重複排除)':'MergeTree: 追記のみ'); };
 document.getElementById('idxSel').onchange=e=>{ IDXT=e.target.value; };
 const predR=document.getElementById('predR');
