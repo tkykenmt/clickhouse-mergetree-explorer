@@ -92,9 +92,9 @@ function doInsert(){
     [900,()=>{ emit('table.rows',{total:tableRows()}); showMsg('Ok.('+(sorted.length*2048).toLocaleString()+' 行 → 新しい Part)'); busy=false; }],
   ]);
 }
-function doMerge(){
+function doMerge(tgt2){
   if(busy) return toast('実行中です','warn');
-  if(SCENE==='S1'&&S1T==='otel_traces_1h'){
+  if(tgt2==='1h'||(SCENE==='S1'&&S1T==='otel_traces_1h')){
     if(mvHParts.length<2) return toast('Part が1つ以下。Collector からバッチを流すと増える','warn');
     busy=true;
     emit('merge.start',{pids:mvHParts.map(q=>q.id),day:TODAY});
@@ -638,7 +638,8 @@ scenes.S0=(()=>{
   ltblTx.x=14; ltblTx.y=28;
   const ltTitle=textV('TABLE otel_traces',11.5,0x6b5d00); ltTitle.x=12; ltTitle.y=5;
   const ltCount=textV('',11.5,0x2b8a3e); ltCount.y=5;
-  const ltbl=new PIXI.Container(); ltbl.addChild(ltblBg,ltblTx,ltTitle,ltCount); s.cont.addChild(ltbl);
+  const ltMg=textV('⇄',13,0x6b5d00); ltMg.y=4;
+  const ltbl=new PIXI.Container(); ltbl.addChild(ltblBg,ltblTx,ltTitle,ltCount,ltMg); s.cont.addChild(ltbl);
   const edges=new PIXI.Graphics(); s.cont.addChild(edges);
   const colBg=new PIXI.Graphics();
   const colTitle=textV('OTel Collector',11.5,0xe8e6dc); colTitle.x=12; colTitle.y=8;
@@ -655,10 +656,10 @@ scenes.S0=(()=>{
   raw.on('pointertap',()=>tableInsp('otel_raw'));
   let rawFlash=0, rawPulse=0;
   const TKEYS=['otel_traces_1h','otel_traces_1d','otel_traces_trace_id_ts'];
-  const tgt=[0,1,2].map((_,i)=>{ const c=new PIXI.Container(); const bg=new PIXI.Graphics(); const tx=textV('',11.5,0x2a2e39); tx.x=10; tx.y=26; const tt=textV('',11,0x6b5d00); tt.x=10; tt.y=5; const tcn=textV('',11,0x2b8a3e); tcn.y=5; c.addChild(bg,tx,tt,tcn); s.cont.addChild(c);
+  const tgt=[0,1,2].map((_,i)=>{ const c=new PIXI.Container(); const bg=new PIXI.Graphics(); const tx=textV('',11.5,0x2a2e39); tx.x=10; tx.y=26; const tt=textV('',11,0x6b5d00); tt.x=10; tt.y=5; const tcn=textV('',11,0x2b8a3e); tcn.y=5; const tmg=textV(i===0?'⇄':'',12.5,0x6b5d00); tmg.y=4; c.addChild(bg,tx,tt,tcn,tmg); s.cont.addChild(c);
     c.eventMode='static'; c.cursor='pointer';
-    c.on('pointertap',()=>tableInsp(TKEYS[i]));
-    return {c,bg,tx,tt,tcn}; });
+    c.on('pointertap',ev=>{ const p2=ev.getLocalPosition(c); if(i===0&&p2.y<=22&&p2.x>(c.__w||270)-36){ doMerge('1h'); } else tableInsp(TKEYS[i]); });
+    return {c,bg,tx,tt,tcn,tmg}; });
   const secL=textV('',11,0x9a9a90,false);
   const secR=textV('',11,0x9a9a90,false);
   s.cont.addChild(secL,secR);
@@ -666,7 +667,7 @@ scenes.S0=(()=>{
   ltbl.eventMode='static'; ltbl.cursor='pointer';
   ltbl.on('pointertap',ev=>{
     const pos=ev.getLocalPosition(ltbl);
-    if(pos.y<=24){ tableInsp('otel_traces'); return; }
+    if(pos.y<=24){ if(pos.x>LTW-40){ doMerge(); } else tableInsp('otel_traces'); return; }
     const li=Math.floor((pos.y-28)/17)-1; // 0行目=ヘッダ
     if(li>=0&&li<lastShown.length) openInsp(spanJSONHtml(lastShown[li]));
     else toast('行をクリックするとスパンの実体(JSON)が見える');
@@ -725,7 +726,8 @@ scenes.S0=(()=>{
     if(rawFlash>0) rawFlash=Math.max(0,rawFlash-0.02);
     panel(ltblBg,LTW,hh,0xffffff,flash>0?0x2b8a3e:0xd9dbe0,flash>0?2:1);
     ltblBg.rect(1,1,LTW-2,24).fill(0xfff9db);
-    ltCount.text=Math.round(dispRows).toLocaleString()+' 行'; ltCount.x=LTW-12-ltCount.width;
+    ltMg.x=LTW-24;
+    ltCount.text=Math.round(dispRows).toLocaleString()+' 行'; ltCount.x=LTW-36-ltCount.width;
     ltbl.x=36; ltbl.y=rawY+rawH+52;
     if(flash>0) flash=Math.max(0,flash-0.015);
     secL.x=24; secL.y=INS_Y+28; secR.x=MX(); secR.y=INS_Y+28;
@@ -763,7 +765,8 @@ scenes.S0=(()=>{
       o.tx.text=d.hdr+'\n'+q.body;
       o.tx.style.fill=d.n?0x2a2e39:0x9aa0a8;
       o.tt.text='TABLE '+d.nm;
-      o.tcn.text=d.n+' 行'; o.tcn.x=q.w-10-o.tcn.width;
+      o.c.__w=q.w; if(o.tmg.text) o.tmg.x=q.w-22;
+      o.tcn.text=d.n+' 行'; o.tcn.x=q.w-(i===0?34:10)-o.tcn.width;
       o.c.x=q.x; o.c.y=q.y;
       if(tgtFlash[i]>0) tgtFlash[i]=Math.max(0,tgtFlash[i]-0.02);
     });
@@ -862,6 +865,9 @@ scenes.S1=(()=>{
         y+=h2+22;
       });
       hViews.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); hViews.delete(id); } });
+      const mg2=chip('h-merge','warn',()=>doMerge('1h'));
+      mg2.textContent='⇄ マージ';
+      placeChip(mg2,24+470,y+8);
       const bk=chip('h-back','warn',()=>{ S1T='otel_traces'; zoomTo('S0'); });
       bk.textContent='⊖ テーブル層へ';
       placeChip(bk,24+280,y+8);
@@ -906,6 +912,9 @@ scenes.S1=(()=>{
     // TABLE 囲み
     frameG.clear();
     frameG.roundRect(14,INS_Y+50,partW()+22,Math.max(120,y-INS_Y-50-4),10).stroke({width:1.5,color:0xcfd2c8});
+    const mg3=chip('s1merge','warn',()=>doMerge());
+    mg3.textContent='⇄ マージ';
+    placeChip(mg3,24+partW()-50,INS_Y+44);
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
     fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
     placeChip(fc,24+partW()/2,INS_Y+44);
@@ -1075,8 +1084,7 @@ function renderCrumb(){
 }
 
 /* ---------- 7. レール配線と初期化 ---------- */
-document.getElementById('bIns').onclick=doInsert;
-document.getElementById('bMerge').onclick=doMerge;
+
 document.getElementById('bDel').onclick=doDelete;
 document.getElementById('bUpd').onclick=doUpdate;
 document.getElementById('bProj').onclick=doProj;
