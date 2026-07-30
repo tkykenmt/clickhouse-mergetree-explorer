@@ -619,6 +619,12 @@ scenes.S0=(()=>{
   const ltCount=textV('',11.5,0x2b8a3e); ltCount.y=5;
   const ltbl=new PIXI.Container(); ltbl.addChild(ltblBg,ltblTx,ltTitle,ltCount); s.cont.addChild(ltbl);
   const edges=new PIXI.Graphics(); s.cont.addChild(edges);
+  const colBg=new PIXI.Graphics();
+  const colTitle=textV('OTel Collector',11.5,0xe8e6dc); colTitle.x=12; colTitle.y=8;
+  const colHint=textV('OTLP/HTTP ▸ クリックでバッチ送信',10.5,0x9a9a90); colHint.y=9;
+  const col=new PIXI.Container(); col.addChild(colBg,colTitle,colHint); s.cont.addChild(col);
+  col.eventMode='static'; col.cursor='pointer';
+  col.on('pointertap',()=>{ if(busy){ toast('実行中です','warn'); return; } doInsert(); });
   const rawBg=new PIXI.Graphics(), rawTx=textV('',11.5,0x8a8a80);
   rawTx.x=12; rawTx.y=26;
   const rawTitle=textV('TABLE otel_raw',11.5,0x77771f); rawTitle.x=12; rawTitle.y=4;
@@ -632,7 +638,7 @@ scenes.S0=(()=>{
     c.eventMode='static'; c.cursor='pointer';
     c.on('pointertap',()=>tableInsp(TKEYS[i]));
     return {c,bg,tx,tt,tcn}; });
-  const secL=textV('TABLE — 論理(このNodeのテーブルとMVパイプ)',11,0x9a9a90,false);
+  const secL=textV('',11,0x9a9a90,false);
   const secR=textV('',11,0x9a9a90,false);
   s.cont.addChild(secL,secR);
   let flash=0, pipePulse={}, dispRows=0, tgtFlash=[0,0,0], lastShown=[], G=null;
@@ -649,8 +655,8 @@ scenes.S0=(()=>{
   s.enter=()=>{ dispRows=tableRows(); };
   s.onEvent=e=>{
     if(e.t==='insert.arrive'){
-      const cx2=36+LTW*0.5, cy2=G?G.rawCy:INS_Y+80;
-      flyChip('OTLP バッチ '+(e.vals.length*2048).toLocaleString()+' 行(JSON)',0x2f9e44,cx2,-44,cx2,cy2,0.014,()=>{ rawFlash=1; },true);
+      const cx2=G?G.trX:171, cy2=G?G.rawCy:INS_Y+120;
+      flyChip('OTLP バッチ '+(e.vals.length*2048).toLocaleString()+' 行(JSON)',0x2f9e44,cx2,INS_Y+40,cx2,cy2,0.016,()=>{ rawFlash=1; },true);
     }
     else if(e.t==='insert.sorted'){
       rawPulse=1;
@@ -685,7 +691,11 @@ scenes.S0=(()=>{
       +'\n… 全 '+Math.round(dispRows).toLocaleString()+' 行 ・ 他の列: ParentSpanId, SpanKind, Attributes(Map), Events…';
     const hh=28+(shown.length+2)*17+10;
     // 受け口(ENGINE = Null)
-    const rawY=INS_Y+56, rawH=50;
+    const colY=INS_Y+6, colH=34;
+    panel(colBg,LTW,colH,0x26261f,0x4a4a40,1,8);
+    colHint.x=LTW-12-colHint.width;
+    col.x=36; col.y=colY;
+    const rawY=colY+colH+30, rawH=50;
     panel(rawBg,LTW,rawH,0xfcfcf8,rawFlash>0?0x2b8a3e:0xdcdcd2,rawFlash>0?2:1);
     rawBg.rect(1,1,LTW-2,22).fill(0xf1f1e8);
     rawCount.x=LTW-12-rawCount.width;
@@ -749,6 +759,9 @@ scenes.S0=(()=>{
       placeChip(ec,sg.side==='L'?sg.x-10:sg.x+10,(sg.y1+sg.y2)/2);
       if(pulse>0) pipePulse[sg.mv]=Math.max(0,pulse-0.01);
     });
+    // Collector → otel_raw(送信の線)
+    edges.moveTo(G.trX,colY+colH).lineTo(G.trX,rawY-7).stroke({width:1.5,color:0x9db08f});
+    edges.poly([G.trX,rawY,G.trX-4.5,rawY-8,G.trX+4.5,rawY-8]).fill(0x9db08f);
     // 取り込みパイプ(縦): otel_raw → transform_mv → otel_traces
     {
       const px2=G.trX, y1=G.rawBtm, y2v=ltbl.y;
