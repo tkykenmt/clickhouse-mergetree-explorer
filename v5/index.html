@@ -197,6 +197,7 @@ const GPR=4;                        // granule あたりの値の数(8192 行の
 
 /* ---- 状態 ---- */
 let seq=0, parts=[], fly=[], lanes=[], result=null, busy=false, simT=640;
+let ACT='storage'; // 演目: storage(待機/書き込み) | query(SELECT)
 let mv={}, mvFlash=0;   // MV hourly_counts(書き込み時に集計)
 let mv2={}, mv2Flash=0; // MV daily_counts(hourly からのカスケード)
 let mv3={}, mv3Flash=0; // MV trace_id_ts(別キーの索引化 = ClickStack 流)
@@ -261,7 +262,7 @@ function tick(){
 /* ---- 操作: INSERT(飛来 → ソート → granule 積み込み → 索引構築) ---- */
 function doInsert(){
   if(busy){ toast('実行中です','warn'); return; }
-  busy=true; clearQueryView();
+  busy=true; clearQueryView(); ACT='storage';
   const n=8+Math.floor(Math.random()*5);
   simT=Math.min(920,simT+12); // OTel らしく「いまの時刻近辺」が少し乱れて届く
   const vals=Array.from({length:n},()=>Math.max(0,Math.min(959,simT+Math.floor(Math.random()*50)-35)));
@@ -339,7 +340,7 @@ function doMerge(){
   const day=Object.keys(byDay).sort((a,b)=>byDay[b].length-byDay[a].length)[0];
   const act=byDay[day]||[];
   if(act.length<2){ toast('マージ対象なし(同じパーティション内に Part が2つ以上必要)','warn'); return; }
-  busy=true; clearQueryView();
+  busy=true; clearQueryView(); ACT='storage';
   const delN=act.reduce((s,p)=>s+(p.del?Object.keys(p.del).length:0),0);
   let vals=act.flatMap(p=>p.granules.flatMap((g,gi)=>g.filter((v,ci)=>!(p.del&&p.del[gi*GPR+ci])))).sort((x,y)=>x-y);
   let dedup=0;
@@ -368,7 +369,7 @@ function doUpdate(){
   const target=SVCF||'cart';
   const hit=parts.filter(p=>!p.dying&&p.granules.some(g=>g.some(v=>svcOf(v)===target)));
   if(!hit.length){ toast('該当行を含む Part がない(service = '+target+')','warn'); return; }
-  busy=true; clearQueryView();
+  busy=true; clearQueryView(); ACT='storage';
   mutSeq++;
   showSql("ALTER TABLE otel_events UPDATE attrs['tier'] = 'vip' WHERE service = '"+target+"'  -- mutation");
   showMsg('mutation 実行中…(system.mutations: is_done = 0)');
@@ -390,7 +391,7 @@ function doUpdate(){
 function doDelete(){
   if(busy){ toast('実行中です','warn'); return; }
   const target=SVCF||'cart';
-  busy=true; clearQueryView();
+  busy=true; clearQueryView(); ACT='storage';
   showSql("DELETE FROM otel_events WHERE service = '"+target+"'  -- 軽量削除(_row_exists でマスク)");
   let n=0;
   parts.filter(p=>!p.dying).forEach(p=>{
@@ -429,7 +430,7 @@ function doSelect(){
   if(busy){ toast('実行中です','warn'); return; }
   const act=parts.filter(p=>!p.dying);
   if(!act.length){ toast('Part がありません。まず INSERT を','warn'); return; }
-  busy=true; clearQueryView();
+  busy=true; clearQueryView(); ACT='query';
   // 上の SQL ペインがクライアントそのもの。飛来演出は不要になった
   showSql(SQLQ()+';');
   showMsg('実行中…');
@@ -779,7 +780,8 @@ function lvlStats(){
 function mvGeom(){
   if(MOB) return {x:10, y:partsBottom()+14, w:W-20};
   const px=24+partW(null)+36;
-  return {x:px, y:INS_Y+76+3*132+14, w:Math.min(520, W-px-24)};
+  if(ACT==='storage') return {x:px+80, y:INS_Y+120, w:Math.min(300, W-px-104)};
+  return {x:px, y:INS_Y+94+3*132+14, w:Math.min(520, W-px-24)};
 }
 function mvHgt(){ return 52+Math.max(1,Math.min(6,Object.keys(mv).length))*13+8; }
 function mv2Geom(){ const g=mvGeom(); return {x:g.x, y:g.y+mvHgt()+10, w:g.w}; }
@@ -890,7 +892,7 @@ document.getElementById('engSel').addEventListener('change',e=>{ ENG=e.target.va
 document.getElementById('bProj').addEventListener('click',()=>{
   if(busy){ toast('実行中です','warn'); return; }
   if(projOn){ toast('projection は追加済み。以後の INSERT には自動で入る(⚡proj バッジ)'); return; }
-  projOn=true;
+  projOn=true; ACT='storage';
   showSql("ALTER TABLE otel_events ADD PROJECTION p_svc (SELECT * ORDER BY service); ALTER TABLE otel_events MATERIALIZE PROJECTION p_svc;");
   parts.filter(p=>!p.dying).forEach(p=>{ p.hasProj=true; p.flash=1; });
   toast('MATERIALIZE PROJECTION: 各 Part の中に service 順に並べ直したコピーができた(ワンショットの一括処理)。以後の INSERT では書き込み時に自動生成される');
@@ -917,7 +919,7 @@ document.getElementById('bAmb').addEventListener('click',()=>{
 document.getElementById('bReset').addEventListener('click',()=>{
   if(busy){ toast('実行中です。終わってからリセットを','warn'); return; }
   stopDemo();
-  parts=[]; fly=[]; lanes=[]; result=null; seq=0; mv={}; mv2={}; mv3={}; projOn=false; setStage(0);
+  parts=[]; fly=[]; lanes=[]; result=null; seq=0; mv={}; mv2={}; mv3={}; projOn=false; ACT='storage'; setStage(0);
   seedParts(); layout(); parts.forEach(p=>{ p.x=p.tx; p.y=p.ty; });
   showDefaultResult();
   toast('初期状態に戻した。INSERT → マージ → SELECT をもう一度最初から試せる');
@@ -1214,11 +1216,15 @@ window.__pixiRender=function(){
   frame++;
   paper.clear();
   paper.roundRect(6,8,STW(),innerHeight-16-(innerWidth<=900?world.y:0),12).fill(0xf8f8f6).stroke({width:1,color:0xe2e2dd});
-  strip.clear(); strip.roundRect(16,INS_Y,STW()-32,40,6).stroke({width:1,color:0xd9dbe0,alpha:1});
+  strip.visible=stripLb.visible=legend.visible=(ACT==='storage');
+  strip.clear();
+  if(strip.visible) strip.roundRect(16,INS_Y,STW()-32,40,6).stroke({width:1,color:0xd9dbe0,alpha:1});
   stripLb.x=28; stripLb.y=INS_Y+5;
   legend.x=Math.max(340,W-legend.width-28); legend.y=INS_Y+26;
   secL.x=MOB?10:24; secL.y=INS_Y+54;
-  const _lg0=laneGeom(0); secR.x=_lg0.x; secR.y=INS_Y+54; secR.visible=!MOB;
+  const _lg0=laneGeom(0);
+  secR.text=ACT==='query'?'COMPUTE — CPU コアのレーンと部分集計':'MATERIALIZED VIEWS — 書き込み時に育つ派生テーブル';
+  secR.x=ACT==='query'?_lg0.x:(24+partW(null)+36+80); secR.y=INS_Y+54; secR.visible=!MOB;
   legend.text='otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts';
   {
     const pb=partsBottom();
@@ -1257,7 +1263,7 @@ window.__pixiRender=function(){
   partViews.forEach((v,id)=>{ if(v.seen!==frame){ v.cont.destroy({children:true}); partViews.delete(id); } });
   laneViews.forEach((lv,i)=>{
     const g0=laneGeom(i);
-    if(MOB&&!lanes.length){ lv.cont.visible=false; const cc=chips.get('l'+i); if(cc){cc.remove(); chips.delete('l'+i);} return; }
+    if(ACT!=='query'||(MOB&&!lanes.length)){ lv.cont.visible=false; const cc=chips.get('l'+i); if(cc){cc.remove(); chips.delete('l'+i);} return; }
     lv.cont.visible=true;
     lv.cont.x=g0.x; lv.cont.y=g0.y;
     const l=lanes[i];
@@ -1286,7 +1292,12 @@ window.__pixiRender=function(){
     c.innerHTML='lane '+(i+1)+(l?' · '+(l.doneN||0)+'/'+l.fed+' granule <b>Σ '+sum.toLocaleString()+'</b>':'');
     placeChip(c,g0.x+g0.w/2,g0.y+3);
   });
-  {
+  if(ACT!=='storage'){
+    mvV1.cont.visible=mvV2.cont.visible=mvV3.cont.visible=false;
+    edges.clear();
+    ['mv1','mv2','mv3','e1','e2','e3'].forEach(k=>{ const cc=chips.get(k); if(cc){cc.remove(); chips.delete(k);} });
+  } else {
+    mvV1.cont.visible=mvV2.cont.visible=mvV3.cont.visible=true;
     // MV = 行を持つミニテーブル。otel_events から ER 風の点線で繋ぐ
     const mg=mvGeom();
     const w1=Math.min(250,mg.w*0.6);
