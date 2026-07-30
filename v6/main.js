@@ -32,6 +32,8 @@ function seqRun(steps){ let t=0; for(const [d,fn] of steps){ t+=d; setTimeout(fn
 /* ---------- 1. sim(座標なし) ---------- */
 let parts=[], seq=0, busy=false, projOn=false, mutSeq=6;
 let mvH={}, mvD={}, mvT={}, trSeq=0;
+let mvHParts=[], hpSeq=0;      // otel_traces_1h の Part(状態行の束)
+let S1T='otel_traces', SCENE='S0'; // S1 の対象テーブル / 現在シーン
 let PRED=600, SVCF='', IDXT='minmax', ENG='mt';
 function seedParts(){
   const mk=(vals,lvl,name,day)=>{ seq++; parts.push({id:seq,name,day,granules:mkGranules(keySort(vals)),lvl,del:{},upd:{}}); };
@@ -71,7 +73,12 @@ function doInsert(){
     [900,()=>{ const hrs=new Set(sorted.map(v=>Math.floor(v/60)+'|'+svcOf(v))).size;
       emit('mv.fire',{mv:'otel_traces_1h_mv',src:'otel_traces',dst:'otel_traces_1h',
         inLbl:(sorted.length*2048).toLocaleString()+' 行のブロック',outLbl:'GROUP BY (hour, Service) → 状態 '+hrs+' 行'}); }],
-    [1800,()=>{ sorted.forEach(v=>{ const k=String(Math.floor(v/60)*60).padStart(4,'0')+'|'+svcOf(v); const r=mvH[k]||(mvH[k]={c:0,d:0}); r.c+=2048; r.d+=durOf(v)*2048; }); emit('mv.applied',{mv:'otel_traces_1h_mv'}); }],
+    [1800,()=>{ const pr={};
+      sorted.forEach(v=>{ const k=String(Math.floor(v/60)*60).padStart(4,'0')+'|'+svcOf(v);
+        const r=mvH[k]||(mvH[k]={c:0,d:0}); r.c+=2048; r.d+=durOf(v)*2048;
+        const q=pr[k]||(pr[k]={c:0,d:0}); q.c+=2048; q.d+=durOf(v)*2048; });
+      mvHParts.push({id:++hpSeq,rows:pr,flash:1});
+      emit('mv.applied',{mv:'otel_traces_1h_mv'}); }],
     [900,()=>emit('mv.fire',{mv:'otel_traces_1d_mv',src:'otel_traces_1h',dst:'otel_traces_1d',
         inLbl:'hourly の増分',outLbl:'day 合計 → 1 行'})],
     [1800,()=>{ mvD[TODAY]=(mvD[TODAY]||0)+sorted.length*2048; emit('mv.applied',{mv:'otel_traces_1d_mv'}); }],
@@ -87,6 +94,20 @@ function doInsert(){
 }
 function doMerge(){
   if(busy) return toast('実行中です','warn');
+  if(SCENE==='S1'&&S1T==='otel_traces_1h'){
+    if(mvHParts.length<2) return toast('Part が1つ以下。Collector からバッチを流すと増える','warn');
+    busy=true;
+    emit('merge.start',{pids:mvHParts.map(q=>q.id),day:TODAY});
+    setTimeout(()=>{
+      const fold={};
+      mvHParts.forEach(q=>Object.keys(q.rows).forEach(k=>{ const r=fold[k]||(fold[k]={c:0,d:0}); r.c+=q.rows[k].c; r.d+=q.rows[k].d; }));
+      mvHParts=[{id:++hpSeq,rows:fold,flash:1}];
+      emit('part.merged',{into:hpSeq,from:[]});
+      toast('AggregatingMergeTree のマージ: 同じ ORDER BY キー (hour, Service) の行は「状態」(sum と count)を結合して1行になる。avg はここでは計算されない — 読む側が avgMerge で確定する');
+      busy=false;
+    },1400);
+    return;
+  }
   const byDay={}; actParts().forEach(p=>{ (byDay[p.day]=byDay[p.day]||[]).push(p); });
   const day=Object.keys(byDay).sort().reverse().find(d=>byDay[d].length>=2);
   if(!day) return toast('マージ対象がない。同じ Partition に Part が2つ以上必要(INSERT を)','warn');
@@ -410,7 +431,7 @@ ORDER BY (ServiceName, SpanName,
 )
 ENGINE = AggregatingMergeTree
 ORDER BY (Timestamp, ServiceName)`,
-    live:()=>Object.keys(mvH).length+' 行(状態)'},
+    live:()=>{ const rows=mvHParts.reduce((s,q)=>s+Object.keys(q.rows).length,0); return rows+' 行(状態) / キー '+Object.keys(mvH).length+' ・ Part ×'+mvHParts.length; }},
   otel_traces_1d:{t:'TABLE otel_traces_1d',
     d:'階層ロールアップ(1h → 1d)の受け皿。ClickStack の既定には無い一般パターン。ソースは otel_traces_1h で、MV の宛先への書き込みもただの INSERT なので連鎖発火する(カスケード)。',
     ddl:`CREATE TABLE otel_traces_1d
@@ -774,7 +795,10 @@ scenes.S0=(()=>{
       placeChip(tec,px2-10,(y1+y2v)/2);
       if(rawPulse>0) rawPulse=Math.max(0,rawPulse-0.01);
     }
-    const zc=chip('s0zoom','warn',()=>zoomTo('S1'));
+    const z1=chip('s0z1h','warn',()=>{ S1T='otel_traces_1h'; zoomTo('S1'); });
+    z1.textContent='⊕ 中を見る(Part / 状態)';
+    placeChip(z1,pos[0].x+pos[0].w/2,pos[0].y+pos[0].h+16);
+    const zc=chip('s0zoom','warn',()=>{ S1T='otel_traces'; zoomTo('S1'); });
     zc.textContent='⊕ 中を見る(Part / granule)';
     placeChip(zc,36+LTW/2,ltbl.y+hh+14);
   };
@@ -792,6 +816,7 @@ scenes.S1=(()=>{
   s.cont.addChild(secL);
   const stubs=[0,1,2].map(()=>{ const g=new PIXI.Graphics(); s.cont.addChild(g); return g; });
   let stubPulse=[0,0,0], insBatch=null, insPhase='';
+  const hViews=new Map();
   function partPos(i){ // 縦積み、partitionで字下げ
     const xs={}; let y=INS_Y+66;
     const list=actParts();
@@ -807,12 +832,47 @@ scenes.S1=(()=>{
       insPhase='fly';
       setTimeout(()=>{ insBatch=null; insPhase=''; },900);
     }
-    else if(e.t==='mv.fire'){ const i={otel_traces_1h_mv:0,otel_traces_1d_mv:1,otel_traces_trace_id_ts_mv:2}[e.mv]; stubPulse[i]=1; }
+    else if(e.t==='mv.fire'){ const i={otel_traces_1h_mv:0,otel_traces_trace_id_ts_mv:1}[e.mv]; if(i!=null) stubPulse[i]=1; }
     else if(e.t==='part.merged'){ const p=parts.find(x=>x.id===e.into); if(p) p.flash=1; }
     else if(e.t==='delete.mask'||e.t==='mutation.rewrite'){ actParts().forEach(p=>p.flash=Math.max(p.flash||0,0.5)); }
   };
   s.tick=()=>{
-    secL.x=24; secL.y=INS_Y+2;
+    if(S1T==='otel_traces_1h'){
+      frameG.clear(); strip.clear(); stubs.forEach(g=>g.clear());
+      stripTiles.removeChildren().forEach(c=>c.destroy());
+      secL.text='STORAGE — otel_traces_1h の中(AggregatingMergeTree)'; secL.x=24; secL.y=INS_Y+2;
+      let y=INS_Y+46; const seen=new Set();
+      mvHParts.forEach(q=>{
+        let v=hViews.get(q.id);
+        if(!v){ v={cont:new PIXI.Container(),bg:new PIXI.Graphics(),tx:textV('',11.5,0x2a2e39)};
+          v.tx.x=12; v.tx.y=26; v.cont.addChild(v.bg,v.tx); s.cont.addChild(v.cont); hViews.set(v.id=q.id,v); }
+        seen.add(q.id);
+        const keys=Object.keys(q.rows).sort();
+        const rows=keys.map(k=>{ const r=q.rows[k], hs=+k.split('|')[0], sv=k.split('|')[1];
+          return fmtT(hs).padEnd(7)+sv.padEnd(11)+('c='+r.c.toLocaleString()).padEnd(10)+'avgState{sum:'+Math.round(r.d/1000).toLocaleString()+'s, n:'+r.c.toLocaleString()+'}'; });
+        const h2=26+Math.max(1,rows.length)*16+12;
+        panel(v.bg,560,h2,0xffffff,q.flash>0?0x9775fa:0xd9dbe0,q.flash>0?2:1,8);
+        v.bg.rect(1,1,558,22).fill(0xf1ecfa);
+        v.tx.text=rows.join('\n')||'(空)';
+        v.cont.x=24; v.cont.y=y;
+        const c=chip('h'+q.id,'mv',()=>tableInsp('otel_traces_1h'));
+        c.textContent='part '+q.id+' ・ 状態 '+keys.length+' 行';
+        placeChip(c,24+120,y+2);
+        if(q.flash>0) q.flash=Math.max(0,q.flash-0.02);
+        y+=h2+22;
+      });
+      hViews.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); hViews.delete(id); } });
+      const bk=chip('h-back','warn',()=>{ S1T='otel_traces'; zoomTo('S0'); });
+      bk.textContent='⊖ テーブル層へ';
+      placeChip(bk,24+280,y+8);
+      const nt=chip('h-note','',null);
+      nt.textContent=mvHParts.length>1?'同じ (hour, Service) キーが複数 Part に居る → ⇄ マージで状態が結合される':'マージ済み: キーごとに1行。avg の確定は読む側の avgMerge';
+      nt.style.opacity='0.8';
+      placeChip(nt,24+280,y+34);
+      return;
+    }
+    hViews.forEach((v,id)=>{ v.cont.destroy({children:true}); hViews.delete(id); });
+    secL.text='STORAGE — otel_traces の中(Partition ⊃ Part ⊃ granule)';
     // INSERT 帯
     strip.clear();
     if(insBatch){
@@ -848,19 +908,21 @@ scenes.S1=(()=>{
     frameG.roundRect(14,INS_Y+50,partW()+22,Math.max(120,y-INS_Y-50-4),10).stroke({width:1.5,color:0xcfd2c8});
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
     fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
-    placeChip(fc,24+partW()/2,y+4);
-    // MV パイプ口
-    const sx=24+partW()+70;
-    ['otel_traces_1h_mv','otel_traces_1d_mv','otel_traces_trace_id_ts_mv'].forEach((mv,i)=>{
-      const g=stubs[i]; const yy=INS_Y+90+i*72;
+    placeChip(fc,24+partW()/2,INS_Y+44);
+    // MV パイプ口: 枠の底から下へ(1d_mv は 1h から生えるのでここには無い)
+    const fb=y+18;
+    ['otel_traces_1h_mv','otel_traces_trace_id_ts_mv'].forEach((mv,i)=>{
+      const g=stubs[i]; const bx=24+50+i*240, cx3=bx+60;
       g.clear();
-      g.roundRect(sx,yy,120,40,8).fill(stubPulse[i]>0?0xeee6fb:0xf6f4fb).stroke({width:stubPulse[i]>0?2:1,color:stubPulse[i]>0?0x9775fa:0xddd0f0});
-      dotted(g,24+partW()+10,yy+20,sx,yy+20,0x5d4a86);
-      const c=chip('s1mv'+i,'mv',()=>zoomTo('S0'));
+      g.moveTo(cx3,fb).lineTo(cx3,fb+26).stroke({width:stubPulse[i]>0?2.5:1.5,color:stubPulse[i]>0?0x7048c8:0xb9a6dd});
+      g.poly([cx3,fb+33,cx3-4.5,fb+25,cx3+4.5,fb+25]).fill(stubPulse[i]>0?0x7048c8:0xb9a6dd);
+      g.roundRect(bx,fb+36,120,30,8).fill(stubPulse[i]>0?0xeee6fb:0xf6f4fb).stroke({width:stubPulse[i]>0?2:1,color:stubPulse[i]>0?0x9775fa:0xddd0f0});
+      const c=chip('s1mv'+i,'mv',()=>{ S1T='otel_traces'; zoomTo('S0'); });
       c.textContent='▸ '+mv;
-      placeChip(c,sx+60,yy+20);
+      placeChip(c,cx3,fb+54);
       if(stubPulse[i]>0) stubPulse[i]=Math.max(0,stubPulse[i]-0.015);
     });
+    if(stubs[2]) stubs[2].clear();
   };
   return s;
 })();
@@ -992,7 +1054,7 @@ function switchTo(name){
   chips.forEach((c,k)=>{ c.remove(); }); chips.clear();
   clearFly();
   rescEl.style.display='none'; rescEl.__st=null; // S2の持ち物は退場時に隠す
-  curName=name; cur=scenes[name];
+  curName=name; SCENE=name; cur=scenes[name];
   world.addChild(cur.cont);
   world.addChild(flyC); // 最前面へ
   cur.enter(); renderCrumb();
@@ -1003,7 +1065,7 @@ function renderCrumb(){
   const seg=(lbl,on,fn)=>'<span class="cr'+(on?' on':'')+'" data-go="'+(fn||'')+'">'+lbl+'</span>';
   let html=seg('node-1',false,'')+'<span class="sep">›</span>';
   if(curName==='S0') html+=seg('tables',true);
-  else if(curName==='S1') html+=seg('tables',false,'S0')+'<span class="sep">›</span>'+seg('otel_traces',true);
+  else if(curName==='S1') html+=seg('tables',false,'S0')+'<span class="sep">›</span>'+seg(S1T,true);
   else html+=seg('tables',false,'S0')+'<span class="sep">›</span>'+seg('クエリ実行',true)+' <span class="cr" data-go="'+zoomBefore+'">⊖ ステージへ戻る</span>';
   crumbEl.innerHTML=html;
   crumbEl.querySelectorAll('.cr').forEach(el=>{
@@ -1043,7 +1105,7 @@ if(bAmb) bAmb.onclick=()=>{
 };
 document.getElementById('bReset').onclick=()=>{
   if(busy) return toast('実行中です','warn');
-  parts=[]; seq=0; mvH={}; mvD={}; mvT={}; trSeq=0; projOn=false; mutSeq=6;
+  parts=[]; seq=0; mvH={}; mvD={}; mvT={}; trSeq=0; mvHParts=[]; hpSeq=0; S1T='otel_traces'; projOn=false; mutSeq=6;
   seedParts(); showDefault(); switchTo('S0');
   toast('初期状態に戻した');
 };
