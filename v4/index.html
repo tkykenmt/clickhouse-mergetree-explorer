@@ -464,7 +464,7 @@ function startRead(act,kept,total){
     },600);
     return;
   }
-  lanes=Array.from({length:LANES},(_,i)=>({i,queue:[],cur:null,simd:0,partial:{},fed:0}));
+  lanes=Array.from({length:LANES},(_,i)=>({i,queue:[],cur:null,simd:0,partial:{},fed:0,doneN:0}));
   let arrived=0;
   kept.forEach((k,idx)=>{
     const lane=lanes.reduce((a,b)=>a.fed<=b.fed?a:b); // 動的配分(空いているレーンへ)
@@ -483,7 +483,7 @@ function startProcess(act,keptN,total){
   // ③ ベクトル化実行: レーンごとに granule を SIMD で一括評価し、部分集計を積む
   setStage(3);
   showSql(SQLQ()+'  -- ③ '+LANES+' レーンが並列にベクトル化実行(SIMD)');
-  toast('③ 並列処理: granule は '+LANES+' 本のレーン(= max_threads、それぞれ CPU コア上のスレッド)へ動的に配分。色が granule とレーンの対応。各レーンは束を SIMD で一括評価し、自分の部分集計を持つ');
+  toast('③ 並列処理: granule は '+LANES+' 本のレーン(= max_threads、それぞれ CPU コア上のスレッド)へ動的に配分。色が granule とレーンの対応。各レーンは束を SIMD で一括評価し、自分の部分集計を持つ。granule がレーン数より多いときは、各レーンが1つずつ直列に消化する');
   const proc=setInterval(()=>{
     let active=false;
     lanes.forEach(l=>{
@@ -492,6 +492,7 @@ function startProcess(act,keptN,total){
         const hits=l.cur.cells.filter(v=>v!=null&&v>=PRED&&(!SVCF||svcOf(v)===SVCF));
         hits.forEach(v=>{ const b=Math.floor(v/BUCKET)*BUCKET; l.partial[b]=(l.partial[b]||0)+8192/GPR; }); // b = 時間帯(60分)
         if(hits.length) l.lastAdd={v:hits.length*8192/GPR,t:1};
+        l.doneN=(l.doneN||0)+1;
         l.cur=null;
       }
       if(l.queue.length){ l.cur=l.queue.shift(); l.simd=1; active=true; }
@@ -1043,8 +1044,17 @@ const world=new PIXI.Container(); stage.addChild(world);
 const strip=new PIXI.Graphics(); world.addChild(strip);
 const stripLb=textV('INSERT ブロック(届いた順) → ソート → granule 区切り',10,0x7a7a74); world.addChild(stripLb);
 const legend=textV('otel_events(ts, service, …) ENGINE = MergeTree PARTITION BY toDate(ts) ORDER BY ts',11,0x9a9a94); world.addChild(legend);
-const secL=new PIXI.Text({text:'STORAGE — Part(ファイル)',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:10,fill:0x7a7a74,letterSpacing:1.4}}); world.addChild(secL);
+const secL=new PIXI.Text({text:'STORAGE',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:10,fill:0x7a7a74,letterSpacing:1.4}}); world.addChild(secL);
 const secR=new PIXI.Text({text:'COMPUTE — CPU コアのレーンと MV',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:10,fill:0x7a7a74,letterSpacing:1.4}}); world.addChild(secR);
+const tblFrame=new PIXI.Graphics(); world.addChildAt(tblFrame,1);
+const tblLb=new PIXI.Text({text:'TABLE otel_events',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:10,fill:0x9a9a94,letterSpacing:1.2}}); world.addChild(tblLb);
+const edges=new PIXI.Graphics(); world.addChildAt(edges,1);
+function dotted(g,x1,y1,x2,y2,col){
+  const dx=x2-x1,dy=y2-y1,L=Math.hypot(dx,dy),n=Math.max(2,Math.floor(L/9));
+  for(let i=0;i<n;i+=2){ const a=i/n,b=Math.min(1,(i+1)/n);
+    g.moveTo(x1+dx*a,y1+dy*a).lineTo(x1+dx*b,y1+dy*b); }
+  g.stroke({width:1.2,color:col,alpha:0.75});
+}
 
 // Part ビュー
 const partViews=new Map();
@@ -1087,11 +1097,13 @@ function buildLane(i){
     const cg=new PIXI.Graphics(); const tx=textV('',MOB?7.5:9.5,0xe8eaf0); tx.anchor.set(0.5);
     cont.addChild(cg,tx); evalCells.push({cg,tx,st:'',v:null});
   }
+  const ser=new PIXI.Text({text:'キューから 1 granule ずつ直列に SIMD 評価',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:8.5,fill:0x7a7a74,letterSpacing:0.5}});
+  cont.addChild(ser);
   const qm=[];
   for(let q=0;q<4;q++){ const g=new PIXI.Graphics(); g.roundRect(0,0,34,8,3).fill({color:LANE_COL[i],alpha:0.45}); g.visible=false; cont.addChild(g); qm.push(g); }
   cont.eventMode='static'; cont.cursor='pointer';
   cont.on('pointertap',e=>{ e.stopPropagation(); openInsp('lane',i); });
-  return {cont,bg,rail,pad,evalCells,qm};
+  return {cont,bg,rail,pad,evalCells,qm,ser};
 }
 for(let i=0;i<LANES;i++) laneViews.push(buildLane(i));
 
@@ -1099,9 +1111,11 @@ for(let i=0;i<LANES;i++) laneViews.push(buildLane(i));
 function buildMV(color,idn){
   const cont=new PIXI.Container(); world.addChild(cont);
   const bg=new PIXI.Graphics(); cont.addChild(bg);
+  const txt=new PIXI.Text({text:'',style:{fontFamily:'Inconsolata,Menlo,monospace',fontWeight:'600',fontSize:11,fill:0xc7cede,lineHeight:14}});
+  cont.addChild(txt);
   cont.eventMode='static'; cont.cursor='pointer';
   cont.on('pointertap',e=>{ e.stopPropagation(); openInsp('mv',idn); });
-  return {cont,bg,color};
+  return {cont,bg,txt,color};
 }
 const mvV1=buildMV(0x5d4a86,1), mvV2=buildMV(0x453763,2);
 
@@ -1137,6 +1151,13 @@ window.__pixiRender=function(){
   secL.x=MOB?10:24; secL.y=INS_Y+54;
   const _lg0=laneGeom(0); secR.x=_lg0.x; secR.y=INS_Y+54; secR.visible=!MOB;
   legend.text='otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts';
+  {
+    const pb=partsBottom();
+    const x0=(MOB?10:24)-10;
+    tblFrame.clear();
+    tblFrame.roundRect(x0,INS_Y+72,partWpx()+20,pb-(INS_Y+72)+2,8).stroke({width:1,color:0x4a4a44});
+    tblLb.x=x0+10; tblLb.y=pb-14; // 枠の下辺(Part チップと重ねない)
+  }
   parts.forEach(p=>{
     if(p.dead) return;
     let v=partViews.get(p.id);
@@ -1190,23 +1211,46 @@ window.__pixiRender=function(){
       }
     });
     lv.qm.forEach((m,qi)=>{ m.visible=!!(l&&l.queue.length>qi); m.x=10; m.y=g0.h*0.3+qi*12; });
+    lv.ser.x=g0.w*0.24; lv.ser.y=g0.h-14;
     const sum=l?Object.keys(l.partial).reduce((s,b)=>s+l.partial[b],0):0;
     const c=chip('l'+i,'lane',()=>openInsp('lane',i));
-    c.innerHTML='lane '+(i+1)+(l?' <b>Σ '+sum.toLocaleString()+'</b>':'');
+    c.innerHTML='lane '+(i+1)+(l?' · '+(l.doneN||0)+'/'+l.fed+' granule <b>Σ '+sum.toLocaleString()+'</b>':'');
     placeChip(c,g0.x+g0.w/2,g0.y+3);
   });
   {
+    // MV = 行を持つミニテーブル。otel_events から ER 風の点線で繋ぐ
     const mg=mvGeom();
-    const w1=Math.min(240,mg.w*0.55);
-    [{v:mvV1,y:mg.y,rows:Object.keys(mv).length,fl:mvFlash,nm:'MV hourly_counts',key:'mv1',idn:1},
-     {v:mvV2,y:mg.y+80,rows:Object.keys(mv2).length,fl:mv2Flash,nm:'MV daily_counts',key:'mv2',idn:2}].forEach(o=>{
+    const w1=Math.min(250,mg.w*0.6);
+    const e1=Object.keys(mv).map(Number).sort((a,b)=>a-b);
+    const e2=Object.keys(mv2).sort();
+    const rows1=e1.length?e1.slice(0,3).map(b=>fmtT(b)+'〜  '+mv[b].toLocaleString()).join('\n')+(e1.length>3?'\n+'+(e1.length-3)+' 行':''):'(空 — 作成後の INSERT だけ反映)';
+    const rows2=e2.length?e2.slice(0,2).map(d=>d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'  '+mv2[d].toLocaleString()).join('\n'):'(空)';
+    const h1=26+Math.max(1,Math.min(4,e1.length||1))*14+10;
+    const h2=26+Math.max(1,Math.min(2,e2.length||1))*14+10;
+    const y2=mg.y+h1+34;
+    [{v:mvV1,y:mg.y,txt:rows1,n:e1.length,fl:mvFlash,nm:'MV hourly_counts',key:'mv1',idn:1,hh:h1},
+     {v:mvV2,y:y2,txt:rows2,n:e2.length,fl:mv2Flash,nm:'MV daily_counts',key:'mv2',idn:2,hh:h2}].forEach(o=>{
       o.v.cont.x=mg.x; o.v.cont.y=o.y;
-      panel(o.v.bg,w1,48,0x1a1424,o.fl>0?0xc9a2ff:0x453763,8);
-      o.v.bg.roundRect(8,10,10,28,2).fill(o.v.color+0x202020);
+      panel(o.v.bg,w1,o.hh,0x232320,o.fl>0?0xc9a2ff:0x4a4460,6);
+      o.v.bg.rect(1,1,w1-2,16).fill(0x2b2b27);
+      o.v.txt.text=o.txt; o.v.txt.x=10; o.v.txt.y=22;
+      o.v.txt.style.fill=o.n?0xc7cede:0x7a7a74;
       const c=chip(o.key,'mv',()=>openInsp('mv',o.idn));
-      c.innerHTML=o.nm+' <b>'+o.rows+'行</b>';
-      placeChip(c,mg.x+w1/2,o.y+2);
+      c.innerHTML=o.nm+' <b>'+o.n+'行</b>';
+      placeChip(c,mg.x+w1/2,o.y+3);
     });
+    // エッジ: テーブル囲み → hourly → daily
+    edges.clear();
+    if(!MOB){
+      const pb=partsBottom();
+      const tx1=24+partWpx()+10;
+      dotted(edges,tx1,Math.min(pb,mg.y+h1/2+40),mg.x,mg.y+h1/2,0x5d4a86);
+      dotted(edges,mg.x+w1/2,mg.y+h1,mg.x+w1/2,y2,0x5d4a86);
+      const ce1=chip('e1','mv',()=>openInsp('mv',1)); ce1.textContent='INSERT 時に自動集計 →';
+      placeChip(ce1,(tx1+mg.x)/2,Math.min(pb,mg.y+h1/2+40)-4);
+      const ce2=chip('e2','mv',()=>openInsp('mv',2)); ce2.textContent='カスケード';
+      placeChip(ce2,mg.x+w1/2,(mg.y+h1+y2)/2+8);
+    }
   }
   fly.forEach(f=>{
     if(f.__id==null) f.__id=++flySeq;
