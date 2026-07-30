@@ -823,7 +823,14 @@ scenes.S1=(()=>{
   const secL=textV('STORAGE — otel_traces の中(Partition ⊃ Part ⊃ granule)',11,0x9a9a90,false);
   s.cont.addChild(secL);
   const stubs=[0,1,2].map(()=>{ const g=new PIXI.Graphics(); s.cont.addChild(g); return g; });
-  let stubPulse=[0,0,0], insBatch=null, insPhase='';
+  let stubPulse=[0,0,0], insBatch=null, insPhase='', flyPend=false, segC={};
+  const rawB=new PIXI.Container();
+  const rawBg2=new PIXI.Graphics();
+  const rawT2=textV('TABLE otel_raw ・ ENGINE = Null — Part を持たない(発火のみ)',10.5,0x8a8a80);
+  rawT2.x=12; rawT2.y=6;
+  rawB.addChild(rawBg2,rawT2); s.cont.addChild(rawB);
+  rawB.eventMode='static'; rawB.cursor='pointer';
+  rawB.on('pointertap',()=>tableInsp('otel_raw'));
   const colB=new PIXI.Container();
   const colBg2=new PIXI.Graphics();
   const colT2=textV('OTel Collector',11,0xe8e6dc); colT2.x=12; colT2.y=7;
@@ -846,16 +853,27 @@ scenes.S1=(()=>{
     else if(e.t==='insert.sorted'){ insBatch=e.vals; insPhase='sorted'; }
     else if(e.t==='part.born'){
       const p=parts.find(x=>x.id===e.pid); if(p) p.flash=1;
+      flyPend=true;
       insPhase='fly';
       setTimeout(()=>{ insBatch=null; insPhase=''; },900);
     }
-    else if(e.t==='mv.fire'){ const i={otel_traces_1h_mv:0,otel_traces_trace_id_ts_mv:1}[e.mv]; if(i!=null) stubPulse[i]=1; }
+    else if(e.t==='mv.fire'){
+      const i={otel_traces_1h_mv:0,otel_traces_trace_id_ts_mv:1}[e.mv];
+      if(i!=null) stubPulse[i]=1;
+      const sc2=segC[e.mv];
+      if(sc2){
+        flyChip(e.inLbl||'ブロック',0x2f9e44,sc2.x,sc2.y1-14,sc2.x,(sc2.y1+sc2.y2)/2,0.02,()=>{
+          if(i!=null) stubPulse[i]=1;
+          flyChip(e.outLbl||'集計行',0x7048c8,sc2.x,(sc2.y1+sc2.y2)/2,sc2.x,sc2.y2-6,0.02,null,true);
+        },true);
+      }
+    }
     else if(e.t==='part.merged'){ const p=parts.find(x=>x.id===e.into); if(p) p.flash=1; }
     else if(e.t==='delete.mask'||e.t==='mutation.rewrite'){ actParts().forEach(p=>p.flash=Math.max(p.flash||0,0.5)); }
   };
   s.tick=()=>{
     if(false&&S1T==='otel_traces_1h'){
-      colB.visible=false;
+      colB.visible=false; rawB.visible=false;
       frameG.clear(); strip.clear(); stubs.forEach(g=>g.clear());
       stripTiles.removeChildren().forEach(c=>c.destroy());
       secL.text='STORAGE — otel_traces_1h の中(AggregatingMergeTree)'; secL.x=24; secL.y=INS_Y+2;
@@ -899,48 +917,65 @@ scenes.S1=(()=>{
     panel(colBg2,cw3,30,0x26261f,0x4a4a40,1,8);
     colH2.x=cw3-12-colH2.width;
     colB.visible=true; colB.x=14; colB.y=INS_Y;
+    panel(rawBg2,cw3,26,0xfcfcf8,0xdcdcd2,1,6);
+    rawB.visible=true; rawB.x=14; rawB.y=INS_Y+38;
+
     // INSERT 帯
     strip.clear();
     if(insBatch){
-      strip.roundRect(16,INS_Y+40,STW()-32,36,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
+      strip.roundRect(16,INS_Y+74,STW()-32,36,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
       const sc=chip('s1strip','',null);
       sc.textContent=insPhase==='arrive'?'OTLP バッチ(届いた順)':insPhase==='sorted'?'ORDER BY (ServiceName, Timestamp) でソート → granule 区切り':'新しい Part へ';
-      placeChip(sc,STW()/2,INS_Y+38);
+      placeChip(sc,STW()/2,INS_Y+72);
       stripTiles.removeChildren().forEach(c=>c.destroy());
       const list=insPhase==='arrive'?insBatch:[...insBatch];
       list.forEach((v,i)=>{
         const t=textV(fmtT(v),10,0x2a2e39);
         const g=new PIXI.Graphics(); g.roundRect(0,0,CELL,20,4).fill(insPhase==='arrive'?0xfff3bf:0xd3f9d8).stroke({width:1,color:0xdad9d0});
         const c=new PIXI.Container(); c.addChild(g,t); t.x=CELL/2-t.width/2; t.y=3;
-        c.x=30+i*(CELL+4); c.y=INS_Y+48; stripTiles.addChild(c);
+        c.x=30+i*(CELL+4); c.y=INS_Y+82; stripTiles.addChild(c);
       });
     } else { const sc=chips.get('s1strip'); if(sc){sc.remove(); chips.delete('s1strip');} stripTiles.removeChildren().forEach(c=>c.destroy()); }
     // Parts
-    let y=INS_Y+100; const seen=new Set();
+    let yL=INS_Y+150, yR=INS_Y+150; const seen=new Set();
     actParts().forEach(p=>{
       let v=views.get(p.id);
       if(!v){ v=buildPartView(); views.set(p.id,v); s.cont.addChild(v.cont); }
       seen.add(p.id);
-      v.cont.x=24; v.cont.y=y;
+      const left=yL<=yR, px=left?24:538, py=left?yL:yR;
+      v.cont.x=px; v.cont.y=py;
       updatePartView(v,p,null);
       const c=chip('s1p'+p.id,'',()=>toast('Part '+p.name+' — 不変。書き換えは常に新しい Part(_'+mutSeq+') が生まれる'));
       c.textContent=p.name+' · '+p.granules.length+'g';
-      placeChip(c,24+partW()/2,y-2);
-      y+=partH(p)+18;
+      placeChip(c,px+partW()/2,py-2);
+      if(flyPend&&p.flash>0.92){
+        flyChip('granule 区切り → 新 Part',0x2f9e44,STW()/2,INS_Y+116,px+partW()/2,py+34,0.02,null,true);
+        flyPend=false;
+      }
+      if(left) yL=py+partH(p)+18; else yR=py+partH(p)+18;
     });
+    const y=Math.max(yL,yR);
     views.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); views.delete(id); } });
-    // TABLE 囲み
+    // TABLE 囲み(2列ぶんの幅)
+    const fw2=538+470-14+12;
     frameG.clear();
-    frameG.roundRect(14,INS_Y+84,partW()+22,Math.max(120,y-INS_Y-84-4),10).stroke({width:1.5,color:0xcfd2c8});
+    frameG.roundRect(14,INS_Y+118,fw2,Math.max(120,y-INS_Y-118-4),10).stroke({width:1.5,color:0xcfd2c8});
+    // 取り込み矢印: otel_raw → 枠
+    frameG.moveTo(154,INS_Y+64).lineTo(154,INS_Y+111).stroke({width:1.5,color:0xb9c2ae});
+    frameG.poly([154,INS_Y+118,149.5,INS_Y+110,158.5,INS_Y+110]).fill(0xb9c2ae);
+    const trc=chip('s1tr','mv',()=>tableInsp('transform_mv'));
+    trc.textContent='MV transform_mv ▸ 列に解く';
+    trc.style.transform='translate(0,-50%)';
+    placeChip(trc,164,INS_Y+90);
     const mg3=chip('s1merge','warn',()=>doMerge());
     mg3.textContent='⇄ マージ';
-    placeChip(mg3,24+partW()-50,INS_Y+80);
+    placeChip(mg3,14+fw2-60,INS_Y+114);
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
     fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
-    placeChip(fc,24+partW()/2,INS_Y+80);
+    placeChip(fc,14+fw2/2,INS_Y+114);
     // 派生テーブルの物理層も上→下(S0 と同じ2列・granuleタイルで)
     const colW2=470, lxx=24, rxx=24+colW2+44;
-    const fR=14+partW()+22, fbF=INS_Y+84+Math.max(120,y-INS_Y-84-4);
+    const fR=14+538+470-14+12, fbF=INS_Y+118+Math.max(120,y-INS_Y-118-4);
     const cy0=fbF+70;
     [{mv:'otel_traces_1h_mv',x:lxx+colW2/2,side:'L'},{mv:'otel_traces_trace_id_ts_mv',x:rxx+colW2/2,side:'R'}].forEach((sg,i)=>{
       const g=stubs[i], pu=stubPulse[i]>0, col=pu?0x7048c8:0xb9a6dd;
@@ -951,6 +986,7 @@ scenes.S1=(()=>{
       g.lineTo(sg.x,cy0-9);
       g.stroke({width:pu?2.5:1.5,color:col});
       g.poly([sg.x,cy0-2,sg.x-4.5,cy0-10,sg.x+4.5,cy0-10]).fill(col);
+      segC[sg.mv]={x:sg.x,y1:fbF,y2:cy0};
       const c=chip('s1mv'+i,'mv',()=>tableInsp(sg.mv));
       c.textContent='MV '+sg.mv+' ▸';
       const base=sg.side==='L'?'translate(-100%,-50%)':'translate(0,-50%)';
