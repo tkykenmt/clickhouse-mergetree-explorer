@@ -217,6 +217,7 @@ const JP=()=>getComputedStyle(document.body).getPropertyValue('--jp');
 /* ---- 寸法 ---- */
 const GAP=3;                        // 値セルの間隔
 const GPR=4;                        // granule あたりの値の数(8192 行の縮尺)
+const LTW=568;                       // 論理テーブルカードの幅
 
 /* ---- 状態 ---- */
 let seq=0, parts=[], fly=[], lanes=[], result=null, busy=false, simT=640;
@@ -442,7 +443,9 @@ const SVC=['frontend','checkout','cart','auth','search'];
 const svcOf=v=>SVC[v%SVC.length];
 const SPANOF={frontend:'GET /product',checkout:'POST /checkout',cart:'POST /cart/add',auth:'POST /login',search:'GET /search'};
 const traceIdOf=(v,i)=>('00000000'+(((v*2654435761)^(i*40503+0x9e37))>>>0).toString(16)).slice(-8);
+const spanIdOf=(v,i)=>('00000000'+(((v*97561)^(i*7561+0x51f3))>>>0).toString(16)).slice(-8);
 const durOf=v=>((v*7919)%420+12);
+const statOf=v=>durOf(v)>380?'Error':'Ok';
 const SVA=['fe','ch','ca','au','se'];
 let IDXT='set'; // skip index の種類: set(正確) / bloom_filter(偽陽性あり)
 function granSvcs(g){ const s=new Set(); g.forEach(v=>{ if(v!=null) s.add(v%SVC.length); }); return s; }
@@ -813,7 +816,7 @@ function lvlStats(){
 function mvGeom(){
   if(MOB) return {x:10, y:partsBottom()+14, w:W-20};
   const px=24+partW(null)+36;
-  if(ACT==='storage') return {x:px+80, y:INS_Y+120, w:Math.min(300, W-px-104)};
+  if(ACT==='storage'){ const x0=(RES==='physical')?px+80:36+LTW+150; return {x:x0, y:INS_Y+120, w:Math.min(300, W-404-12-x0-24)}; }
   return {x:px, y:INS_Y+94+3*132+14, w:Math.min(520, W-px-24)};
 }
 function mvHgt(){ return 52+Math.max(1,Math.min(6,Object.keys(mv).length))*13+8; }
@@ -1164,7 +1167,6 @@ ltblTx.x=14; ltblTx.y=7; ltbl.addChild(ltblTx);
 let ltblFlash=0, ltblRows=-1;
 ltbl.eventMode='static'; ltbl.cursor='pointer';
 ltbl.on('pointertap',e=>{ e.stopPropagation(); const a=parts.filter(q=>!q.dying)[0]; if(a) openInsp('part',a.id); });
-const LTW=470;
 const tblFrame=new PIXI.Graphics(); world.addChildAt(tblFrame,1);
 const tblLb=new PIXI.Text({text:'TABLE otel_events',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:10,fill:0x9aa0ab,letterSpacing:1.2}}); world.addChild(tblLb);
 const edges=new PIXI.Graphics(); world.addChildAt(edges,1);
@@ -1293,8 +1295,9 @@ window.__pixiRender=function(){
     const n=act.reduce((s,q)=>s+q.granules.length,0)*8192;
     if(ltblRows!==rows.length){ if(ltblRows>=0) ltblFlash=1; ltblRows=rows.length; }
     if(ltblFlash>0) ltblFlash=Math.max(0,ltblFlash-0.02);
-    const shown=rows.slice(0,9);
-    ltblTx.text='Timestamp   ServiceName  SpanName        Duration  TraceId\n'+shown.map((r,i)=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+svcOf(r.v).padEnd(13)+SPANOF[svcOf(r.v)].padEnd(16)+(durOf(r.v)+'ms').padEnd(10)+traceIdOf(r.v,i)+'…').join('\n')+'\n… 全 '+n.toLocaleString()+' 行(Timestamp 順)';
+    const pick=Math.max(1,Math.floor(rows.length/9));
+    const shown=rows.filter((_,i)=>i%pick===0).slice(0,9);
+    ltblTx.text='Timestamp   TraceId    SpanId     SpanName         ServiceName  Duration  Status\n'+shown.map((r,i)=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+(traceIdOf(r.v,i)+'…').padEnd(11)+(spanIdOf(r.v,i)+'…').padEnd(11)+SPANOF[svcOf(r.v)].padEnd(17)+svcOf(r.v).padEnd(13)+(durOf(r.v)+'ms').padEnd(10)+statOf(r.v)).join('\n')+'\n… 全 '+n.toLocaleString()+' 行 ・ 他の列: ParentSpanId, SpanKind, Attributes(Map), Events…';
     const hh=7+(shown.length+2)*17+12;
     ltblBg.clear();
     ltblBg.roundRect(0,0,LTW,hh,6).fill(0xffffff).stroke({width:ltblFlash>0?2:1,color:ltblFlash>0?0x2b8a3e:0xd9dbe0});
