@@ -925,83 +925,97 @@ scenes.S1=(()=>{
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
     fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
     placeChip(fc,24+partW()/2,INS_Y+44);
-    // 派生テーブルの物理層も上→下(S0 と同じ2列)
-    const fb=y+18, colW2=470, lxx=24, rxx=24+colW2+44;
+    // 派生テーブルの物理層も上→下(S0 と同じ2列・granuleタイルで)
+    const colW2=470, lxx=24, rxx=24+colW2+44;
+    const fR=14+partW()+22, fbF=INS_Y+50+Math.max(120,y-INS_Y-50-4);
+    const cy0=fbF+70;
     [{mv:'otel_traces_1h_mv',x:lxx+colW2/2,side:'L'},{mv:'otel_traces_trace_id_ts_mv',x:rxx+colW2/2,side:'R'}].forEach((sg,i)=>{
-      const g=stubs[i], pu=stubPulse[i]>0;
+      const g=stubs[i], pu=stubPulse[i]>0, col=pu?0x7048c8:0xb9a6dd;
+      const ex=Math.min(sg.x,fR-50);
       g.clear();
-      g.moveTo(sg.x,fb).lineTo(sg.x,fb+37).stroke({width:pu?2.5:1.5,color:pu?0x7048c8:0xb9a6dd});
-      g.poly([sg.x,fb+44,sg.x-4.5,fb+36,sg.x+4.5,fb+36]).fill(pu?0x7048c8:0xb9a6dd);
+      g.moveTo(ex,fbF).lineTo(ex,fbF+18);
+      if(ex!==sg.x) g.lineTo(sg.x,fbF+18);
+      g.lineTo(sg.x,cy0-9);
+      g.stroke({width:pu?2.5:1.5,color:col});
+      g.poly([sg.x,cy0-2,sg.x-4.5,cy0-10,sg.x+4.5,cy0-10]).fill(col);
       const c=chip('s1mv'+i,'mv',()=>tableInsp(sg.mv));
       c.textContent='MV '+sg.mv+' ▸';
       const base=sg.side==='L'?'translate(-100%,-50%)':'translate(0,-50%)';
       c.style.transform=pu?base+' scale(1.1)':base;
-      placeChip(c,sg.side==='L'?sg.x-10:sg.x+10,fb+22);
+      placeChip(c,sg.side==='L'?sg.x-10:sg.x+10,fbF+34);
       if(stubPulse[i]>0) stubPulse[i]=Math.max(0,stubPulse[i]-0.015);
     });
+    // タイル描画ヘルパ(状態行=タイル、右に primary.idx 先頭キー)
+    const tileCard=(v,w,items,firstKey,band)=>{
+      if(!v.tiles){ v.tiles=new PIXI.Container(); v.cont.addChild(v.tiles); v.cells=new Map();
+        v.idx=textV('',10,0x8a7300); v.idx.x=12+GPR*(CELL+GAP)+16; v.idx.y=26; v.cont.addChild(v.idx); }
+      items.forEach((it,ci)=>{ let cell=v.cells.get(ci);
+        if(!cell){ cell={g:new PIXI.Graphics(),t:textV('',10.5,0x2a2e39)}; v.tiles.addChild(cell.g); v.tiles.addChild(cell.t); v.cells.set(ci,cell); }
+        const x=12+(ci%GPR)*(CELL+GAP), yy=26+Math.floor(ci/GPR)*(CELLH+GAP);
+        cell.g.clear(); cell.g.roundRect(x,yy,CELL,CELLH,4).fill(it.bg).stroke({width:1,color:0xdde0e4});
+        cell.t.text=it.txt; cell.t.x=x+CELL/2-cell.t.width/2; cell.t.y=yy+5; cell.g.visible=cell.t.visible=true;
+      });
+      for(let ci=items.length;v.cells.has(ci);ci++){ const cell=v.cells.get(ci); cell.g.visible=cell.t.visible=false; }
+      const rowsN=Math.max(1,Math.ceil(items.length/GPR));
+      const h2=26+rowsN*(CELLH+GAP)+12;
+      panel(v.bg,w,h2,0xffffff,(v.fl||0)>0?0x9775fa:0xd9dbe0,(v.fl||0)>0?2:1,8);
+      v.bg.rect(1,1,w-2,18).fill(band);
+      v.idx.text='primary.idx\n'+firstKey;
+      v.tx.text=items.length?'':'(空 — INSERT 待ち)';
+      return h2;
+    };
     // 1h: 状態 Part 群(左列)
-    let hy=fb+62;
+    let hy=cy0;
     const hc=chip('s1h-h','mv',()=>tableInsp('otel_traces_1h'));
     hc.textContent='TABLE otel_traces_1h ・ part ×'+mvHParts.length;
-    placeChip(hc,lxx+colW2/2,hy-6);
+    placeChip(hc,lxx+colW2/2,hy-12);
     const hmg=chip('s1h-mg','warn',()=>doMerge('1h'));
     hmg.textContent='⇄';
-    placeChip(hmg,lxx+colW2-14,hy-6);
+    placeChip(hmg,lxx+colW2-14,hy-12);
     const seenH=new Set();
-    if(!mvHParts.length){
-      let v=hViews.get(-1);
-      if(!v){ v={cont:new PIXI.Container(),bg:new PIXI.Graphics(),tx:textV('(空 — INSERT 待ち)',11.5,0x9aa0a8)}; v.tx.x=12; v.tx.y=8; v.cont.addChild(v.bg,v.tx); s.cont.addChild(v.cont); hViews.set(-1,v); }
-      seenH.add(-1); panel(v.bg,colW2,34,0xffffff,0xd9dbe0,1,8); v.cont.x=lxx; v.cont.y=hy; hy+=48;
-    }
-    mvHParts.forEach(q=>{
+    const hparts=mvHParts.length?mvHParts:[{id:-1,rows:{},flash:0}];
+    hparts.forEach(q=>{
       let v=hViews.get(q.id);
-      if(!v){ v={cont:new PIXI.Container(),bg:new PIXI.Graphics(),tx:textV('',11.5,0x2a2e39)}; v.tx.x=12; v.tx.y=24; v.cont.addChild(v.bg,v.tx); s.cont.addChild(v.cont); hViews.set(q.id,v); }
+      if(!v){ v={cont:new PIXI.Container(),bg:new PIXI.Graphics(),tx:textV('',11,0x9aa0a8)}; v.tx.x=12; v.tx.y=28; v.cont.addChild(v.bg,v.tx); s.cont.addChild(v.cont); hViews.set(q.id,v); }
       seenH.add(q.id);
       const keys=Object.keys(q.rows).sort();
-      const rows=keys.map(k=>{ const r=q.rows[k], hs=+k.split('|')[0], sv=k.split('|')[1];
-        return fmtT(hs).padEnd(7)+sv.padEnd(11)+('c='+r.c.toLocaleString()).padEnd(10)+'avgState{'+Math.round(r.d/1000).toLocaleString()+'s/'+r.c.toLocaleString()+'}'; });
-      const h2=24+Math.max(1,rows.length)*16+10;
-      panel(v.bg,colW2,h2,0xffffff,q.flash>0?0x9775fa:0xd9dbe0,q.flash>0?2:1,8);
-      v.bg.rect(1,1,colW2-2,18).fill(0xf1ecfa);
-      v.tx.text=rows.join('\n')||'(空)';
+      v.fl=q.flash;
+      const items=keys.map(k=>{ const hs=+k.split('|')[0], sv=k.split('|')[1];
+        return {txt:fmtT(hs),bg:SVCTINT[sv]||0xeef0f2}; });
+      const fk=keys[0]?fmtT(+keys[0].split('|')[0])+' '+keys[0].split('|')[1].slice(0,2):'—';
+      const h2=tileCard(v,colW2,items,fk,0xf1ecfa);
       v.cont.x=lxx; v.cont.y=hy;
-      const pc=chip('s1hp'+q.id,'',()=>tableInsp('otel_traces_1h'));
-      pc.textContent='part '+q.id+' ・ 状態 '+keys.length+' 行';
-      placeChip(pc,lxx+92,hy+1);
+      if(q.id>0){ const pc=chip('s1hp'+q.id,'',()=>tableInsp('otel_traces_1h'));
+        pc.textContent='part '+q.id+' ・ granule ×'+Math.max(1,Math.ceil(keys.length/GPR))+' ・ 状態 '+keys.length+' 行';
+        placeChip(pc,lxx+130,hy+1); }
       if(q.flash>0) q.flash=Math.max(0,q.flash-0.02);
-      hy+=h2+16;
+      hy+=h2+18;
     });
     hViews.forEach((v,id)=>{ if(!seenH.has(id)){ v.cont.destroy({children:true}); hViews.delete(id); } });
     // trace_id_ts(右列)
     const eT2=Object.keys(mvT);
-    const tRows=eT2.slice(-6).map(k=>(k+'…').padEnd(13)+(fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)).padEnd(14)+mvT[k].n);
-    const tH=24+Math.max(1,tRows.length)*16+10;
-    panel(tZone.bg,colW2,tH,0xffffff,0xd9dbe0,1,8);
-    tZone.bg.rect(1,1,colW2-2,18).fill(0xf1ecfa);
-    tZone.tx.text=tRows.join('\n')||'(空 — INSERT 待ち)';
-    tZone.cont.x=rxx; tZone.cont.y=fb+62;
+    const tItems=eT2.map(k=>({txt:k.slice(0,4),bg:0xf3ecfa}));
+    const tH=tileCard(tZone,colW2,tItems,eT2[0]?eT2[0].slice(0,8)+'…':'—',0xf1ecfa);
+    tZone.cont.x=rxx; tZone.cont.y=cy0;
     const tc2=chip('s1t-h','mv',()=>tableInsp('otel_traces_trace_id_ts'));
     tc2.textContent='TABLE otel_traces_trace_id_ts ・ '+eT2.length+' 行';
-    placeChip(tc2,rxx+colW2/2,fb+56);
+    placeChip(tc2,rxx+colW2/2,cy0-12);
     // 1d(左列の下、1h からのカスケード)
     stubs[2].clear();
-    stubs[2].moveTo(lxx+colW2/2,hy).lineTo(lxx+colW2/2,hy+30).stroke({width:1.5,color:0xb9a6dd});
-    stubs[2].poly([lxx+colW2/2,hy+37,lxx+colW2/2-4.5,hy+29,lxx+colW2/2+4.5,hy+29]).fill(0xb9a6dd);
+    stubs[2].moveTo(lxx+colW2/2,hy-6).lineTo(lxx+colW2/2,hy+26).stroke({width:1.5,color:0xb9a6dd});
+    stubs[2].poly([lxx+colW2/2,hy+33,lxx+colW2/2-4.5,hy+25,lxx+colW2/2+4.5,hy+25]).fill(0xb9a6dd);
     const dmc=chip('s1d-mv','mv',()=>tableInsp('otel_traces_1d_mv'));
     dmc.textContent='MV otel_traces_1d_mv ▸';
     dmc.style.transform='translate(-100%,-50%)';
-    placeChip(dmc,lxx+colW2/2-10,hy+18);
+    placeChip(dmc,lxx+colW2/2-10,hy+12);
     const eD2=Object.keys(mvD).sort();
-    const dRows=eD2.map(d2=>(d2.slice(4,6)+'-'+d2.slice(6)).padEnd(9)+mvD[d2].toLocaleString());
-    const dH=24+Math.max(1,dRows.length)*16+10;
-    panel(dZone.bg,colW2,dH,0xffffff,0xd9dbe0,1,8);
-    dZone.bg.rect(1,1,colW2-2,18).fill(0xf1ecfa);
-    dZone.tx.text=dRows.join('\n')||'(空 — INSERT 待ち)';
-    dZone.cont.x=lxx; dZone.cont.y=hy+48;
+    const dItems=eD2.map(d2=>({txt:d2.slice(4,6)+'/'+d2.slice(6),bg:0xfff3bf}));
+    const dH=tileCard(dZone,colW2,dItems,eD2[0]?eD2[0].slice(4,6)+'-'+eD2[0].slice(6):'—',0xfff3bf);
+    dZone.cont.x=lxx; dZone.cont.y=hy+42;
     const dc2=chip('s1d-h','mv',()=>tableInsp('otel_traces_1d'));
     dc2.textContent='TABLE otel_traces_1d ・ '+eD2.length+' 行';
-    placeChip(dc2,lxx+colW2/2,hy+44);
-    CONTENT_H=Math.max(hy+48+dH,fb+62+tH)+130;
+    placeChip(dc2,lxx+colW2/2,hy+30);
+    CONTENT_H=Math.max(hy+42+dH,cy0+tH)+130;
   };
   return s;
 })();
