@@ -243,6 +243,55 @@ addEventListener('resize',()=>{ W=innerWidth; H=innerHeight; MOB=W<=900; railOff
 railOff();
 
 // DOM チップ(名前レイヤ)
+const inspStyle=document.createElement('style');
+inspStyle.textContent=`
+#insp{position:fixed;top:0;right:-440px;width:420px;height:100%;z-index:20;background:#1f1f1cf8;
+  border-left:1px solid #3a3a35;transition:right .22s;padding:14px 16px;overflow-y:auto;
+  font-family:"Hiragino Kaku Gothic ProN",sans-serif;color:#e8eaf0;box-sizing:border-box}
+#insp.open{right:0}
+#insp h2{font-size:14px;margin:2px 0 4px;color:#faff69;font-family:Inconsolata,Menlo,monospace}
+#insp .sub{font-size:11px;color:#98a0b3;margin-bottom:10px}
+#insp pre{font:11.5px Inconsolata,Menlo,monospace;line-height:1.55;background:#161613;border:1px solid #33332e;
+  border-radius:8px;padding:10px 12px;white-space:pre-wrap;word-break:break-all;color:#cdd2dc}
+#insp pre .k{color:#8ecbe8}
+#insp .note{font-size:11.5px;color:#b3b6bd;line-height:1.75;margin:10px 0}
+#insp .x{position:absolute;top:10px;right:12px;cursor:pointer;color:#b3b6bd;font-size:14px;
+  border:1px solid #414141;border-radius:6px;padding:2px 9px;background:#282828}
+@media (max-width:700px){ #insp{width:100%;right:-100%} }`;
+document.head.appendChild(inspStyle);
+const insp=document.createElement('div'); insp.id='insp'; document.body.appendChild(insp);
+function openInsp(html){
+  insp.innerHTML='<div class="x" id="inspx">✕</div>'+html;
+  insp.classList.add('open');
+  document.getElementById('inspx').onclick=()=>insp.classList.remove('open');
+}
+addEventListener('keydown',e=>{ if(e.key==='Escape') insp.classList.remove('open'); });
+function spanJSONHtml(r){
+  const d=r.d, v=r.v, w=Math.floor(v/TRWIN);
+  const kin=liveRows().filter(x=>x.d===d&&Math.floor(x.v/TRWIN)===w);
+  const minV=Math.min.apply(null,kin.map(x=>x.v));
+  const svc=svcOf(v), err=statOf(v)==='Error';
+  const iso=m=>'2026-'+d.slice(4,6)+'-'+d.slice(6)+'T'+String(8+Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0')+':00Z';
+  const j={
+    traceId:traceIdOf(d,v)+'…', spanId:spanIdOf(d,v)+'…',
+    parentSpanId:(v===minV?'':spanIdOf(d,minV)+'…'),
+    name:SPANOF[svc], kind:'SPAN_KIND_SERVER',
+    startTime:iso(v), duration:durOf(v)+'ms',
+    status:{code:err?'STATUS_CODE_ERROR':'STATUS_CODE_OK'},
+    resource:{'service.name':svc,'deployment.environment':'prod'},
+    attributes:{'http.request.method':SPANOF[svc].split(' ')[0],'url.path':SPANOF[svc].split(' ')[1],'http.response.status_code':err?500:200}
+  };
+  if(err) j.events=[{name:'exception',attributes:{'exception.type':'TimeoutError'}}];
+  const pre=JSON.stringify(j,null,2).replace(/"([^"]+)":/g,'"<span class=k>$1</span>":');
+  return '<h2>'+SPANOF[svc]+' <span style="color:#98a0b3">('+svc+')</span></h2>'
+    +'<div class="sub">スパン1本の実体 = OTLP の JSON 表現(縮尺: ID は実際 32/16 桁)</div>'
+    +'<pre>'+pre+'</pre>'
+    +'<div class="note">収集器から届くのはこの入れ子ドキュメント(ワイヤは protobuf、JSON 表現も標準)。'
+    +'取り込みで <b>列に解かれて</b> otel_events の1行になる — resource/attributes は Map 列。'
+    +'ネストのまま置かず列にするから、列単位のスキャンと圧縮が効く。</div>'
+    +'<div class="note">parentSpanId が空 = ルートスパン。同じ traceId を持つスパンは '+kin.length+' 本'
+    +'(縮尺ルール: 同じ15分窓 = 1トレース)。trace_id_ts はこの traceId → 時間範囲の索引。</div>';
+}
 const chipStyle=document.createElement('style');
 chipStyle.textContent=`
 .chip3{position:absolute;transform:translate(-50%,-100%);background:#ffffffee;color:#2a2e39;
@@ -360,7 +409,14 @@ scenes.S0=(()=>{
   const secL=textV('TABLE — 論理(このNodeのテーブルとMVパイプ)',11,0x9a9a90,false);
   const secR=textV('DERIVED TABLES — MV(パイプ)の書き込み先',11,0x9a9a90,false);
   s.cont.addChild(secL,secR);
-  let flash=0, pipePulse={}, dispRows=0, tgtFlash=[0,0,0];
+  let flash=0, pipePulse={}, dispRows=0, tgtFlash=[0,0,0], lastShown=[];
+  ltbl.eventMode='static'; ltbl.cursor='pointer';
+  ltbl.on('pointertap',ev=>{
+    const pos=ev.getLocalPosition(ltbl);
+    const li=Math.floor((pos.y-7)/17)-1; // 0行目=ヘッダ
+    if(li>=0&&li<lastShown.length) openInsp(spanJSONHtml(lastShown[li]));
+    else toast('行をクリックするとスパンの実体(JSON)が見える');
+  });
   const MX=()=>36+LTW+150;
   const MW=()=>Math.min(300,STW()-MX()-24);
   s.enter=()=>{ dispRows=tableRows(); };
@@ -381,7 +437,7 @@ scenes.S0=(()=>{
     const rows=liveRows(); const n=tableRows();
     dispRows+=(n-dispRows)*0.08; if(Math.abs(n-dispRows)<50) dispRows=n;
     const pick=Math.max(1,Math.floor(rows.length/9));
-    const shown=rows.filter((_,i)=>i%pick===0).slice(0,9);
+    const shown=rows.filter((_,i)=>i%pick===0).slice(0,9); lastShown=shown;
     ltblTx.text='Timestamp   TraceId    SpanId     SpanName         ServiceName  Duration  Status\n'
       +shown.map(r=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+(traceIdOf(r.d,r.v)+'…').padEnd(11)+(spanIdOf(r.d,r.v)+'…').padEnd(11)+SPANOF[svcOf(r.v)].padEnd(17)+svcOf(r.v).padEnd(13)+(durOf(r.v)+'ms').padEnd(10)+statOf(r.v)).join('\n')
       +'\n… 全 '+Math.round(dispRows).toLocaleString()+' 行 ・ 他の列: ParentSpanId, SpanKind, Attributes(Map), Events…';
