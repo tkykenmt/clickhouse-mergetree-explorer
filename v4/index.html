@@ -6,26 +6,26 @@
 <title>MergeTree Explorer V2 | ClickHouse ストレージが動いて見える</title>
 <style>
 :root{
-  --bg:#0c0d10; --panel:#14161bee; --line:#262a33; --ink:#e8eaf0; --muted:#98a0b3;
-  --yellow:#faff69; --cyan:#6fe3ff; --green:#7dffb2; --red:#ff7d7d; --dim:#707a8c;
-  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --bg:#1f1f1c; --panel:#262626ee; --line:#414141; --ink:#ffffff; --muted:#b3b6bd;
+  --yellow:#faff69; --cyan:#6fe3ff; --green:#7dffb2; --red:#ffbaba; --dim:#808080;
+  --mono:"Inconsolata","SFMono Regular",Menlo,Consolas,monospace;
   --jp:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--jp)}
 canvas{display:block}
-#hud{position:fixed;top:0;left:0;right:0;display:flex;gap:14px;align-items:center;padding:12px 18px;background:linear-gradient(#0c0d10f0,#0c0d1000);z-index:10;pointer-events:none}
+#hud{position:fixed;top:0;left:0;right:0;display:flex;gap:14px;align-items:center;padding:12px 18px;background:linear-gradient(#1f1f1cf0,#1f1f1c00);z-index:10;pointer-events:none}
 #hud>*{pointer-events:auto}
 #hud h1{font-size:18px;margin:0;white-space:nowrap}
 #hud h1 b{color:var(--yellow)}
 #hud .cap{font-size:12px;color:var(--muted)}
-.btn{background:#191c23;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp);white-space:nowrap;touch-action:manipulation}
+.btn{background:#282828;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp);white-space:nowrap;touch-action:manipulation}
 .btn:hover{border-color:var(--cyan)}
 .btn.primary{background:var(--yellow);border-color:var(--yellow);color:#1c1c05}
 #hud{flex-wrap:wrap}
 #sqlbar{flex-basis:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-space:nowrap;overflow-x:auto}
 #sqlbar .cm{color:var(--dim)}
-#resgrid{flex-basis:100%;background:#101a13;border:1px solid #2f5c41;border-radius:10px;padding:6px 14px;font-family:var(--mono);font-size:12px;color:#d5f6c9;height:104px;overflow:auto;margin-top:-4px}
+#resgrid{flex-basis:100%;background:#20241e;border:1px solid #3a5a44;border-radius:10px;padding:6px 14px;font-family:var(--mono);font-size:12px;color:#d5f6c9;height:104px;overflow:auto;margin-top:-4px}
 #resgrid table{border-collapse:collapse}
 #resgrid th{color:#5f8a6f;text-align:left;font-size:10px;border-bottom:1px solid #24402f;padding:1px 26px 2px 0;font-weight:700}
 #resgrid td{padding:1px 26px 1px 0;white-space:nowrap}
@@ -35,7 +35,7 @@ canvas{display:block}
 #steps i{font-style:normal;color:#3a4152}
 #steps .step{border:1px solid var(--line);border-radius:99px;padding:3px 12px;white-space:nowrap}
 #steps .step.on{border-color:var(--yellow);color:var(--yellow)}
-#steps .step.done{border-color:#2f5c41;color:var(--green)}
+#steps .step.done{border-color:#3a5a44;color:var(--green)}
 #steps .step.done::after{content:" ✓"}
 #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:13px;color:var(--ink);z-index:10;opacity:0;transition:opacity .25s;max-width:94vw}
 #toast.on{opacity:1}
@@ -61,7 +61,7 @@ canvas{display:block}
   <h1>MergeTree <b>Explorer</b> <span style="font-size:11px;border:1px solid #ff9df5;color:#ff9df5;border-radius:99px;padding:2px 8px;vertical-align:middle">V4 PIXI</span></h1>
   <span class="cap">Part は値グリッド、granule は行、索引はカード。<b style="color:var(--ink)">公式ブログの図の語彙のまま、それが動く</b></span>
   <span id="ctrl" style="margin-left:auto;display:flex;gap:10px;align-items:center">
-    <select id="engSel" style="background:#0f1116;color:#98a0b3;border:1px solid #262a33;border-radius:8px;font-family:var(--mono);font-size:11px;padding:6px 4px">
+    <select id="engSel" style="background:#282828;color:#b3b6bd;border:1px solid #414141;border-radius:8px;font-family:var(--mono);font-size:11px;padding:6px 4px">
       <option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option>
     </select>
     <button class="btn primary" id="bIns">＋ INSERT</button>
@@ -69,16 +69,16 @@ canvas{display:block}
     <button class="btn" id="bDel">🗑 DELETE</button>
     <button class="btn" id="bUpd">✏️ UPDATE</button>
     <button class="btn" id="bProj">⚡ PROJECTION</button>
-    <span style="display:flex;gap:8px;align-items:center;background:#191c23;border:1px solid var(--line);border-radius:9px;padding:4px 12px;font-size:12.5px">
+    <span style="display:flex;gap:8px;align-items:center;background:#282828;border:1px solid var(--line);border-radius:9px;padding:4px 12px;font-size:12.5px">
       <span style="font-family:var(--mono);color:var(--muted)">WHERE ts ≧</span>
       <input type="range" id="predR" min="0" max="960" step="15" value="600" style="width:110px;accent-color:#6fe3ff">
       <b id="predV" style="font-family:var(--mono);color:var(--cyan);min-width:44px">18:00</b>
       <span style="font-family:var(--mono);color:var(--muted)">AND service =</span>
-      <select id="svcSel" style="background:#0f1116;color:#6fe3ff;border:1px solid #262a33;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
+      <select id="svcSel" style="background:#282828;color:#faff69;border:1px solid #414141;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
         <option value="">(すべて)</option><option>frontend</option><option>checkout</option><option>cart</option><option>auth</option><option>search</option>
       </select>
       <span style="font-family:var(--mono);color:var(--muted)">idx:</span>
-      <select id="idxSel" style="background:#0f1116;color:#c9a2ff;border:1px solid #262a33;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
+      <select id="idxSel" style="background:#282828;color:#c9a2ff;border:1px solid #414141;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
         <option value="set">set</option><option value="bloom">bloom_filter</option>
       </select>
     </span>
@@ -870,7 +870,7 @@ function seedParts(){
 // ===== V4: PixiJS のフラットシーン + DOM チップ/インスペクタ(PGSimCity 文法) =====
 (async()=>{
 const app=new PIXI.Application();
-await app.init({canvas:cv,width:innerWidth,height:innerHeight,background:0x0c0d10,antialias:true,resolution:Math.min(2,devicePixelRatio),autoDensity:true,autoStart:false});
+await app.init({canvas:cv,width:innerWidth,height:innerHeight,background:0x1f1f1c,antialias:true,resolution:Math.min(2,devicePixelRatio),autoDensity:true,autoStart:false});
 window.__pxResize=()=>app.renderer.resize(innerWidth,innerHeight);
 const stage=app.stage;
 stage.eventMode='static'; stage.hitArea=new PIXI.Rectangle(0,0,99999,99999);
@@ -888,18 +888,18 @@ style.textContent=`
 .chip3.warn{background:#ffb0b0}
 .chip3.mv{background:#d9c8f5}
 .chip3.lane{background:#c4e8f5}
-#insp{position:fixed;top:0;right:-420px;width:400px;height:100%;z-index:20;background:#101319f8;
-  border-left:1px solid #2a3242;transition:right .22s;padding:14px 16px;overflow-y:auto;
+#insp{position:fixed;top:0;right:-420px;width:400px;height:100%;z-index:20;background:#1f1f1cf8;
+  border-left:1px solid #414141;transition:right .22s;padding:14px 16px;overflow-y:auto;
   font-family:"Hiragino Kaku Gothic ProN",sans-serif;color:#e8eaf0}
 #insp.open{right:0}
 #insp h2{font-size:15px;margin:2px 0 4px;color:#faff69}
 #insp .sub{font-size:11px;color:#98a0b3;margin-bottom:10px}
 #insp table{border-collapse:collapse;width:100%;font:11.5px ui-monospace,Menlo,monospace;margin:6px 0 12px}
-#insp th{color:#57617a;text-align:left;font-size:10px;border-bottom:1px solid #262a33;padding:2px 8px 3px 0}
-#insp td{padding:2px 8px 2px 0;border-bottom:1px solid #1a1e27}
+#insp th{color:#808080;text-align:left;font-size:10px;border-bottom:1px solid #262a33;padding:2px 8px 3px 0}
+#insp td{padding:2px 8px 2px 0;border-bottom:1px solid #2c2c2c}
 #insp .cellv{display:inline-block;min-width:40px;text-align:center;border-radius:4px;padding:1px 4px;margin:0 2px 2px 0}
-#insp .note{font-size:11.5px;color:#98a0b3;line-height:1.7;margin:8px 0}
-#insp .x{position:absolute;top:10px;right:12px;cursor:pointer;color:#98a0b3;font-size:16px;border:1px solid #2a3242;border-radius:6px;padding:2px 9px;background:#191c23}
+#insp .note{font-size:11.5px;color:#b3b6bd;line-height:1.7;margin:8px 0}
+#insp .x{position:absolute;top:10px;right:12px;cursor:pointer;color:#b3b6bd;font-size:16px;border:1px solid #414141;border-radius:6px;padding:2px 9px;background:#282828}
 @media (max-width:700px){ #insp{width:100%;right:-100%} }`;
 document.head.appendChild(style);
 const ov=document.createElement('div'); ov.id='ov'; document.body.appendChild(ov);
@@ -907,8 +907,8 @@ const insp=document.createElement('div'); insp.id='insp'; document.body.appendCh
 let inspTarget=null;
 function openInsp(kind,id){ inspTarget={kind,id}; insp.classList.add('open'); renderInsp(); }
 function closeInsp(){ inspTarget=null; insp.classList.remove('open'); }
-const CELLBG={norm:'#232b3a',hit:'#1d5c3a',dead:'#15161b',skip:'#4a3420',del:'#2a1418',upd:'#0f3b47',probe:'#5c561a'};
-const CELLFG={norm:'#e8eaf0',hit:'#b9ffd6',dead:'#3c4150',skip:'#ffb46f',del:'#7a5560',upd:'#7de3ff',probe:'#faff69'};
+const CELLBG={norm:'#323232',hit:'#1d5c3a',dead:'#232320',skip:'#4a3420',del:'#2a1418',upd:'#0f3b47',probe:'#5c561a'};
+const CELLFG={norm:'#ffffff',hit:'#b9ffd6',dead:'#4a4a46',skip:'#ffb46f',del:'#7a5560',upd:'#7de3ff',probe:'#faff69'};
 function cellState(p,gi,ci,v){
   if(p.del&&p.del[gi*GPR+ci]) return 'del';
   if(p.upd&&p.upd[gi*GPR+ci]) return 'upd';
@@ -1001,8 +1001,8 @@ const world=new PIXI.Container(); stage.addChild(world);
 
 // 帯とレジェンド(最小限のゾーン文字)
 const strip=new PIXI.Graphics(); world.addChild(strip);
-const stripLb=textV('INSERT ブロック(届いた順) → ソート → granule 区切り',10,0x5a6478); world.addChild(stripLb);
-const legend=textV('otel_events(ts, service, …) ENGINE = MergeTree PARTITION BY toDate(ts) ORDER BY ts',11,0x8b93a5); world.addChild(legend);
+const stripLb=textV('INSERT ブロック(届いた順) → ソート → granule 区切り',10,0x808080); world.addChild(stripLb);
+const legend=textV('otel_events(ts, service, …) ENGINE = MergeTree PARTITION BY toDate(ts) ORDER BY ts',11,0xb3b6bd); world.addChild(legend);
 
 // Part ビュー
 const partViews=new Map();
@@ -1069,7 +1069,7 @@ function buildFly(f){
   const cont=new PIXI.Container(); world.addChild(cont);
   if(f.kind==='gran'){
     (f.cells||[]).forEach((v,ci)=>{ if(v==null) return;
-      const g=new PIXI.Graphics(); g.roundRect(0,0,CELL*0.65,CELLH*0.8,3).fill(0x1b2c3a).stroke({width:1.5,color:f.col||'#3d8ba3'});
+      const g=new PIXI.Graphics(); g.roundRect(0,0,CELL*0.65,CELLH*0.8,3).fill(0x2c2c2c).stroke({width:1.5,color:f.col||'#3d8ba3'});
       g.x=ci*CELL*0.72; cont.addChild(g); });
   }else if(f.kind==='chip'){
     const tx=textV(f.txt,11,0x7dffb2);
@@ -1079,7 +1079,7 @@ function buildFly(f){
     cont.addChild(textV(fmtT(f.v),10,0xfaff69));
   }else{
     const g=new PIXI.Graphics(); g.roundRect(0,0,CELL,CELLH,4)
-      .fill((f.kind==='sorting'||f.kind==='load')?0x153a2a:0x1b2431)
+      .fill((f.kind==='sorting'||f.kind==='load')?0x153a2a:0x2c2c2c)
       .stroke({width:1,color:(f.kind==='sorting'||f.kind==='load')?0x7dffb2:0x3a4152});
     const tx=textV(fmtT(f.v),MOB?7.5:9.5,0xe8eaf0); tx.anchor.set(0.5); tx.x=CELL/2; tx.y=CELLH/2;
     cont.addChild(g,tx);
@@ -1089,7 +1089,7 @@ function buildFly(f){
 // ---- フレーム描画 ----
 window.__pixiRender=function(){
   frame++;
-  strip.clear(); strip.roundRect(12,INS_Y,W-24,48,4).stroke({width:1,color:0x1d2331,alpha:0.9});
+  strip.clear(); strip.roundRect(12,INS_Y,W-24,48,4).stroke({width:1,color:0x3a3a3a,alpha:0.9});
   stripLb.x=18; stripLb.y=INS_Y+6;
   legend.x=Math.max(340,W-legend.width-24); legend.y=INS_Y+30; // 帯の右下(チップと干渉しない)
   legend.text='otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts';
@@ -1101,7 +1101,7 @@ window.__pixiRender=function(){
     v.seen=frame;
     v.cont.x=p.x; v.cont.y=p.y;
     v.cont.alpha=(p.alpha??1)*(p.partPruned?0.5:1);
-    panel(v.bg,partWpx(),partHpx(v.rows),0x14161b,p.merged?0x565a2f:0x262a33);
+    panel(v.bg,partWpx(),partHpx(v.rows),0x282828,p.merged?0x8a8f3a:0x414141);
     v.cells.forEach(c=>{
       const st=cellState(p,c.gi,c.ci,c.v);
       const hide=p.building&&!p.shown[c.gi*GPR+c.ci];
@@ -1127,7 +1127,7 @@ window.__pixiRender=function(){
     lv.cont.visible=true;
     lv.cont.x=g0.x; lv.cont.y=g0.y;
     const l=lanes[i];
-    panel(lv.bg,g0.w,g0.h,0x111319,0x262a33);
+    panel(lv.bg,g0.w,g0.h,0x232323,0x3a3a3a);
     lv.rail.clear(); lv.rail.roundRect(6,4,g0.w-12,3,2).fill(LANE_COL[i]);
     lv.pad.clear(); lv.pad.roundRect(g0.w*0.24,g0.h*0.3,g0.w*0.45,g0.h*0.52,6)
       .fill({color:(l&&l.simd>0)?0x2a7ba8:0x14324a,alpha:(l&&l.simd>0)?0.35+l.simd*0.5:0.35});
@@ -1138,7 +1138,7 @@ window.__pixiRender=function(){
       if(vis){
         const st=(l.simd>0&&v2>=PRED&&(!SVCF||svcOf(v2)===SVCF))?'hit':'norm';
         if(c.st!==st||c.v!==v2){ c.st=st; c.v=v2;
-          c.cg.clear(); c.cg.roundRect(0,0,CELL,CELLH,4).fill(st==='hit'?0x1d5c3a:0x1b2431);
+          c.cg.clear(); c.cg.roundRect(0,0,CELL,CELLH,4).fill(st==='hit'?0x1d5c3a:0x2c2c2c);
           c.tx.text=fmtT(v2); c.tx.style.fill=st==='hit'?0xb9ffd6:0xc7cede;
         }
         c.cg.x=g0.w*0.27+ci*(CELL+GAP); c.cg.y=g0.h*0.42;
