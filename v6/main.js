@@ -614,20 +614,24 @@ const scenes={};
 scenes.S0=(()=>{
   const s=mkScene('S0');
   const ltblBg=new PIXI.Graphics(), ltblTx=textV('',12,0x2a2e39);
-  ltblTx.x=14; ltblTx.y=7;
-  const ltbl=new PIXI.Container(); ltbl.addChild(ltblBg,ltblTx); s.cont.addChild(ltbl);
+  ltblTx.x=14; ltblTx.y=28;
+  const ltTitle=textV('TABLE otel_traces',11.5,0x6b5d00); ltTitle.x=12; ltTitle.y=5;
+  const ltCount=textV('',11.5,0x2b8a3e); ltCount.y=5;
+  const ltbl=new PIXI.Container(); ltbl.addChild(ltblBg,ltblTx,ltTitle,ltCount); s.cont.addChild(ltbl);
   const edges=new PIXI.Graphics(); s.cont.addChild(edges);
   const rawBg=new PIXI.Graphics(), rawTx=textV('',11.5,0x8a8a80);
-  rawTx.x=12; rawTx.y=24;
-  const raw=new PIXI.Container(); raw.addChild(rawBg,rawTx); s.cont.addChild(raw);
+  rawTx.x=12; rawTx.y=26;
+  const rawTitle=textV('TABLE otel_raw',11.5,0x77771f); rawTitle.x=12; rawTitle.y=4;
+  const rawCount=textV('0 行(常に)',11.5,0x8a8a80); rawCount.y=4;
+  const raw=new PIXI.Container(); raw.addChild(rawBg,rawTx,rawTitle,rawCount); s.cont.addChild(raw);
   raw.eventMode='static'; raw.cursor='pointer';
   raw.on('pointertap',()=>tableInsp('otel_raw'));
   let rawFlash=0, rawPulse=0;
   const TKEYS=['otel_traces_1h','otel_traces_1d','otel_traces_trace_id_ts'];
-  const tgt=[0,1,2].map((_,i)=>{ const c=new PIXI.Container(); const bg=new PIXI.Graphics(); const tx=textV('',11.5,0x2a2e39); tx.x=10; tx.y=6; c.addChild(bg,tx); s.cont.addChild(c);
+  const tgt=[0,1,2].map((_,i)=>{ const c=new PIXI.Container(); const bg=new PIXI.Graphics(); const tx=textV('',11.5,0x2a2e39); tx.x=10; tx.y=26; const tt=textV('',11,0x6b5d00); tt.x=10; tt.y=5; const tcn=textV('',11,0x2b8a3e); tcn.y=5; c.addChild(bg,tx,tt,tcn); s.cont.addChild(c);
     c.eventMode='static'; c.cursor='pointer';
     c.on('pointertap',()=>tableInsp(TKEYS[i]));
-    return {c,bg,tx}; });
+    return {c,bg,tx,tt,tcn}; });
   const secL=textV('TABLE — 論理(このNodeのテーブルとMVパイプ)',11,0x9a9a90,false);
   const secR=textV('',11,0x9a9a90,false);
   s.cont.addChild(secL,secR);
@@ -635,7 +639,8 @@ scenes.S0=(()=>{
   ltbl.eventMode='static'; ltbl.cursor='pointer';
   ltbl.on('pointertap',ev=>{
     const pos=ev.getLocalPosition(ltbl);
-    const li=Math.floor((pos.y-7)/17)-1; // 0行目=ヘッダ
+    if(pos.y<=24){ tableInsp('otel_traces'); return; }
+    const li=Math.floor((pos.y-28)/17)-1; // 0行目=ヘッダ
     if(li>=0&&li<lastShown.length) openInsp(spanJSONHtml(lastShown[li]));
     else toast('行をクリックするとスパンの実体(JSON)が見える');
   });
@@ -678,19 +683,18 @@ scenes.S0=(()=>{
     ltblTx.text='Timestamp   TraceId    SpanId     SpanName         ServiceName  Duration  Status\n'
       +shown.map(r=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+(traceIdOf(r.d,r.v)+'…').padEnd(11)+(spanIdOf(r.d,r.v)+'…').padEnd(11)+SPANOF[svcOf(r.v)].padEnd(17)+svcOf(r.v).padEnd(13)+(durOf(r.v)+'ms').padEnd(10)+statOf(r.v)).join('\n')
       +'\n… 全 '+Math.round(dispRows).toLocaleString()+' 行 ・ 他の列: ParentSpanId, SpanKind, Attributes(Map), Events…';
-    const hh=7+(shown.length+2)*17+12;
+    const hh=28+(shown.length+2)*17+10;
     // 受け口(ENGINE = Null)
-    const rawY=INS_Y+56, rawH=46;
+    const rawY=INS_Y+56, rawH=50;
     panel(rawBg,LTW,rawH,0xfcfcf8,rawFlash>0?0x2b8a3e:0xdcdcd2,rawFlash>0?2:1);
-    rawBg.rect(1,1,LTW-2,18).fill(0xf1f1e8);
+    rawBg.rect(1,1,LTW-2,22).fill(0xf1f1e8);
+    rawCount.x=LTW-12-rawCount.width;
     rawTx.text='ENGINE = Null — 行を溜めない受け口。着いたブロックに MV だけが発火する';
     raw.x=36; raw.y=rawY;
     if(rawFlash>0) rawFlash=Math.max(0,rawFlash-0.02);
-    const rc=chip('s0raw','',()=>tableInsp('otel_raw'));
-    rc.innerHTML='TABLE otel_raw <b>0行</b>';
-    placeChip(rc,36+LTW/2,rawY-2);
     panel(ltblBg,LTW,hh,0xffffff,flash>0?0x2b8a3e:0xd9dbe0,flash>0?2:1);
     ltblBg.rect(1,1,LTW-2,24).fill(0xfff9db);
+    ltCount.text=Math.round(dispRows).toLocaleString()+' 行'; ltCount.x=LTW-12-ltCount.width;
     ltbl.x=36; ltbl.y=rawY+rawH+52;
     if(flash>0) flash=Math.max(0,flash-0.015);
     secL.x=24; secL.y=INS_Y+28; secR.x=MX(); secR.y=INS_Y+28;
@@ -708,7 +712,7 @@ scenes.S0=(()=>{
       {key:'otel_traces_trace_id_ts',nm:'otel_traces_trace_id_ts',hdr:'TraceId      Start–End      n',rows:eT.slice(-3).map(k=>(k+'…').padEnd(13)+(fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)).padEnd(14)+mvT[k].n),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' 行':''},
     ];
     const geom=b=>{ const body=b.rows.length?b.rows.join('\n')+(b.extra?'\n'+b.extra:''):'(空 — INSERT 待ち)';
-      return {body,h:7+(1+body.split('\n').length)*16+10}; };
+      return {body,h:26+(1+body.split('\n').length)*16+8}; };
     const q0=geom(bodies[0]), q1=geom(bodies[1]), q2=geom(bodies[2]);
     const pos=[
       {x:lx,y:topY,w:colW,body:q0.body,h:q0.h},
@@ -727,10 +731,9 @@ scenes.S0=(()=>{
       o.bg.rect(1,1,q.w-2,22).fill(0xfff9db);
       o.tx.text=d.hdr+'\n'+q.body;
       o.tx.style.fill=d.n?0x2a2e39:0x9aa0a8;
+      o.tt.text='TABLE '+d.nm;
+      o.tcn.text=d.n+' 行'; o.tcn.x=q.w-10-o.tcn.width;
       o.c.x=q.x; o.c.y=q.y;
-      const c=chip('s0t'+i,'mv',()=>tableInsp(d.key));
-      c.innerHTML='TABLE '+d.nm+' <b>'+d.n+'行</b>';
-      placeChip(c,q.x+q.w/2,q.y-2);
       if(tgtFlash[i]>0) tgtFlash[i]=Math.max(0,tgtFlash[i]-0.02);
     });
     // パイプ: 縦の実線+下向き矢印、ラベルは線の脇
@@ -758,9 +761,6 @@ scenes.S0=(()=>{
       placeChip(tec,px2-10,(y1+y2v)/2);
       if(rawPulse>0) rawPulse=Math.max(0,rawPulse-0.01);
     }
-    const tc=chip('s0tbl','',()=>tableInsp('otel_traces'));
-    tc.innerHTML='TABLE otel_traces · '+Math.round(dispRows).toLocaleString()+'行';
-    placeChip(tc,36+LTW/2,ltbl.y+2);
     const zc=chip('s0zoom','warn',()=>zoomTo('S1'));
     zc.textContent='⊕ 中を見る(Part / granule)';
     placeChip(zc,36+LTW/2,ltbl.y+hh+14);
