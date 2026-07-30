@@ -4,95 +4,135 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MergeTree Explorer V2 | ClickHouse ストレージが動いて見える</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Inconsolata:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#1f1f1c; --panel:#262626ee; --line:#414141; --ink:#ffffff; --muted:#b3b6bd;
-  --yellow:#faff69; --cyan:#6fe3ff; --green:#7dffb2; --red:#ffbaba; --dim:#808080;
+  --bg:#1a1a17; --surface:#232320; --surface2:#2b2b27; --line:#3a3a35; --line2:#4a4a44;
+  --ink:#ffffff; --muted:#b3b6bd; --faint:#7a7a74;
+  --accent:#faff69; --ok:#74e09a; --okbg:#1d4a32; --warn:#ffb46f; --danger:#ffbaba; --info:#7fc8e8;
   --mono:"Inconsolata","SFMono Regular",Menlo,Consolas,monospace;
-  --jp:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;
+  --ui:"Inter","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+  /* 旧名の互換(JS が参照) */
+  --panel:#232320ee; --yellow:#faff69; --cyan:#7fc8e8; --green:#74e09a; --red:#ffbaba; --dim:#7a7a74; --jp:var(--ui);
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--jp)}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--ui)}
 canvas{display:block}
-#hud{position:fixed;top:0;left:0;right:0;display:flex;gap:14px;align-items:center;padding:12px 18px;background:linear-gradient(#1f1f1cf0,#1f1f1c00);z-index:10;pointer-events:none}
+#hud{position:fixed;top:0;left:0;right:0;z-index:10;pointer-events:none;
+  background:linear-gradient(#1a1a17f5 78%,#1a1a1700);padding:0 20px 18px}
 #hud>*{pointer-events:auto}
-#hud h1{font-size:18px;margin:0;white-space:nowrap}
-#hud h1 b{color:var(--yellow)}
-#hud .cap{font-size:12px;color:var(--muted)}
-.btn{background:#282828;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--jp);white-space:nowrap;touch-action:manipulation}
-.btn:hover{border-color:var(--cyan)}
-.btn.primary{background:var(--yellow);border-color:var(--yellow);color:#1c1c05}
-#hud{flex-wrap:wrap}
-#sqlbar{flex-basis:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-space:nowrap;overflow-x:auto}
-#sqlbar .cm{color:var(--dim)}
-#resgrid{flex-basis:100%;background:#20241e;border:1px solid #3a5a44;border-radius:10px;padding:6px 14px;font-family:var(--mono);font-size:12px;color:#d5f6c9;height:104px;overflow:auto;margin-top:-4px}
+/* アプリバー */
+#appbar{display:flex;align-items:center;gap:14px;height:52px}
+#appbar h1{font-size:15px;font-weight:700;letter-spacing:.01em;margin:0;white-space:nowrap}
+#appbar h1 b{color:var(--accent)}
+#appbar .ver{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint);border:1px solid var(--line);border-radius:3px;padding:2px 6px}
+#appbar .sp{flex:1}
+.sel{background:var(--surface);color:var(--muted);border:1px solid var(--line);border-radius:6px;
+  font:600 11.5px var(--mono);padding:5px 6px;cursor:pointer}
+.sel:hover{border-color:var(--line2)}
+.lbl{font:600 10px var(--ui);letter-spacing:.1em;color:var(--faint)}
+/* コンソール(クライアント) */
+#console{background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+#sqlrow{display:flex;align-items:center;gap:0;border-bottom:1px solid var(--line)}
+#sqlbar{flex:1;padding:9px 14px;font:600 12.5px var(--mono);color:var(--ink);
+  white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+#sqlbar::before{content:"❯ ";color:var(--accent);font-weight:700}
+.btn{background:var(--surface2);border:1px solid var(--line);color:var(--ink);border-radius:6px;
+  padding:6px 12px;font:600 11.5px var(--ui);cursor:pointer;white-space:nowrap;touch-action:manipulation}
+.btn:hover{border-color:var(--line2);background:#31312c}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1c1c05}
+.btn.primary:hover{background:#f2f75e}
+#bSel{margin:6px 10px 6px 0;padding:6px 16px}
+#resgrid{height:96px;overflow:auto;padding:6px 14px;font:12px var(--mono);color:var(--muted);background:#1f1f1c}
 #resgrid table{border-collapse:collapse}
-#resgrid th{color:#5f8a6f;text-align:left;font-size:10px;border-bottom:1px solid #24402f;padding:1px 26px 2px 0;font-weight:700}
-#resgrid td{padding:1px 26px 1px 0;white-space:nowrap}
-#resgrid .msg{color:#5f8a6f;font-size:11px;padding:2px 0}
-#steps{flex-basis:100%;display:none;gap:8px;align-items:center;font-size:12px;color:var(--dim);font-family:var(--jp)}
+#resgrid th{color:var(--faint);text-align:left;font-size:10px;border-bottom:1px solid var(--line);padding:1px 26px 2px 0;font-weight:700}
+#resgrid td{padding:1px 26px 1px 0;white-space:nowrap;color:var(--ink)}
+#resgrid .msg{color:var(--faint);font-size:11px;padding:2px 0}
+/* 実行タイムライン(シグネチャ: 計器のスイープ) */
+#steps{display:none;align-items:center;gap:0;padding:7px 14px;border-top:1px solid var(--line);font:600 10.5px var(--ui)}
 #steps.show{display:flex}
-#steps i{font-style:normal;color:#3a4152}
-#steps .step{border:1px solid var(--line);border-radius:99px;padding:3px 12px;white-space:nowrap}
-#steps .step.on{border-color:var(--yellow);color:var(--yellow)}
-#steps .step.done{border-color:#3a5a44;color:var(--green)}
-#steps .step.done::after{content:" ✓"}
-#toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:13px;color:var(--ink);z-index:10;opacity:0;transition:opacity .25s;max-width:94vw}
+#steps .step{color:var(--faint);white-space:nowrap;padding:0 2px;letter-spacing:.02em}
+#steps .step.on{color:var(--accent)}
+#steps .step.done{color:var(--ok)}
+#steps .step.done::after{content:" ✓";font-size:9px}
+#steps i{flex:1;height:1px;background:var(--line);margin:0 8px;font-size:0;position:relative;min-width:14px}
+#steps .step.done+i{background:var(--ok);opacity:.45}
+#steps .step.on~i{background:var(--line)}
+/* ツールバー(操作グループ) */
+#toolbar{display:flex;align-items:center;gap:18px;margin-top:10px;flex-wrap:wrap}
+.grp{display:flex;align-items:center;gap:6px}
+.grp .glbl{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint);margin-right:2px}
+.where{display:flex;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:4px 10px;font:600 11.5px var(--mono);color:var(--muted)}
+.where input[type=range]{width:104px;accent-color:var(--accent)}
+.where b{color:var(--ink);min-width:42px;font-weight:700}
+#toast{position:fixed;left:20px;right:auto;bottom:14px;transform:none;background:var(--surface);
+  border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:6px;padding:7px 12px;
+  font:12px var(--ui);color:var(--muted);z-index:10;opacity:0;transition:opacity .2s;max-width:min(720px,88vw)}
 #toast.on{opacity:1}
-#toast.warn{border-color:var(--red);color:var(--red)}
+#toast.warn{border-left-color:var(--danger);color:var(--danger)}
+@media (prefers-reduced-motion:reduce){ *{transition:none!important;animation:none!important} }
 @media (max-width:700px){
-  #hud{gap:8px;padding:8px 10px}
-  #hud h1{font-size:15px}
-  #hud .cap{display:none}
-  #ctrl{margin-left:0 !important;flex-basis:100%;flex-wrap:wrap;gap:6px !important}
-  .btn{padding:7px 10px;font-size:12px}
-  #ctrl>span{padding:4px 8px !important;font-size:11.5px !important}
-  #predR{width:70px !important}
-  #sqlbar{font-size:11px;padding:6px 10px}
+  #hud{padding:0 10px 12px}
+  #appbar{height:44px;gap:8px}
+  #appbar h1{font-size:13px}
   #resgrid{height:64px;font-size:10.5px;padding:4px 10px}
-  #steps{font-size:10.5px;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch}
-  #steps .step{padding:2px 8px}
-  #toast{font-size:12px;bottom:10px;padding:6px 10px}
+  #sqlbar{font-size:11px;padding:7px 10px}
+  #steps{font-size:9.5px;overflow-x:auto;scrollbar-width:none}
+  .btn{padding:6px 9px;font-size:11px}
+  .where input[type=range]{width:64px}
+  #toolbar{gap:10px}
+  #toast{font-size:11px;left:10px;bottom:8px}
 }
 </style>
 </head>
 <body>
 <div id="hud">
-  <h1>MergeTree <b>Explorer</b> <span style="font-size:11px;border:1px solid #ff9df5;color:#ff9df5;border-radius:99px;padding:2px 8px;vertical-align:middle">V4 PIXI</span></h1>
-  <span class="cap">Part は値グリッド、granule は行、索引はカード。<b style="color:var(--ink)">公式ブログの図の語彙のまま、それが動く</b></span>
-  <span id="ctrl" style="margin-left:auto;display:flex;gap:10px;align-items:center">
-    <select id="engSel" style="background:#282828;color:#b3b6bd;border:1px solid #414141;border-radius:8px;font-family:var(--mono);font-size:11px;padding:6px 4px">
-      <option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option>
-    </select>
-    <button class="btn primary" id="bIns">＋ INSERT</button>
-    <button class="btn" id="bMerge">⇄ マージ</button>
-    <button class="btn" id="bDel">🗑 DELETE</button>
-    <button class="btn" id="bUpd">✏️ UPDATE</button>
-    <button class="btn" id="bProj">⚡ PROJECTION</button>
-    <span style="display:flex;gap:8px;align-items:center;background:#282828;border:1px solid var(--line);border-radius:9px;padding:4px 12px;font-size:12.5px">
-      <span style="font-family:var(--mono);color:var(--muted)">WHERE ts ≧</span>
-      <input type="range" id="predR" min="0" max="960" step="15" value="600" style="width:110px;accent-color:#6fe3ff">
-      <b id="predV" style="font-family:var(--mono);color:var(--cyan);min-width:44px">18:00</b>
-      <span style="font-family:var(--mono);color:var(--muted)">AND service =</span>
-      <select id="svcSel" style="background:#282828;color:#faff69;border:1px solid #414141;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
-        <option value="">(すべて)</option><option>frontend</option><option>checkout</option><option>cart</option><option>auth</option><option>search</option>
-      </select>
-      <span style="font-family:var(--mono);color:var(--muted)">idx:</span>
-      <select id="idxSel" style="background:#282828;color:#c9a2ff;border:1px solid #414141;border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 4px">
-        <option value="set">set</option><option value="bloom">bloom_filter</option>
-      </select>
-    </span>
-    <button class="btn" id="bSel">▶ SELECT</button>
+  <div id="appbar">
+    <h1>MergeTree <b>Explorer</b></h1><span class="ver">V4</span>
+    <span class="sp"></span>
+    <span class="lbl">ENGINE</span>
+    <select id="engSel" class="sel"><option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option></select>
+    <span class="lbl">SKIP IDX</span>
+    <select id="idxSel" class="sel"><option value="set">set</option><option value="bloom">bloom_filter</option></select>
     <button class="btn" id="bAmb">▶ 自動再生</button>
     <button class="btn" id="bReset" title="最初からやり直す">⟳</button>
-  </span>
-  <div id="sqlbar"></div>
-  <div id="resgrid"></div>
-  <div id="steps">
-    <span class="step" data-s="1">① 索引分析(二分探索)</span><i>→</i>
-    <span class="step" data-s="2">② 対象 granule だけ読む</span><i>→</i>
-    <span class="step" data-s="3">③ レーン並列処理(SIMD)</span><i>→</i>
-    <span class="step" data-s="4">④ マージして結果を返す</span>
+  </div>
+  <div id="console">
+    <div id="sqlrow">
+      <div id="sqlbar"></div>
+      <button class="btn primary" id="bSel">▶ 実行</button>
+    </div>
+    <div id="resgrid"></div>
+    <div id="steps">
+      <span class="step" data-s="1">① 索引分析(二分探索)</span><i></i>
+      <span class="step" data-s="2">② 対象 granule だけ読む</span><i></i>
+      <span class="step" data-s="3">③ レーン並列処理(SIMD)</span><i></i>
+      <span class="step" data-s="4">④ マージして結果を返す</span>
+    </div>
+  </div>
+  <div id="toolbar">
+    <span class="grp"><span class="glbl">書き込み</span>
+      <button class="btn" id="bIns">＋ INSERT</button>
+      <button class="btn" id="bMerge">⇄ マージ</button>
+    </span>
+    <span class="grp"><span class="glbl">変異</span>
+      <button class="btn" id="bDel">🗑 DELETE</button>
+      <button class="btn" id="bUpd">✏️ UPDATE</button>
+    </span>
+    <span class="grp"><span class="glbl">スキーマ</span>
+      <button class="btn" id="bProj">⚡ PROJECTION</button>
+    </span>
+    <span class="where">
+      <span>WHERE ts ≧</span>
+      <input type="range" id="predR" min="0" max="960" step="15" value="600">
+      <b id="predV">18:00</b>
+      <span>AND service =</span>
+      <select id="svcSel" class="sel" style="border:none;background:transparent;padding:2px 0;color:var(--info)">
+        <option value="">(すべて)</option><option>frontend</option><option>checkout</option><option>cart</option><option>auth</option><option>search</option>
+      </select>
+    </span>
   </div>
 </div>
 <canvas id="cv"></canvas>
@@ -143,7 +183,7 @@ function laneGeom(i){
   // デスクトップ: レーンは右列に縦積み(Parts 左列と左右で分かれる)
   const px=24+partW(null)+36;
   const w=Math.min(520, W-px-24);
-  return {x:px, y:INS_Y+76+i*132, w, h:120};
+  return {x:px, y:INS_Y+94+i*132, w, h:120};
 }
 function granRowPos(p,gi){ return {x:p.x+24, y:p.y+30+gi*(CELLH+GAP)}; }
 function mkGranules(vals){ const gs=[]; for(let i=0;i<vals.length;i+=GPR) gs.push(vals.slice(i,i+GPR)); return gs; }
@@ -151,7 +191,7 @@ function partW(p){ return GPR*(CELL+GAP)+24+56+IDXW+10+SKW+10; }
 function partH(p){ return Math.max(p.granules.length*(CELLH+GAP), p.granules.length*16+36)+42; }
 function layout(){
   // Parts は縦積みの左列(ストレージ)。デスクトップの右列はレーン(計算)が使う
-  const y0=INS_Y+(MOB?98:76), x0=MOB?10:24;
+  const y0=INS_Y+(MOB?100:94), x0=MOB?10:24;
   let y=y0;
   parts.forEach(p=>{
     p.tx=x0; p.ty=y;
@@ -870,7 +910,7 @@ function seedParts(){
 // ===== V4: PixiJS のフラットシーン + DOM チップ/インスペクタ(PGSimCity 文法) =====
 (async()=>{
 const app=new PIXI.Application();
-await app.init({canvas:cv,width:innerWidth,height:innerHeight,background:0x1f1f1c,antialias:true,resolution:Math.min(2,devicePixelRatio),autoDensity:true,autoStart:false});
+await app.init({canvas:cv,width:innerWidth,height:innerHeight,background:0x1a1a17,antialias:true,resolution:Math.min(2,devicePixelRatio),autoDensity:true,autoStart:false});
 window.__pxResize=()=>app.renderer.resize(innerWidth,innerHeight);
 const stage=app.stage;
 stage.eventMode='static'; stage.hitArea=new PIXI.Rectangle(0,0,99999,99999);
@@ -880,19 +920,19 @@ stage.on('pointertap',()=>closeInsp());
 const style=document.createElement('style');
 style.textContent=`
 #ov{position:fixed;inset:0;pointer-events:none;z-index:5;overflow:hidden}
-.chip3{position:absolute;transform:translate(-50%,-100%);background:#e8eaf0;color:#14161b;
-  font:700 10.5px "Hiragino Kaku Gothic ProN",sans-serif;letter-spacing:.05em;
-  border-radius:4px;padding:2px 8px;white-space:nowrap;pointer-events:auto;cursor:pointer;
-  box-shadow:0 1px 6px rgba(0,0,0,.5)}
-.chip3 b{color:#0b6b3a;margin-left:5px;font-family:ui-monospace,Menlo,monospace}
-.chip3.warn{background:#ffb0b0}
-.chip3.mv{background:#d9c8f5}
-.chip3.lane{background:#c4e8f5}
+.chip3{position:absolute;transform:translate(-50%,-100%);background:#2b2b27f2;color:#e6e6e2;
+  font:600 10px "Inter","Hiragino Kaku Gothic ProN",sans-serif;letter-spacing:.03em;
+  border:1px solid #4a4a44;border-radius:4px;padding:2px 8px;white-space:nowrap;pointer-events:auto;cursor:pointer}
+.chip3:hover{border-color:#6a6a62}
+.chip3 b{color:#74e09a;margin-left:5px;font-family:"Inconsolata",Menlo,monospace}
+.chip3.warn{border-color:#8a4a4a;color:#ffbaba}
+.chip3.mv{border-color:#5d4a86;color:#cbb4f2}
+.chip3.lane{color:#bfe2f2}
 #insp{position:fixed;top:0;right:-420px;width:400px;height:100%;z-index:20;background:#1f1f1cf8;
-  border-left:1px solid #414141;transition:right .22s;padding:14px 16px;overflow-y:auto;
+  border-left:1px solid #3a3a35;transition:right .22s;padding:14px 16px;overflow-y:auto;
   font-family:"Hiragino Kaku Gothic ProN",sans-serif;color:#e8eaf0}
 #insp.open{right:0}
-#insp h2{font-size:15px;margin:2px 0 4px;color:#faff69}
+#insp h2{font-size:15px;margin:2px 0 4px;color:#faff69;font-family:Inter,sans-serif}
 #insp .sub{font-size:11px;color:#98a0b3;margin-bottom:10px}
 #insp table{border-collapse:collapse;width:100%;font:11.5px ui-monospace,Menlo,monospace;margin:6px 0 12px}
 #insp th{color:#808080;text-align:left;font-size:10px;border-bottom:1px solid #262a33;padding:2px 8px 3px 0}
@@ -907,8 +947,8 @@ const insp=document.createElement('div'); insp.id='insp'; document.body.appendCh
 let inspTarget=null;
 function openInsp(kind,id){ inspTarget={kind,id}; insp.classList.add('open'); renderInsp(); }
 function closeInsp(){ inspTarget=null; insp.classList.remove('open'); }
-const CELLBG={norm:'#323232',hit:'#1d5c3a',dead:'#232320',skip:'#4a3420',del:'#2a1418',upd:'#0f3b47',probe:'#5c561a'};
-const CELLFG={norm:'#ffffff',hit:'#b9ffd6',dead:'#4a4a46',skip:'#ffb46f',del:'#7a5560',upd:'#7de3ff',probe:'#faff69'};
+const CELLBG={norm:'#31312c',hit:'#1d4a32',dead:'#22221f',skip:'#4a3420',del:'#2a1418',upd:'#143a46',probe:'#55511e'};
+const CELLFG={norm:'#ffffff',hit:'#a9f5c3',dead:'#4a4a44',skip:'#ffb46f',del:'#7a5560',upd:'#7fc8e8',probe:'#faff69'};
 function cellState(p,gi,ci,v){
   if(p.del&&p.del[gi*GPR+ci]) return 'del';
   if(p.upd&&p.upd[gi*GPR+ci]) return 'upd';
@@ -996,13 +1036,15 @@ function placeChip(c,x,y){ c.style.left=x+'px'; c.style.top=y+'px'; }
 // ---- Pixi 部品 ----
 const FONTV={fontFamily:'Menlo,ui-monospace,monospace',fontWeight:'700'};
 function textV(str,size,fill){ return new PIXI.Text({text:str,style:{...FONTV,fontSize:size,fill}}); }
-function panel(g,w,h,fill,line,r=10){ g.clear(); g.roundRect(0,0,w,h,r).fill(fill).stroke({width:1,color:line}); return g; }
+function panel(g,w,h,fill,line,r=6){ g.clear(); g.roundRect(0,0,w,h,r).fill(fill).stroke({width:1,color:line}); return g; }
 const world=new PIXI.Container(); stage.addChild(world);
 
 // 帯とレジェンド(最小限のゾーン文字)
 const strip=new PIXI.Graphics(); world.addChild(strip);
-const stripLb=textV('INSERT ブロック(届いた順) → ソート → granule 区切り',10,0x808080); world.addChild(stripLb);
-const legend=textV('otel_events(ts, service, …) ENGINE = MergeTree PARTITION BY toDate(ts) ORDER BY ts',11,0xb3b6bd); world.addChild(legend);
+const stripLb=textV('INSERT ブロック(届いた順) → ソート → granule 区切り',10,0x7a7a74); world.addChild(stripLb);
+const legend=textV('otel_events(ts, service, …) ENGINE = MergeTree PARTITION BY toDate(ts) ORDER BY ts',11,0x9a9a94); world.addChild(legend);
+const secL=new PIXI.Text({text:'STORAGE — Part(ファイル)',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:10,fill:0x7a7a74,letterSpacing:1.4}}); world.addChild(secL);
+const secR=new PIXI.Text({text:'COMPUTE — CPU コアのレーンと MV',style:{fontFamily:'Inter,sans-serif',fontWeight:'600',fontSize:10,fill:0x7a7a74,letterSpacing:1.4}}); world.addChild(secR);
 
 // Part ビュー
 const partViews=new Map();
@@ -1089,9 +1131,11 @@ function buildFly(f){
 // ---- フレーム描画 ----
 window.__pixiRender=function(){
   frame++;
-  strip.clear(); strip.roundRect(12,INS_Y,W-24,48,4).stroke({width:1,color:0x3a3a3a,alpha:0.9});
-  stripLb.x=18; stripLb.y=INS_Y+6;
-  legend.x=Math.max(340,W-legend.width-24); legend.y=INS_Y+30; // 帯の右下(チップと干渉しない)
+  strip.clear(); strip.roundRect(20,INS_Y,W-40,44,6).stroke({width:1,color:0x3a3a35,alpha:0.9});
+  stripLb.x=28; stripLb.y=INS_Y+5;
+  legend.x=Math.max(340,W-legend.width-28); legend.y=INS_Y+26;
+  secL.x=MOB?10:24; secL.y=INS_Y+54;
+  const _lg0=laneGeom(0); secR.x=_lg0.x; secR.y=INS_Y+54; secR.visible=!MOB;
   legend.text='otel_events(ts, service, …) ENGINE = '+(ENG==='rmt'?'ReplacingMergeTree':'MergeTree')+' PARTITION BY toDate(ts) ORDER BY ts';
   parts.forEach(p=>{
     if(p.dead) return;
@@ -1101,7 +1145,7 @@ window.__pixiRender=function(){
     v.seen=frame;
     v.cont.x=p.x; v.cont.y=p.y;
     v.cont.alpha=(p.alpha??1)*(p.partPruned?0.5:1);
-    panel(v.bg,partWpx(),partHpx(v.rows),0x282828,p.merged?0x8a8f3a:0x414141);
+    panel(v.bg,partWpx(),partHpx(v.rows),0x232320,p.merged?0x6b6e35:0x3a3a35,6);
     v.cells.forEach(c=>{
       const st=cellState(p,c.gi,c.ci,c.v);
       const hide=p.building&&!p.shown[c.gi*GPR+c.ci];
@@ -1127,10 +1171,10 @@ window.__pixiRender=function(){
     lv.cont.visible=true;
     lv.cont.x=g0.x; lv.cont.y=g0.y;
     const l=lanes[i];
-    panel(lv.bg,g0.w,g0.h,0x232323,0x3a3a3a);
+    panel(lv.bg,g0.w,g0.h,0x232320,0x3a3a35,6);
     lv.rail.clear(); lv.rail.roundRect(6,4,g0.w-12,3,2).fill(LANE_COL[i]);
     lv.pad.clear(); lv.pad.roundRect(g0.w*0.24,g0.h*0.3,g0.w*0.45,g0.h*0.52,6)
-      .fill({color:(l&&l.simd>0)?0x2a7ba8:0x14324a,alpha:(l&&l.simd>0)?0.35+l.simd*0.5:0.35});
+      .fill({color:(l&&l.simd>0)?0x2b6a86:0x17333f,alpha:(l&&l.simd>0)?0.4+l.simd*0.5:0.35});
     lv.evalCells.forEach((c,ci)=>{
       const v2=l&&l.cur?l.cur.cells[ci]:null;
       const vis=v2!=null;
@@ -1155,7 +1199,7 @@ window.__pixiRender=function(){
     const mg=mvGeom();
     const w1=Math.min(240,mg.w*0.55);
     [{v:mvV1,y:mg.y,rows:Object.keys(mv).length,fl:mvFlash,nm:'MV hourly_counts',key:'mv1',idn:1},
-     {v:mvV2,y:mg.y+64,rows:Object.keys(mv2).length,fl:mv2Flash,nm:'MV daily_counts',key:'mv2',idn:2}].forEach(o=>{
+     {v:mvV2,y:mg.y+80,rows:Object.keys(mv2).length,fl:mv2Flash,nm:'MV daily_counts',key:'mv2',idn:2}].forEach(o=>{
       o.v.cont.x=mg.x; o.v.cont.y=o.y;
       panel(o.v.bg,w1,48,0x1a1424,o.fl>0?0xc9a2ff:0x453763,8);
       o.v.bg.roundRect(8,10,10,28,2).fill(o.v.color+0x202020);
