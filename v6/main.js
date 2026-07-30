@@ -435,7 +435,7 @@ ENGINE = MergeTree
 ORDER BY (TraceId, toUnixTimestamp(Start))`,
     live:()=>Object.keys(mvT).length+' 行(トレース)'},
   otel_traces_1h_mv:{t:'MATERIALIZED VIEW otel_traces_1h_mv',
-    d:'テーブルではなくトリガ。otel_traces への INSERT のたび、挿入ブロックだけを (hour, Service) で畳み、部分集計状態(avgState 等)を otel_traces_1h へ書く。読む側は avgMerge で畳み直す。作成前の過去データは対象外(バックフィルは Null テーブル経由)。',
+    d:'テーブルではなくトリガ。otel_traces への INSERT のたび、挿入ブロックだけを (hour, Service) で畳み、部分集計状態(avgState 等)を otel_traces_1h へ書く。読む側は avgMerge で畳み直す。作成前の過去データは対象外(バックフィルは Null テーブル経由)。同じソースに複数の MV があるとき、既定(parallel_view_processing=0)は uuid 順に1本ずつ直列発火 — この画面の順番再生は実物どおり。=1 で並列化できるが順序保証は消える。',
     ddl:`CREATE MATERIALIZED VIEW otel_traces_1h_mv
 TO otel_traces_1h AS
 SELECT
