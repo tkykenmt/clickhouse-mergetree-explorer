@@ -63,6 +63,7 @@ function doInsert(){
   }
   const sorted=keySort(vals);
   showMsg('collector が OTLP バッチ受信 → exporter が otel_raw へバルク INSERT');
+  showSql('-- exporter が発行(ネイティブプロトコルのバルク INSERT)\nINSERT INTO otel_raw (Timestamp, TraceId, SpanId, SpanName, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode, ...) VALUES\n'+vals.slice(0,3).map(v=>"  ('2026-07-29 "+fmtT(v)+"', '"+traceIdOf(TODAY,v)+"…', '"+spanIdOf(TODAY,v)+"…', '"+SPANOF[svcOf(v)]+"', '"+svcOf(v)+"', {...}, {...}, "+durOf(v)+"000000, 'OK', ...)").join(',\n')+',\n  … -- '+(sorted.length*2048).toLocaleString()+' 行');
   emit('insert.arrive',{vals:[...vals]});
   seqRun([
     [1100,()=>emit('insert.sorted',{vals:sorted})],
@@ -282,11 +283,11 @@ function doTraceSelect(){
   ]);
 }
 /* ---------- 4. クライアント(DOM)と共有UI ---------- */
-const sqlEl=document.getElementById('sqlbar'), cstatEl=document.getElementById('cstat');
+let CURSQL=''; const cstatEl=document.getElementById('cstat');
 const resEl=document.getElementById('resgrid'), rescEl=document.getElementById('rescard');
 const toastEl=document.getElementById('toast');
 let toastT=null, resShown=false;
-function showSql(s){ sqlEl.textContent=s; }
+function showSql(s){ CURSQL=s; }
 function showMsg(m){ cstatEl.textContent=m; }
 function showResult(cols,rows,note){
   let html='<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
@@ -1005,6 +1006,11 @@ document.getElementById('bDel').onclick=doDelete;
 document.getElementById('bUpd').onclick=doUpdate;
 document.getElementById('bProj').onclick=doProj;
 document.getElementById('bSel').onclick=doSelect;
+document.getElementById('bSql').onclick=()=>{
+  openInsp('<h2>❯ 現在の文</h2><div class="sub">最後に実行された(される)DML/クエリ</div><pre>'
+    +CURSQL.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>'
+    +'<div class="note">SELECT はツールバーの WHERE と連動する。OTLP バッチの INSERT は人が書くものではなく、collector の exporter が発行する。</div>');
+};
 document.getElementById('bTid').onclick=doTraceSelect;
 document.getElementById('engSel').onchange=e=>{ ENG=e.target.value; toast(ENG==='rmt'?'ReplacingMergeTree: マージ時に同じ Timestamp の行を置換(重複排除)':'MergeTree: 追記のみ'); };
 document.getElementById('idxSel').onchange=e=>{ IDXT=e.target.value; toast(IDXT==='minmax'?'minmax(Timestamp): 主キー先頭が ServiceName の並びで、時刻条件を救う skip idx':'skip idx なし: 主キーだけで戦う(時刻だけの検索が重くなる)'); };
@@ -1033,16 +1039,21 @@ function showDefault(){ showSql(SQLQ()+';'); showMsg('待機中'); resShown=fals
 
 seedParts(); showDefault();
 switchTo('S0');
-const clientEl=document.getElementById('client');
 const tb2El=document.getElementById('toolbar2');
+const sbEl=document.getElementById('searchbar');
+const stepsEl=document.getElementById('steps');
+function measureBars(){
+  let y=12+sbEl.offsetHeight+8;
+  tb2El.style.top=y+'px';
+  y+=tb2El.offsetHeight+8;
+  if(stepsEl.classList.contains('show')){ stepsEl.style.top=y+'px'; y+=stepsEl.offsetHeight+8; }
+  crumbEl.style.top=(y+2)+'px';
+  world.y=y+44;
+}
+addEventListener('resize',measureBars);
 app.ticker.add(()=>{
   frame++;
-  if(frame%10===0||frame<5){
-    const ch=clientEl.offsetHeight, top2=12+ch+8;
-    tb2El.style.top=top2+'px';
-    crumbEl.style.top=(top2+tb2El.offsetHeight+10)+'px';
-    world.y=top2+tb2El.offsetHeight+40;
-  }
+  if(frame%10===0||frame<5) measureBars();
   paper.clear();
   paper.roundRect(0,0,STW(),Math.max(200,innerHeight-world.y-10),12).fill(0xf8f8f6).stroke({width:1,color:0xe2e2dd});
   if(cur) cur.tick();
