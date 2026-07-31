@@ -35,7 +35,21 @@ function seqRun(steps){ let t=0; for(const [d,fn] of steps){ t+=d; setTimeout(fn
 let parts=[], seq=0, busy=false, projOn=false, mutSeq=6;
 let mvH={}, mvD={}, mvT={}, trSeq=0;
 let mvHParts=[], hpSeq=0;      // otel_traces_1h の Part(状態行の束)
-let S1T='otel_traces', SCENE='S0'; // S1 の対象テーブル / 現在シーン
+let S1T='otel_traces', SCENE='S0';
+let REPL=false, n2Parts=[];   // node-2(レプリカ)が持つ Part id
+function doAddReplica(){
+  if(REPL) return toast('レプリカは追加済み','warn');
+  if(busy) return toast('実行中です','warn');
+  REPL=true; busy=true;
+  showSql("-- Keeper のパスとレプリカ名を持つエンジンに置き換える\nCREATE TABLE otel_traces ( … )\nENGINE = ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')\nORDER BY (ServiceName, SpanName, toDateTime(Timestamp));");
+  showMsg('node-2 を追加 → Keeper 経由で既存 Part を複製');
+  emit('repl.setup',{});
+  const ids=actParts().map(q=>q.id);
+  ids.forEach((id,i)=>setTimeout(()=>{ emit('repl.fetch',{pid:id});
+    setTimeout(()=>{ n2Parts.push(id); emit('repl.synced',{pid:id});
+      if(i===ids.length-1){ busy=false; toast('ReplicatedMergeTree: データは各レプリカが1コピーずつ持ち、Keeper が「誰が何を持つか」の唯一の台帳になる。ノード同士は直接会話しない'); } },700);
+  },600+i*900));
+} // S1 の対象テーブル / 現在シーン
 let PRED=600, SVCF='', IDXT='minmax', ENG='mt';
 function seedParts(){
   const mk=(vals,lvl,name,day)=>{ seq++; parts.push({id:seq,name,day,granules:mkGranules(keySort(vals)),lvl,del:{},upd:{}}); };
@@ -91,6 +105,10 @@ function doInsert(){
       const r=mvT[tid]||(mvT[tid]={s:v,e:v,n:0});
       r.s=Math.min(r.s,v); r.e=Math.max(r.e,v); r.n++; });
       emit('mv.applied',{mv:'otel_traces_trace_id_ts_mv'}); }],
+    [700,()=>{ if(REPL){ const np=actParts()[actParts().length-1];
+      emit('repl.log',{pid:np.id});
+      setTimeout(()=>emit('repl.fetch',{pid:np.id}),700);
+      setTimeout(()=>{ n2Parts.push(np.id); emit('repl.synced',{pid:np.id}); },1500); } }],
     [900,()=>{ emit('table.rows',{total:tableRows()}); showMsg('Ok.('+(sorted.length*2048).toLocaleString()+' 行 → 新しい Part)'); busy=false; }],
   ]);
 }
@@ -314,6 +332,7 @@ function doTraceSelect(){
 /* ---------- 4. クライアント(DOM)と共有UI ---------- */
 let CURSQL=''; const cstatEl=document.getElementById('cstat');
 const resEl=document.getElementById('resgrid'), rescEl=document.getElementById('rescard');
+rescEl.querySelector('#resX').onclick=()=>{ resShown=false; };
 const toastEl=document.getElementById('toast');
 let toastT=null, resShown=false;
 function showSql(s){ CURSQL=s; }
@@ -564,6 +583,35 @@ function svgPartFiles(p){
     +'<text x="12" y="112" class="lb">granule '+p.granules.length+' 個 ×8,192 行 = '+(p.granules.length*8192).toLocaleString()+' 行</text>';
   return svgWrap(118,s);
 }
+function svgPartitions(cut){
+  const act=actParts(), days={};
+  act.forEach(q=>{ (days[q.day]=days[q.day]||[]).push(q); });
+  const ks=Object.keys(days).sort(), bw=Math.min(168,(SVGW-24)/Math.max(1,ks.length));
+  let s='<text x="12" y="10" class="lb">PARTITION BY toDate(Timestamp) — 日ごとにディレクトリが分かれる</text>';
+  ks.forEach((d,i)=>{ const x=12+i*bw, dead=days[d].every(q=>cut.indexOf(q.id)>=0);
+    s+='<rect x="'+x+'" y="16" width="'+(bw-8)+'" height="52" rx="4" fill="'+(dead?'#201f1c':'#1d3324')+'" stroke="'+(dead?'#4a4a40':'#6fc78a')+'" stroke-dasharray="'+(dead?'3 2':'0')+'"/>'
+      +'<text x="'+(x+6)+'" y="30" '+(dead?'class="lb"':'style="fill:#6fc78a"')+'>'+d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6)+'</text>';
+    days[d].forEach((q,j)=>{ s+='<rect x="'+(x+6+j*30)+'" y="38" width="26" height="20" rx="2" fill="'+(dead?'#23231f':'#23231f')+'" stroke="'+(dead?'#3a3a32':'#4a4a40')+'"/>'
+      +'<text x="'+(x+10+j*30)+'" y="52" class="lb">'+q.granules.length+'g</text>'; });
+    if(dead) s+='<text x="'+(x+bw-32)+'" y="30" style="fill:#e08585">✂</text>';
+  });
+  s+='<text x="12" y="86" class="lb">条件の日付に合わない partition は索引すら開かない(minmax_Timestamp.idx / partition.dat で判定)</text>';
+  return svgWrap(92,s);
+}
+function compInsp(kind,cut){
+  const p=actParts().filter(q=>q.day===TODAY)[0]||actParts()[0]; if(!p) return;
+  if(kind==='part') openInsp('<h2>① partition 枝刈り</h2><div class="sub">実体: partition.dat / minmax_Timestamp.idx(Part ごと)</div>'
+    +svgPartitions(cut||[])
+    +'<div class="note">最初に見るのは Part の中ではなく Part のメタデータ。日付が条件から外れた partition の Part は、primary.idx も skip 索引も開かずに丸ごと捨てる。DROP PARTITION が安いのも同じ理由。</div>');
+  else if(kind==='idx') openInsp('<h2>② primary.idx の二分探索</h2><div class="sub">実体: '+p.name+'/primary.idx(疎索引・メモリ常駐)</div>'
+    +svgIdxMap(p,-1)
+    +'<div class="note">エントリは granule ごとに1つ、しかも先頭行のキーだけ。ORDER BY (ServiceName, SpanName, Timestamp) の接頭辞で絞れるときは二分探索が効き、'
+    +'時刻だけの条件では単一サービスに収まる granule しか落とせない(一般化排他)。行を特定する索引ではない。</div>');
+  else openInsp('<h2>③ skip 索引</h2><div class="sub">実体: '+p.name+'/skp_idx_ts.idx2(ディスク上のファイル)</div>'
+    +svgMinmax(p,0)
+    +'<div class="note">granule ごとの要約(ここでは minmax(Timestamp))を読み、「含み得ない」granule を .bin を読む前に落とす。'
+    +'偽陽性はあるが偽陰性はない — 落とした granule に該当行が居ることはない。生き残ったものだけ .mrk2 経由で .bin を読む。</div>');
+}
 function partInsp(p){
   const gs=p.granules;
   const idx=gs.map((g,i)=>String(i).padStart(2)+'  '+svcOf(g[0]).padEnd(10)+fmtT(g[0])).join('\n');
@@ -697,13 +745,19 @@ function buildPartView(){
   const hd=textV('',10.5,0x9a9a90); hd.x=10; hd.y=8; cont.addChild(hd);
   return {cont,bg,tiles,idxT,skT,hd,cells:new Map()};
 }
-function updatePartView(v,p,marks,hitFn){
+function updatePartView(v,p,marks,hitFn,hi){
   // marks: {pruned, ranged:{from,to}, skip:Set(gi), scanned:Map(gi->hits), fp:Set(gi)}
   const w=partW(), h=partH(p);
   const pruned=marks&&marks.pruned;
   panel(v.bg,w,h,0xffffff,p.flash>0?0x2b8a3e:(pruned?0xe8e8e4:0xd9dbe0),p.flash>0?2:1,8);
   v.cont.alpha=pruned?0.45:1;
   v.hd.text=(p.hasProj?'⚡ projection ':'')+(pruned?'✂ partition 対象外':'');
+  if(hi){
+    const gh=p.granules.length*(CELLH+GAP)+10, iy=24;
+    if(hi==='part'){ v.bg.roundRect(2,2,w-4,22,6).stroke({width:2,color:pruned?0xe03131:0xf59f00}); }
+    else if(hi==='idx'){ v.bg.roundRect(24+GPR*(CELL+GAP)+2,iy,IDXW-6,gh,5).stroke({width:2,color:0xf0a500}); }
+    else if(hi==='skip'){ v.bg.roundRect(24+GPR*(CELL+GAP)+IDXW+8,iy,SKW+34,gh,5).stroke({width:2,color:0x9775fa}); }
+  }
   v.idxT.text='primary.idx\n'+p.granules.map(g=>svcOf(g[0]).slice(0,2)+' '+fmtT(g[0])).join('\n');
   v.skT.text=IDXT==='minmax'?('minmax(ts)\n'+p.granules.map(g=>fmtT(Math.min.apply(null,g))+'–'+fmtT(Math.max.apply(null,g))).join('\n')):'skip idx\n(なし)';
   p.granules.forEach((g,gi)=>{
@@ -1152,9 +1206,8 @@ scenes.S1=(()=>{
       segC[sg.mv]={x:sg.x,y1:fbF,y2:cy0};
       const c=chip('s1mv'+i,'mv',()=>tableInsp(sg.mv));
       c.textContent='MV '+sg.mv+' ▸';
-      const base=sg.side==='L'?'translate(-100%,-50%)':'translate(0,-50%)';
-      c.style.transform=pu?base+' scale(1.1)':base;
-      placeChip(c,sg.side==='L'?sg.x-10:sg.x+10,fbF+34);
+      c.style.transform=pu?'translate(0,-50%) scale(1.1)':'translate(0,-50%)';
+      placeChip(c,(sg.side==='L'?lxx:rxx)+6,fbF+34);
       if(stubPulse[i]>0) stubPulse[i]=Math.max(0,stubPulse[i]-0.015);
     });
     // タイル描画ヘルパ(状態行=タイル、右に primary.idx 先頭キー)
@@ -1283,7 +1336,7 @@ scenes.S2=(()=>{
   s.cont.addChild(secL,secR);
   const introG=new PIXI.Graphics(); const introT=textV('otel_traces を Part 群に開く…',12,0x6b6b60,false);
   s.cont.addChild(introG,introT);
-  let marks=new Map(), lanes=[], intro=0, resRows=null, lk=null, curHit=null;
+  let marks=new Map(), lanes=[], intro=0, resRows=null, lk=null, curHit=null, hiCol=null, cutIds=[];
   const lkG=new PIXI.Graphics(); s.cont.addChild(lkG);
   const lkTx=textV('',11.5,0x5d4a86); s.cont.addChild(lkTx);
   function laneGeom(i){
@@ -1293,27 +1346,27 @@ scenes.S2=(()=>{
     return {x:px,y:INS_Y+60+LKUP*64+i*126,w,h:114};
   }
   function resGeom(){ const g=laneGeom(0); return {x:g.x+g.w+16,y:g.y+8,w:Math.max(210,Math.min(280,STW()-(g.x+g.w)-30))}; }
-  s.enter=()=>{ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); intro=1; resRows=null; lk=null; curHit=null; LKUP=0; };
-  s.exit=()=>{ setStage(0); LKUP=0; };
+  s.enter=()=>{ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); intro=1; resRows=null; lk=null; curHit=null; LKUP=0; hiCol=null; cutIds=[]; };
+  s.exit=()=>{ setStage(0); LKUP=0; hiCol=null; };
   s.onEvent=e=>{
-    if(e.t==='query.start'){ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); resRows=null; lk=null; curHit=null; LKUP=0; setStage(1); }
+    if(e.t==='query.start'){ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); resRows=null; lk=null; curHit=null; LKUP=0; hiCol=null; cutIds=[]; setStage(1); }
     else if(e.t==='trace.lookup'){ lk=e; LKUP=1; const w=Math.floor(e.s/TRWIN); curHit=(p,gi,ci,v)=>p.day===TODAY&&Math.floor(v/TRWIN)===w&&!p.del[gi*GPR+ci]; toast('⓪ まず otel_traces_trace_id_ts を TraceId で引く(ORDER BY の先頭なので一発)→ Start–End の時間範囲を得る'); }
-    else if(e.t==='prune.partition'){ e.cut.forEach(id=>{ marks.set(id,Object.assign(getM(id),{pruned:true})); }); toast('① Partition 枝刈り: 日付条件に合わない Partition は索引すら見ない'); }
-    else if(e.t==='prune.primary'){ e.plan.forEach(pl=>{ getM(pl.pid).pkKeep=new Set(pl.keep); }); toast(e.note||'① 主キーの境界だけで読む granule を確定'); }
+    else if(e.t==='prune.partition'){ hiCol='part'; cutIds=e.cut.slice(); e.cut.forEach(id=>{ marks.set(id,Object.assign(getM(id),{pruned:true})); }); toast('① Partition 枝刈り: 日付条件に合わない Partition は索引すら見ない'); }
+    else if(e.t==='prune.primary'){ hiCol='idx'; e.plan.forEach(pl=>{ getM(pl.pid).pkKeep=new Set(pl.keep); }); toast(e.note||'① 主キーの境界だけで読む granule を確定'); }
     else if(e.t==='prune.skip'){
+      hiCol='skip';
       e.skipped.forEach(sk=>{ const m=getM(sk.pid); m.skip=m.skip||new Set(); m.skip.add(sk.gi); });
       setStage(2);
       toast(e.note||'② skip idx で読む前に落とす');
     }
-    else if(e.t==='scan.assign'){ e.queues.forEach((q,i)=>{ lanes[i].q=q.map(x=>({pid:x.pid,gi:x.gi})); }); setStage(3); toast('③ 生き残り granule を '+LANES+' レーン(= max_threads のCPUスレッド)のキューへ配分'); }
+    else if(e.t==='scan.assign'){ hiCol=null; e.queues.forEach((q,i)=>{ lanes[i].q=q.map(x=>({pid:x.pid,gi:x.gi})); }); setStage(3); toast('③ 生き残り granule を '+LANES+' レーン(= max_threads のCPUスレッド)のキューへ配分'); }
     else if(e.t==='scan.granule'){
       const l=lanes[e.lane]; l.done++; l.sum+=e.hits; l.cur={pid:e.pid,gi:e.gi};
       const m=getM(e.pid); m.scanned=m.scanned||new Set(); m.scanned.add(e.gi);
     }
     else if(e.t==='agg.merge'){
       setStage(4);
-      const rg=resGeom();
-      lanes.forEach((l,i)=>{ const g=laneGeom(i); flyChip('Σ '+l.sum.toLocaleString(),[0x0e7490,0xb45309,0x7c3aed][i],g.x+g.w*0.86,g.y+g.h/2,rg.x+rg.w/2,rg.y+30,0.02); });
+      lanes.forEach((l,i)=>{ const g=laneGeom(i); flyChip('Σ '+l.sum.toLocaleString(),[0x0e7490,0xb45309,0x7c3aed][i],g.x+g.w*0.86,g.y+g.h/2,g.x+g.w*0.5,-40,0.022); });
     }
     else if(e.t==='query.result'){ resRows=e.rows; }
   };
@@ -1336,13 +1389,21 @@ scenes.S2=(()=>{
       if(!v){ v=buildPartView(); views.set(p.id,v); s.cont.addChild(v.cont); }
       seen.add(p.id);
       v.cont.x=24; v.cont.y=y; v.cont.alpha=(1-intro);
-      updatePartView(v,p,marks.get(p.id),curHit);
-      const c=chip('s2p'+p.id,(marks.get(p.id)||{}).pruned?'warn':'',null);
+      updatePartView(v,p,marks.get(p.id),curHit,hiCol);
+      const c=chip('s2p'+p.id,(marks.get(p.id)||{}).pruned?'warn':'',()=>partInsp(p));
       c.textContent=p.name+(marks.get(p.id)&&marks.get(p.id).pruned?' ✂':'');
       placeChip(c,24+partW()/2,y-2);
       y+=partH(p)+16;
     });
     views.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); views.delete(id); } });
+    // いま参照している部品(クリックで図解ドック)
+    if(hiCol){
+      const cc=chip('s2comp',hiCol==='skip'?'mv':'warn',()=>compInsp(hiCol,cutIds));
+      cc.textContent=hiCol==='part'?'① partition.dat / minmax_Timestamp.idx ▸ 図解'
+        :hiCol==='idx'?'② primary.idx(疎索引・常駐)を二分探索 ▸ 図解'
+        :'③ skp_idx_ts.idx2 の minmax で落とす ▸ 図解';
+      placeChip(cc,24+partW()/2,INS_Y+22);
+    }
     // otel_traces_trace_id_ts ルックアップカード
     if(lk){
       const g0=laneGeom(0);
@@ -1377,10 +1438,108 @@ scenes.S2=(()=>{
     });
     // RESULT カード(DOM)を配置
     CONTENT_H=Math.max(y+60,laneGeom(2).y+180);
-    const rg=resGeom(), show=(resShown&&curName==='S2');
-    const st=(show?1:0)+':'+(rg.x|0);
-    if(rescEl.__st!==st){ rescEl.__st=st; rescEl.style.display=show?'block':'none';
-      rescEl.style.left=(rg.x+world.x)+'px'; rescEl.style.top=(rg.y+world.y)+'px'; rescEl.style.width=rg.w+'px'; }
+
+  };
+  return s;
+})();
+
+/* ===== S3 クラスタ層 ===== */
+scenes.S3=(()=>{
+  const s=mkScene('S3');
+  const gL=new PIXI.Graphics(), gN=new PIXI.Graphics();
+  s.cont.addChild(gL,gN);
+  const T=(txt,size,col)=>{ const o=textV(txt,size,col); s.cont.addChild(o); return o; };
+  const n1t=T('node-1  clickhouse-server',11,0xe8e6dc);
+  const n1s=T('ローカル storage — Part はここに書かれる',10,0x9a9a90);
+  const n2t=T('node-2  clickhouse-server',11,0xe8e6dc);
+  const n2s=T('',10,0x9a9a90);
+  const ktt=T('Keeper ×3 — 「誰が何を持つか」の唯一の台帳(メタデータのみ)',10.5,0xb49ae0);
+  const note=T('',10,0x8a8a80);
+  const hit=new PIXI.Container(), hg=new PIXI.Graphics();
+  const addT=textV('＋ レプリカを追加(ReplicatedMergeTree 化)',11.5,0xfaff69);
+  hit.addChild(hg,addT); s.cont.addChild(hit);
+  hit.eventMode='static'; hit.cursor='pointer';
+  hit.on('pointertap',()=>doAddReplica());
+  let kPulse=0, n2Pulse=0, fPulse=0;
+  const geo=()=>{ const w=Math.min(620,STW()-80), x=40, y1=INS_Y+34, h1=126;
+    const yk=y1+h1+52, y2=yk+46+52;
+    return {x,w,y1,h1,yk,y2,h2:126}; };
+  s.enter=()=>{ kPulse=n2Pulse=fPulse=0; };
+  s.onEvent=e=>{
+    if(e.t==='repl.setup'){ kPulse=1; toast('ENGINE を ReplicatedMergeTree に置き換え、Keeper のパスとレプリカ名を与える。データではなくメタデータが Keeper に載る'); }
+    else if(e.t==='repl.log'){ kPulse=1; toast('① node-1 が Part を書いたら、Keeper のレプリケーションログに1行記帳する'); }
+    else if(e.t==='repl.fetch'){ kPulse=1; fPulse=1;
+      const G=geo();
+      flyChip('fetch part',0x7048c8,G.x+30,G.y1+G.h1,G.x+30,G.y2,0.022,null,true);
+      toast('② node-2 はログを見て、node-1 から Part 本体を fetch する。Keeper が運ぶのは指示、データはレプリカ間で直接'); }
+    else if(e.t==='repl.synced'){ n2Pulse=1; }
+  };
+  s.tick=()=>{
+    const G=geo(), act=actParts();
+    gN.clear(); gL.clear();
+    const drawNode=(y,h,ids,pulse)=>{
+      gN.roundRect(G.x,y,G.w,h,10).fill(0x26261f).stroke({width:pulse>0?2:1,color:pulse>0?0x6fc78a:0x4a4a40});
+      gN.roundRect(G.x+12,y+40,G.w-24,h-52,8).fill(0xf8f8f6).stroke({width:1,color:0xd9dbe0});
+      ids.slice(0,8).forEach((q,i)=>{
+        const bx=G.x+24+(i%4)*(Math.min(120,(G.w-70)/4)+8), by=y+52+Math.floor(i/4)*34;
+        gN.roundRect(bx,by,Math.min(120,(G.w-70)/4),26,5).fill(0xeef0f2).stroke({width:1,color:0xdde0e4});
+      });
+    };
+    drawNode(G.y1,G.h1,act,0);
+    n1t.x=G.x+14; n1t.y=G.y1+11; n1s.x=G.x+14; n1s.y=G.y1+26;
+    act.slice(0,8).forEach((q,i)=>{
+      const cw2=Math.min(120,(G.w-70)/4), bx=G.x+24+(i%4)*(cw2+8), by=G.y1+52+Math.floor(i/4)*34;
+      const c=chip('n1p'+q.id,'',()=>zoomTo('S1'));
+      c.textContent=q.name.slice(9)+' · '+q.granules.length+'g';
+      placeChip(c,bx+cw2/2,by+1);
+    });
+    const c1=chip('n1z','warn',()=>zoomTo('S0'));
+    c1.textContent='⊕ この Node のテーブルを見る';
+    placeChip(c1,G.x+G.w-96,G.y1+30);
+    // Keeper
+    ktt.x=G.x; ktt.y=G.yk-20; ktt.alpha=REPL?1:0.45;
+    const kw=Math.min(150,(G.w-40)/3);
+    for(let i=0;i<3;i++){
+      gN.roundRect(G.x+i*(kw+16),G.yk,kw,46,8)
+        .fill(kPulse>0?0x322a44:0x24222c).stroke({width:kPulse>0?2:1,color:REPL?0xb49ae0:0x3a3a35});
+    }
+    for(let i=0;i<3;i++){ const kc=chip('kp'+i,'mv',null);
+      kc.textContent='keeper-'+(i+1); kc.style.opacity=REPL?'1':'0.45';
+      placeChip(kc,G.x+i*(kw+16)+kw/2,G.yk+24); }
+    if(kPulse>0) kPulse=Math.max(0,kPulse-0.012);
+    // 調整の線(node ↔ Keeper)
+    const kc2=G.x+G.w/2;
+    gL.moveTo(kc2,G.y1+G.h1).lineTo(kc2,G.yk).stroke({width:1.5,color:REPL?(kPulse>0?0xb49ae0:0x6b5f80):0x3a3a35});
+    if(REPL){
+      gL.moveTo(kc2,G.yk+46).lineTo(kc2,G.y2).stroke({width:1.5,color:kPulse>0?0xb49ae0:0x6b5f80});
+      // データ経路(レプリカ間の fetch)は左を迂回
+      const fx=G.x+30, col=fPulse>0?0x7048c8:0xc7bcd8;
+      gL.moveTo(fx,G.y1+G.h1).lineTo(fx,G.y2-8).stroke({width:fPulse>0?2.5:1.2,color:col});
+      gL.poly([fx,G.y2,fx-4.5,G.y2-8,fx+4.5,G.y2-8]).fill(col);
+      if(fPulse>0) fPulse=Math.max(0,fPulse-0.01);
+      drawNode(G.y2,G.h2,n2Parts.map(id=>parts.find(x=>x.id===id)).filter(Boolean),n2Pulse);
+      n2t.x=G.x+14; n2t.y=G.y2+11; n2s.x=G.x+14; n2s.y=G.y2+26; n2t.alpha=n2s.alpha=1;
+      n2s.text='ローカル storage — 同じ Part を1コピー持つ('+n2Parts.length+' / '+act.length+' 同期済み)';
+      n2Parts.slice(0,8).forEach((id,i)=>{ const q=parts.find(x=>x.id===id); if(!q) return;
+        const cw2=Math.min(120,(G.w-70)/4), bx=G.x+24+(i%4)*(cw2+8), by=G.y2+52+Math.floor(i/4)*34;
+        const c=chip('n2p'+id,'',null); c.textContent=q.name.slice(9)+' · '+q.granules.length+'g';
+        placeChip(c,bx+cw2/2,by+1); });
+      if(n2Pulse>0) n2Pulse=Math.max(0,n2Pulse-0.015);
+      hit.visible=false;
+      const lc=chip('s3lb','mv',null);
+      lc.textContent='調整 = Keeper 経由 / データ = レプリカ間の fetch';
+      placeChip(lc,kc2,G.yk+70);
+      note.text='ノード同士は「相談」しない。書いた事実は Keeper のログに載り、それを見たレプリカが本体を取りに行く。'
+        +'Cloud の SharedMergeTree では、この本体が共有ストレージ1コピーに置き換わる。';
+    } else {
+      hit.visible=true;
+      hg.clear(); hg.roundRect(G.x,G.y2,G.w,G.h2,10).fill(0x201f18).stroke({width:2,color:0x5a5a2a});
+      addT.x=G.x+20; addT.y=G.y2+G.h2/2-8;
+      n2t.alpha=n2s.alpha=0;
+      note.text='いまは単一ノード(MergeTree)。Keeper は暗いまま — 台帳に載せるものが無い。';
+    }
+    note.x=G.x; note.y=G.y2+G.h2+22;
+    CONTENT_H=G.y2+G.h2+120;
   };
   return s;
 })();
@@ -1400,7 +1559,7 @@ function switchTo(name){
   // シーン所有のDOMチップを一掃(次フレームのsweepに任せず即時)
   chips.forEach((c,k)=>{ c.remove(); }); chips.clear();
   clearFly();
-  rescEl.style.display='none'; rescEl.__st=null; SCROLL=0; // S2の持ち物は退場時に隠す
+  SCROLL=0;
   curName=name; SCENE=name; cur=scenes[name];
   world.addChild(cur.cont);
   world.addChild(flyC); // 最前面へ
@@ -1410,7 +1569,7 @@ function zoomTo(name){ if(busy&&name!==curName) return toast('実行中です。
 const crumbEl=document.getElementById('crumb');
 function renderCrumb(){
   const seg=(lbl,on,fn)=>'<span class="cr'+(on?' on':'')+'" data-go="'+(fn||'')+'">'+lbl+'</span>';
-  let html=seg('node-1',false,'')+'<span class="sep">›</span>';
+  let html=seg('cluster',curName==='S3',curName==='S3'?'':'S3')+'<span class="sep">›</span>'+seg('node-1',false,'S0')+'<span class="sep">›</span>';
   if(curName==='S0') html+=seg('tables',true);
   else if(curName==='S1') html+=seg('tables',false,'S0')+'<span class="sep">›</span>'+seg('otel_traces',true);
   else html+=seg('tables',false,'S0')+'<span class="sep">›</span>'+seg('クエリ実行',true)+' <span class="cr" data-go="'+zoomBefore+'">⊖ ステージへ戻る</span>';
@@ -1428,8 +1587,8 @@ function wbSQL(){
   if(STMT==='sel') return SQLQ()+';';
   if(STMT==='tid'){ const ks=Object.keys(mvT); const tid=ks.length?ks[ks.length-1]+'…':'<TraceId>';
     return "WITH '"+tid+"' AS tid, (SELECT min(Start) FROM otel_traces_trace_id_ts WHERE TraceId = tid) AS s, (SELECT max(End)+1 FROM otel_traces_trace_id_ts WHERE TraceId = tid) AS e SELECT Timestamp, ServiceName, SpanName FROM otel_traces WHERE Timestamp >= s AND Timestamp < e;"; }
-  if(STMT==='del') return "DELETE FROM otel_traces WHERE ServiceName = '"+(SVCF||'checkout')+"';";
-  if(STMT==='upd') return "ALTER TABLE otel_traces UPDATE SpanAttributes['tier'] = 'vip' WHERE ServiceName = '"+(SVCF||'frontend')+"';";
+  if(STMT==='del') return (SVCF?'':'-- ServiceName 未指定 → 既定の checkout を対象にする\n')+"DELETE FROM otel_traces WHERE ServiceName = '"+(SVCF||'checkout')+"';";
+  if(STMT==='upd') return (SVCF?'':'-- ServiceName 未指定 → 既定の frontend を対象にする\n')+"ALTER TABLE otel_traces UPDATE SpanAttributes['tier'] = 'vip' WHERE ServiceName = '"+(SVCF||'frontend')+"';";
   return 'ALTER TABLE otel_traces ADD PROJECTION by_service (SELECT * ORDER BY ServiceName);';
 }
 const wbEl=document.getElementById('wbsql');
@@ -1461,7 +1620,7 @@ if(bAmb) bAmb.onclick=()=>{
 };
 document.getElementById('bReset').onclick=()=>{
   if(busy) return toast('実行中です','warn');
-  parts=[]; seq=0; mvH={}; mvD={}; mvT={}; trSeq=0; mvHParts=[]; hpSeq=0; S1T='otel_traces'; projOn=false; mutSeq=6;
+  parts=[]; seq=0; mvH={}; mvD={}; mvT={}; trSeq=0; mvHParts=[]; hpSeq=0; S1T='otel_traces'; REPL=false; n2Parts=[]; projOn=false; mutSeq=6;
   seedParts(); showDefault(); updWb(); switchTo('S0');
   toast('初期状態に戻した');
 };
@@ -1475,6 +1634,8 @@ const stepsEl=document.getElementById('steps');
 function measureBars(){
   let y=12+sbEl.offsetHeight+8;
   if(stepsEl.classList.contains('show')){ stepsEl.style.top=y+'px'; y+=stepsEl.offsetHeight+8; }
+  rescEl.style.display=resShown?'block':'none';
+  if(resShown){ rescEl.style.top=y+'px'; y+=rescEl.offsetHeight+8; }
   crumbEl.style.top=(y+2)+'px';
   YBASE=y+40;
   const maxS=Math.max(0, CONTENT_H*Z-(innerHeight-YBASE)+50);

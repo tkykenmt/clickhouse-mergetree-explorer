@@ -44,9 +44,11 @@ canvas{display:block;touch-action:none}
   border:1px solid var(--line);border-radius:8px;overflow:hidden;box-shadow:0 3px 12px #00000022}
 #client .clbl{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint);padding:0 0 0 12px;white-space:nowrap}
 #cstat{font:600 10.5px var(--ui);color:var(--faint);white-space:nowrap;padding:0 10px;max-width:300px;overflow:hidden;text-overflow:ellipsis}
-#rescard{position:fixed;z-index:9;display:none;background:#23231f;border:1px solid #3a3a35;border-radius:8px;
+#rescard{position:fixed;left:12px;right:14px;z-index:9;display:none;background:#23231f;border:1px solid #3a3a35;border-radius:8px;
   box-shadow:0 4px 16px #00000033;overflow:hidden}
-#rescard .rhd{font:600 9.5px var(--ui);letter-spacing:.12em;color:#8b8b84;padding:7px 12px 5px;border-bottom:1px solid #3a3a35}
+#rescard .rhd{font:600 9.5px var(--ui);letter-spacing:.12em;color:#8b8b84;padding:7px 12px 5px;border-bottom:1px solid #3a3a35;display:flex;align-items:center;gap:10px}
+#rescard .rhd .rx{margin-left:auto;cursor:pointer;border:1px solid #414141;border-radius:5px;padding:1px 8px;background:#282828;color:#b3b6bd;letter-spacing:0}
+#rescard #resgrid{padding:6px 14px 10px}
 #rescard #resgrid{height:auto;max-height:200px}
 #crumb{position:fixed;left:18px;top:64px;z-index:8;display:flex;gap:4px;align-items:center;
   font:600 11px var(--mono);color:#8b8b84;pointer-events:auto}
@@ -161,7 +163,7 @@ canvas{display:block;touch-action:none}
   <span class="step" data-s="4">④ マージして結果を返す</span>
 </div>
 <div id="rescard">
-  <div class="rhd">RESULT — クライアントに返る</div>
+  <div class="rhd">RESULT — クライアントに返る<span class="rx" id="resX">✕</span></div>
   <div id="resgrid"></div>
 </div>
 <div id="searchbar">
