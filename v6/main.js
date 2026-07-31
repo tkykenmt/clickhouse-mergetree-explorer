@@ -100,6 +100,12 @@ function doMerge(tgt2){
     if(mvHParts.length<2) return toast('Part が1つ以下。Collector からバッチを流すと増える','warn');
     busy=true;
     emit('merge.start',{pids:mvHParts.map(q=>q.id),day:TODAY});
+    { const gp={};
+      mvHParts.forEach(q=>Object.keys(q.rows).forEach(k=>{ (gp[k]=gp[k]||[]).push({c:q.rows[k].c,d:q.rows[k].d}); }));
+      const gl=Object.keys(gp).sort().map(k=>({key:k,srcs:gp[k],
+        res:gp[k].reduce((a,r)=>({c:a.c+r.c,d:a.d+r.d}),{c:0,d:0})}));
+      const dup=gl.filter(g2=>g2.srcs.length>1);
+      emit('agg.align',{groups:gl.slice().sort((a,b)=>b.srcs.length-a.srcs.length).slice(0,3),keys:gl.length,dup:dup.length}); }
     setTimeout(()=>{
       const fold={};
       mvHParts.forEach(q=>Object.keys(q.rows).forEach(k=>{ const r=fold[k]||(fold[k]={c:0,d:0}); r.c+=q.rows[k].c; r.d+=q.rows[k].d; }));
@@ -107,7 +113,7 @@ function doMerge(tgt2){
       emit('part.merged',{into:hpSeq,from:[]});
       toast('AggregatingMergeTree のマージ: 同じ ORDER BY キー (hour, Service) の行は「状態」(sum と count)を結合して1行になる。avg はここでは計算されない — 読む側が avgMerge で確定する');
       busy=false;
-    },1400);
+    },2600);
     return;
   }
   const byDay={}; actParts().forEach(p=>{ (byDay[p.day]=byDay[p.day]||[]).push(p); });
@@ -362,6 +368,7 @@ inspStyle.textContent=`
 #insp pre{font:11.5px Inconsolata,Menlo,monospace;line-height:1.55;background:#161613;border:1px solid #33332e;
   border-radius:8px;padding:10px 12px;white-space:pre-wrap;word-break:break-all;color:#cdd2dc}
 #insp pre .k{color:#8ecbe8}
+#insp svg.fv{display:block;margin:8px 0 4px;background:#161613;border:1px solid #33332e;border-radius:8px;padding:4px}
 #insp .note{font-size:11.5px;color:#b3b6bd;line-height:1.75;margin:10px 0}
 #insp .x{position:absolute;top:10px;right:12px;cursor:pointer;color:#b3b6bd;font-size:14px;
   border:1px solid #414141;border-radius:6px;padding:2px 9px;background:#282828}
@@ -494,6 +501,69 @@ WHERE TraceId != ''
 GROUP BY TraceId`,
     live:()=>'発火 '+EVLOG.filter(e=>e.t==='mv.fire'&&e.mv==='otel_traces_trace_id_ts_mv').length+' 回'},
 };
+const SVGW=376;
+function svgWrap(h,inner){ return '<svg class="fv" viewBox="0 0 '+SVGW+' '+h+'" width="100%" height="'+h+'">'
+  +'<style>.fv text{font:9.5px Inconsolata,Menlo,monospace;fill:#cdd2dc}.fv .lb{fill:#8b8b84;font-size:8.5px}'
+  +'.fv .hi{fill:#e8d34a}.fv rect{stroke-width:1}</style>'+inner+'</svg>'; }
+function svgIdxMap(p,gi){
+  const n=p.granules.length, w=Math.min(96,Math.floor((SVGW-24)/n)), x0=12;
+  let s='<text x="12" y="10" class="lb">primary.idx(granule ごと1エントリ・メモリ常駐)</text>';
+  p.granules.forEach((g,i)=>{
+    const x=x0+i*w, on=i===gi;
+    s+='<rect x="'+x+'" y="16" width="'+(w-6)+'" height="18" rx="3" fill="'+(on?'#3a350f':'#23231f')+'" stroke="'+(on?'#e8d34a':'#4a4a40')+'"/>'
+      +'<text x="'+(x+5)+'" y="29" '+(on?'class="hi"':'')+'>'+svcOf(g[0]).slice(0,2)+' '+fmtT(g[0])+'</text>'
+      +'<line x1="'+(x+(w-6)/2)+'" y1="34" x2="'+(x+(w-6)/2)+'" y2="48" stroke="'+(on?'#e8d34a':'#4a4a40')+'"/>'
+      +'<rect x="'+x+'" y="48" width="'+(w-6)+'" height="22" rx="3" fill="'+(on?'#1d3324':'#20201b')+'" stroke="'+(on?'#6fc78a':'#4a4a40')+'"/>'
+      +'<text x="'+(x+5)+'" y="63" '+(on?'style="fill:#6fc78a"':'')+'>g'+i+' 8192行</text>';
+  });
+  s+='<text x="12" y="84" class="lb">エントリは先頭行のキーだけ。二分探索で「候補の granule」を決める</text>';
+  return svgWrap(92,s);
+}
+function svgMark(p,gi){
+  const nb=5, bw=(SVGW-24)/nb, hb=Math.min(nb-1,Math.floor(gi*1.4)%nb);
+  let s='<text x="12" y="10" class="lb">Timestamp.bin — 圧縮ブロックの列(境界は granule と一致しない)</text>';
+  for(let i=0;i<nb;i++){ const x=12+i*bw, on=i===hb;
+    s+='<rect x="'+x+'" y="16" width="'+(bw-4)+'" height="20" rx="2" fill="'+(on?'#3a350f':'#23231f')+'" stroke="'+(on?'#e8d34a':'#4a4a40')+'"/>'
+      +'<text x="'+(x+4)+'" y="30" class="lb">blk'+i+'</text>'; }
+  const mx=12+hb*bw+bw*0.45;
+  s+='<line x1="'+mx+'" y1="12" x2="'+mx+'" y2="40" stroke="#e8d34a" stroke-dasharray="2 2"/>'
+    +'<text x="'+(mx+4)+'" y="50" class="hi">① 圧縮内オフセット</text>'
+    +'<text x="12" y="70" class="lb">展開後のバイト列 — granule はここで 8,192 行ごとに切れる</text>';
+  const gn=p.granules.length, gw=(SVGW-24)/gn;
+  for(let i=0;i<gn;i++){ const x=12+i*gw, on=i===gi;
+    s+='<rect x="'+x+'" y="76" width="'+(gw-4)+'" height="20" rx="2" fill="'+(on?'#1d3324':'#20201b')+'" stroke="'+(on?'#6fc78a':'#4a4a40')+'"/>'
+      +'<text x="'+(x+4)+'" y="90" class="lb"'+(on?' style="fill:#6fc78a"':'')+'>g'+i+'</text>'; }
+  const gx=12+gi*gw;
+  s+='<line x1="'+gx+'" y1="72" x2="'+gx+'" y2="100" stroke="#6fc78a" stroke-dasharray="2 2"/>'
+    +'<text x="'+(gx+4)+'" y="110" style="fill:#6fc78a">② 展開後オフセット</text>'
+    +'<text x="12" y="126" class="lb">.mrk2 の1エントリ = (①, ②, 行数) の3つ組</text>';
+  return svgWrap(132,s);
+}
+function svgMinmax(p,gi){
+  const g=p.granules[gi], mn=Math.min.apply(null,g), mx=Math.max.apply(null,g);
+  const X=v=>12+(v/960)*(SVGW-24);
+  let s='<text x="12" y="10" class="lb">skp_idx_ts = granule ごとの minmax(Timestamp)</text>'
+    +'<rect x="12" y="16" width="'+(SVGW-24)+'" height="16" rx="2" fill="#20201b" stroke="#4a4a40"/>';
+  p.granules.forEach((gg,i)=>{ const a=X(Math.min.apply(null,gg)), b=X(Math.max.apply(null,gg)), on=i===gi;
+    s+='<rect x="'+a+'" y="18" width="'+Math.max(3,b-a)+'" height="12" rx="2" fill="'+(on?'#3a350f':'#2b2b26')+'" stroke="'+(on?'#e8d34a':'#3a3a32')+'"/>'; });
+  s+='<line x1="'+X(PRED)+'" y1="12" x2="'+X(PRED)+'" y2="46" stroke="#e08585"/>'
+    +'<text x="'+(X(PRED)+4)+'" y="44" style="fill:#e08585">WHERE ts ≥ '+fmtT(PRED)+'</text>'
+    +'<text x="12" y="60" class="lb">この granule: '+fmtT(mn)+'–'+fmtT(mx)+' → '+(mx<PRED?'範囲外なので読まずに落とせる':'交差するので候補に残る')+'</text>';
+  return svgWrap(66,s);
+}
+function svgPartFiles(p){
+  const cols=['Timestamp','ServiceName','SpanName','Duration'];
+  let s='<text x="12" y="10" class="lb">'+p.name+'/ — 列ごとのファイル + Part 全体のファイル</text>';
+  cols.forEach((c,i)=>{ const y=16+i*22;
+    s+='<rect x="12" y="'+y+'" width="120" height="17" rx="2" fill="#23231f" stroke="#4a4a40"/><text x="17" y="'+(y+12)+'">'+c+'.bin</text>'
+      +'<rect x="140" y="'+y+'" width="96" height="17" rx="2" fill="#23231f" stroke="#4a4a40"/><text x="145" y="'+(y+12)+'" class="lb">'+c.slice(0,9)+'.mrk2</text>'; });
+  s+='<rect x="248" y="16" width="116" height="17" rx="2" fill="#3a350f" stroke="#e8d34a"/><text x="253" y="28" class="hi">primary.idx</text>'
+    +'<rect x="248" y="38" width="116" height="17" rx="2" fill="#322a44" stroke="#b49ae0"/><text x="253" y="50" style="fill:#b49ae0">skp_idx_ts.idx2</text>'
+    +'<rect x="248" y="60" width="116" height="17" rx="2" fill="#23231f" stroke="#4a4a40"/><text x="253" y="72" class="lb">minmax_Timestamp</text>'
+    +'<rect x="248" y="82" width="116" height="17" rx="2" fill="#23231f" stroke="#4a4a40"/><text x="253" y="94" class="lb">count.txt / checksums</text>'
+    +'<text x="12" y="112" class="lb">granule '+p.granules.length+' 個 ×8,192 行 = '+(p.granules.length*8192).toLocaleString()+' 行</text>';
+  return svgWrap(118,s);
+}
 function partInsp(p){
   const gs=p.granules;
   const idx=gs.map((g,i)=>String(i).padStart(2)+'  '+svcOf(g[0]).padEnd(10)+fmtT(g[0])).join('\n');
@@ -505,7 +575,9 @@ function partInsp(p){
     +'  primary.idx                          ← granule ごと先頭キー(常駐)\n'
     +'  skp_idx_ts.idx2                      ← minmax(Timestamp)\n'
     +'  partition.dat / minmax_Timestamp.idx ← パーティション枝刈り用</pre>'
-    +'<div class="sub">primary.idx(granule → 先頭キー)</div><pre>gi  ServiceName  Timestamp\n'+idx+'</pre>'
+    +svgPartFiles(p)
+    +'<div class="sub">primary.idx(granule → 先頭キー)</div>'+svgIdxMap(p,-1)
+    +'<pre>gi  ServiceName  Timestamp\n'+idx+'</pre>'
     +'<div class="note">granule の行をクリックすると、その granule の中身が見える。</div>');
 }
 function granuleInsp(p,gi){
@@ -520,8 +592,10 @@ function granuleInsp(p,gi){
     +'<div class="note">granule は行の窓であって、行を個別に指す索引は無い。読むときはこの窓ごと .bin から取り出す。'
     +'下の行は縮尺表示(1 行 = 2,048 行ぶんの代表値)。</div>'
     +'<pre>Timestamp  ServiceName  SpanName        Duration\n'+rows+'</pre>'
-    +'<div class="sub">この granule を指す部品</div>'
-    +'<pre>primary.idx[' +gi+ ']   = ('+svcOf(g[0])+', '+fmtT(g[0])+')   ← 先頭行のキーだけ\n'
+    +'<div class="sub">① primary.idx が指す</div>'+svgIdxMap(p,gi)
+    +'<div class="sub">② skip 索引が落とす</div>'+svgMinmax(p,gi)
+    +'<div class="sub">③ mark が .bin の位置を指す</div>'+svgMark(p,gi)
+    +'<pre>primary.idx[' +gi+ ']   = ('+svcOf(g[0])+', '+fmtT(g[0])+')\n'
     +'skp_idx_ts    = minmax '+fmtT(mn)+'–'+fmtT(mx)+'\n'
     +'Timestamp.mrk2['+gi+'] = (圧縮内 '+co.toLocaleString()+', 展開後 '+uo.toLocaleString()+', 行 8192)</pre>'
     +'<div class="note">mark が2段オフセットなのは、granule の境界と圧縮ブロックの境界が一致しないから。'
@@ -859,6 +933,15 @@ scenes.S1=(()=>{
   const stubs=[0,1,2].map(()=>{ const g=new PIXI.Graphics(); s.cont.addChild(g); return g; });
   let stubPulse=[0,0,0], insBatch=null, insPhase='', segC={};
   let sTiles=[], sPhase='', bornPid=0;
+  let mgFold=null;
+  const mgC=new PIXI.Container(), mgBg=new PIXI.Graphics();
+  const mgH=textV('',11,0x5d4a86), mgS=textV('',10,0x8a8a80);
+  mgH.x=14; mgH.y=9; mgS.x=14; mgS.y=25;
+  mgC.addChild(mgBg,mgH,mgS); s.cont.addChild(mgC); mgC.visible=false;
+  const mgPool=new Map();
+  const mgGet=k=>{ let o=mgPool.get(k);
+    if(!o){ o={g:new PIXI.Graphics(),t:textV('',9.5,0x2a2e39)}; mgC.addChild(o.g,o.t); mgPool.set(k,o); }
+    o.g.visible=o.t.visible=true; return o; };
   const clearS=()=>{ sTiles.forEach(o=>o.c.destroy({children:true})); sTiles=[]; sPhase=''; bornPid=0; };
   const rawB=new PIXI.Container();
   const rawBg2=new PIXI.Graphics();
@@ -912,6 +995,7 @@ scenes.S1=(()=>{
       sPhase='born'; bornPid=e.pid;
       setTimeout(()=>{ const q=parts.find(x=>x.id===e.pid); if(q) q.filling=0; clearS(); },1500);
     }
+    else if(e.t==='agg.align'){ mgFold={g:e.groups,keys:e.keys,dup:e.dup,t:0}; setTimeout(()=>{ mgFold=null; },5200); }
     else if(e.t==='mv.fire'){
       const i={otel_traces_1h_mv:0,otel_traces_trace_id_ts_mv:1}[e.mv];
       if(i!=null) stubPulse[i]=1;
@@ -1074,18 +1158,22 @@ scenes.S1=(()=>{
       if(stubPulse[i]>0) stubPulse[i]=Math.max(0,stubPulse[i]-0.015);
     });
     // タイル描画ヘルパ(状態行=タイル、右に primary.idx 先頭キー)
-    const tileCard=(v,w,items,firstKey,band)=>{
+    const tileCard=(v,w,items,firstKey,band,op)=>{
+      const cw=(op&&op.cw)||CELL, ch=(op&&op.ch)||CELLH, per=(op&&op.per)||GPR;
       if(!v.tiles){ v.tiles=new PIXI.Container(); v.cont.addChild(v.tiles); v.cells=new Map();
-        v.idx=textV('',10,0x8a7300); v.idx.x=12+GPR*(CELL+GAP)+16; v.idx.y=26; v.cont.addChild(v.idx); }
+        v.idx=textV('',10,0x8a7300); v.idx.y=26; v.cont.addChild(v.idx); }
+      v.idx.x=12+per*(cw+GAP)+16;
       items.forEach((it,ci)=>{ let cell=v.cells.get(ci);
-        if(!cell){ cell={g:new PIXI.Graphics(),t:textV('',10.5,0x2a2e39)}; v.tiles.addChild(cell.g); v.tiles.addChild(cell.t); v.cells.set(ci,cell); }
-        const x=12+(ci%GPR)*(CELL+GAP), yy=26+Math.floor(ci/GPR)*(CELLH+GAP);
-        cell.g.clear(); cell.g.roundRect(x,yy,CELL,CELLH,4).fill(it.bg).stroke({width:1,color:0xdde0e4});
-        cell.t.text=it.txt; cell.t.x=x+CELL/2-cell.t.width/2; cell.t.y=yy+5; cell.g.visible=cell.t.visible=true;
+        if(!cell){ cell={g:new PIXI.Graphics(),t:textV('',10.5,0x2a2e39),s:textV('',9,0x5d4a86)}; v.tiles.addChild(cell.g); v.tiles.addChild(cell.t); v.tiles.addChild(cell.s); v.cells.set(ci,cell); }
+        const x=12+(ci%per)*(cw+GAP), yy=26+Math.floor(ci/per)*(ch+GAP);
+        cell.g.clear(); cell.g.roundRect(x,yy,cw,ch,4).fill(it.bg).stroke({width:1,color:0xdde0e4});
+        cell.t.text=it.txt; cell.t.x=x+(it.sub?5:cw/2-cell.t.width/2); cell.t.y=yy+(it.sub?3:5);
+        cell.s.text=it.sub||''; cell.s.x=x+5; cell.s.y=yy+16; cell.s.visible=!!it.sub;
+        cell.g.visible=cell.t.visible=true;
       });
-      for(let ci=items.length;v.cells.has(ci);ci++){ const cell=v.cells.get(ci); cell.g.visible=cell.t.visible=false; }
-      const rowsN=Math.max(1,Math.ceil(items.length/GPR));
-      const h2=26+rowsN*(CELLH+GAP)+12;
+      for(let ci=items.length;v.cells.has(ci);ci++){ const cell=v.cells.get(ci); cell.g.visible=cell.t.visible=cell.s.visible=false; }
+      const rowsN=Math.max(1,Math.ceil(items.length/per));
+      const h2=26+rowsN*(ch+GAP)+12;
       panel(v.bg,w,h2,0xffffff,(v.fl||0)>0?0x9775fa:0xd9dbe0,(v.fl||0)>0?2:1,8);
       v.bg.rect(1,1,w-2,18).fill(band);
       v.idx.text='primary.idx\n'+firstKey;
@@ -1108,10 +1196,10 @@ scenes.S1=(()=>{
       seenH.add(q.id);
       const keys=Object.keys(q.rows).sort();
       v.fl=q.flash;
-      const items=keys.map(k=>{ const hs=+k.split('|')[0], sv=k.split('|')[1];
-        return {txt:fmtT(hs),bg:SVCTINT[sv]||0xeef0f2}; });
+      const items=keys.map(k=>{ const hs=+k.split('|')[0], sv=k.split('|')[1], r=q.rows[k];
+        return {txt:fmtT(hs)+' '+sv.slice(0,2),sub:'Σ'+Math.round(r.d/1000)+'s/'+r.c,bg:SVCTINT[sv]||0xeef0f2}; });
       const fk=keys[0]?fmtT(+keys[0].split('|')[0])+' '+keys[0].split('|')[1].slice(0,2):'—';
-      const h2=tileCard(v,colW2,items,fk,0xf1ecfa);
+      const h2=tileCard(v,colW2,items,fk,0xf1ecfa,{cw:104,ch:34,per:3});
       v.cont.x=lxx; v.cont.y=hy;
       if(q.id>0){ const pc=chip('s1hp'+q.id,'',()=>tableInsp('otel_traces_1h'));
         pc.textContent='part '+q.id+' ・ granule ×'+Math.max(1,Math.ceil(keys.length/GPR))+' ・ 状態 '+keys.length+' 行';
@@ -1120,6 +1208,43 @@ scenes.S1=(()=>{
       hy+=h2+18;
     });
     hViews.forEach((v,id)=>{ if(!seenH.has(id)){ v.cont.destroy({children:true}); hViews.delete(id); } });
+    // AggregatingMergeTree のマージ劇場
+    mgPool.forEach(o=>{ o.g.visible=o.t.visible=false; });
+    if(mgFold&&mgFold.g.length){
+      mgFold.t++;
+      s.cont.addChild(mgC);
+      const gs=mgFold.g, mw=colW2-28, mh=44+gs.length*42+16;
+      mgC.visible=true; mgC.alpha=0.98; mgC.x=lxx+14; mgC.y=cy0+18;
+      panel(mgBg,mw,mh,0xfffdf7,0x9775fa,2,10);
+      mgBg.rect(1,1,mw-2,26).fill(0xf1ecfa);
+      mgH.text='AggregatingMergeTree のマージ — 同じ ORDER BY キーの状態を結合';
+      mgS.text='キー '+mgFold.keys+' 種 ・ 複数 Part に同じキー '+mgFold.dup+' 件'+(mgFold.dup?' → 状態を足して1行に':' → 今回は結合なし、状態はそのまま運ばれる')+'(avg は確定しない)';
+      const T=mgFold.t, p1=Math.max(0,Math.min(1,(T-16)/38)), p2=Math.max(0,Math.min(1,(T-58)/26));
+      gs.forEach((gr,i)=>{
+        const gy=48+i*42, hs=+gr.key.split('|')[0], sv=gr.key.split('|')[1];
+        const kk=mgGet('k'+i); kk.g.clear();
+        kk.g.roundRect(12,gy,92,26,4).fill(SVCTINT[sv]||0xeef0f2).stroke({width:1,color:0xdde0e4});
+        kk.t.text=fmtT(hs)+' '+sv; kk.t.x=17; kk.t.y=gy+8;
+        gr.srcs.slice(0,2).forEach((sr,j)=>{
+          const o=mgGet('s'+i+'_'+j), x0=116+j*104, x1=150+j*8, x=x0+(x1-x0)*p1;
+          o.g.clear(); o.g.roundRect(x,gy,96,26,4).fill(0xffffff).stroke({width:1,color:0xb9a6dd});
+          o.g.alpha=o.t.alpha=1-p2*0.5;
+          o.t.text='Σ'+Math.round(sr.d/1000)+'s/'+sr.c; o.t.x=x+7; o.t.y=gy+8;
+          if(j===0&&gr.srcs.length>1){ const pl=mgGet('p'+i); pl.g.clear(); pl.t.text='+'; pl.t.x=x+104; pl.t.y=gy+8; pl.t.alpha=1-p2; }
+        });
+        if(p2>0){
+          const combi=gr.srcs.length>1, col=combi?0x2b8a3e:0x9aa0a8, bgc=combi?0xe2f3e6:0xf4f4f0;
+          const o=mgGet('r'+i);
+          o.g.clear(); o.g.roundRect(276,gy,120,26,4).fill(bgc).stroke({width:combi?2:1,color:col});
+          o.g.alpha=o.t.alpha=p2;
+          o.t.text='Σ'+Math.round(gr.res.d/1000)+'s/'+gr.res.c; o.t.x=283; o.t.y=gy+8;
+          const ar=mgGet('a'+i); ar.g.clear();
+          ar.g.moveTo(258,gy+13).lineTo(270,gy+13).stroke({width:1.5,color:col});
+          ar.g.poly([276,gy+13,269,gy+9,269,gy+17]).fill(col); ar.g.alpha=p2;
+          ar.t.text=combi?'':'そのまま'; ar.t.x=236; ar.t.y=gy+30; ar.t.alpha=p2*0.9;
+        }
+      });
+    } else { mgC.visible=false; }
     // trace_id_ts(右列)
     const eT2=Object.keys(mvT);
     const tItems=eT2.map(k=>({txt:k.slice(0,4),bg:0xf3ecfa}));
