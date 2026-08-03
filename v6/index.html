@@ -75,6 +75,8 @@ canvas{display:block;touch-action:none}
   background:#111110;border:1px solid #33332e;border-radius:6px;padding:5px 12px;color:#cdd2dc}
 #searchbar .sb-time b{color:var(--accent)}
 #searchbar .sb-sel{border:none;background:transparent;color:#8ecbe8;padding:0}
+#realst{font:600 10.5px var(--mono);color:#6fc78a;cursor:pointer;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+#realst.err{color:#e08585}
 #wbsql{flex:1;min-width:140px;font:600 11px var(--mono);color:#8b8b84;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 #searchbar .btn.run{background:#2f9e44;border-color:#2f9e44;color:#fff;font-weight:700}
 #searchbar .btn.run:hover{background:#37b24d}
@@ -187,6 +189,10 @@ canvas{display:block;touch-action:none}
   <span id="wbsql" title="クリックで全文を見る"></span>
   <button class="btn run" id="bRun">▶ 実行</button>
   <button class="btn" id="bSql" title="最後に実行された文">❯ SQL</button>
+  <span class="grp"><span class="glbl">DATA</span>
+    <select id="dataSel" class="sel"><option value="sim">sim(縮尺)</option><option value="real">real(公開DB)</option></select>
+  </span>
+  <span id="realst" title="クリックで実データの詳細"></span>
   <span class="grp"><span class="glbl">ENGINE</span>
     <select id="engSel" class="sel"><option value="mt">MergeTree</option><option value="rmt">ReplacingMT</option></select>
     <span class="glbl">SKIP</span>

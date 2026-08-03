@@ -329,6 +329,104 @@ function doTraceSelect(){
     }],
   ]);
 }
+/* ---------- REAL: 公開プレイグラウンドの実テーブルを読む ---------- */
+let hUpdWb=()=>{}, hOpenInsp=()=>{}, hZoomS1=()=>{};  // IIFE内の関数への橋
+const RQ={
+  ep:'https://sql-clickhouse.clickhouse.com/?user=demo&default_format=JSONCompact',
+  db:'otel_clickpy', tbl:'otel_traces',
+  on:false, status:'', parts:[], seen:new Set(), svcs:[], expl:null, ddl:'', gen:[]
+};
+function chq(sql){
+  return fetch(RQ.ep,{method:'POST',body:sql}).then(r=>r.text()).then(txt=>{
+    let j; try{ j=JSON.parse(txt); }catch(e){ throw new Error(txt.slice(0,140)); }
+    return j.data||[];
+  });
+}
+const rstEl=()=>document.getElementById('realst');
+function rst(msg,err){ const e=rstEl(); if(!e) return; e.textContent=msg; e.className=err?'err':''; RQ.status=msg; }
+function realParts(){
+  return chq("SELECT name, level, rows, marks, bytes_on_disk, partition FROM system.parts WHERE database='"+RQ.db+"' AND table='"+RQ.tbl+"' AND active ORDER BY name")
+    .then(rows=>{
+      const now=new Set(rows.map(r=>r[0])), had=RQ.seen.size>0;
+      const born=rows.map(r=>r[0]).filter(n=>had&&!RQ.seen.has(n));
+      const gone=[...RQ.seen].filter(n=>!now.has(n));
+      RQ.seen=now;
+      RQ.parts=rows.map(r=>({name:r[0],level:+r[1],rows:+r[2],marks:+r[3],bytes:+r[4],part:r[5],fresh:born.indexOf(r[0])>=0?1:0}));
+      const tr=RQ.parts.reduce((a,b)=>a+b.rows,0), tg=RQ.parts.reduce((a,b)=>a+b.marks,0);
+      rst('REAL '+RQ.db+'.'+RQ.tbl+' ・ Part '+rows.length+' ・ granule '+tg.toLocaleString()+' ・ '+tr.toLocaleString()+' 行');
+      if(born.length) toast('実データ: Part が '+born.length+' 個生まれた('+born.slice(0,2).join(', ')+')');
+      if(gone.length) toast('実データ: Part が '+gone.length+' 個消えた — マージで畳まれた');
+    });
+}
+function realExplain(){
+  const hrs=Math.max(1,Math.round((961-PRED)/60));
+  const wh="Timestamp >= now() - INTERVAL "+hrs+" HOUR"+(SVCF?" AND ServiceName = '"+SVCF+"'":'');
+  const sql="EXPLAIN indexes=1 SELECT toStartOfHour(Timestamp) AS h, count() FROM "+RQ.db+"."+RQ.tbl+" WHERE "+wh+" GROUP BY h ORDER BY h";
+  RQ.sql="SELECT toStartOfHour(Timestamp) AS h, count() FROM "+RQ.db+"."+RQ.tbl+"\nWHERE "+wh+"\nGROUP BY h ORDER BY h";
+  return chq(sql).then(rows=>{
+    const L=rows.map(r=>String(r[0]));
+    const steps=[]; let cur=null;
+    L.forEach(s=>{
+      const nm=s.match(/^\s{10,}(Min-Max|Partition|PrimaryKey|Skip)\s*$/);
+      if(nm){ cur={name:nm[1]}; steps.push(cur); return; }
+      if(!cur) return;
+      let m=s.match(/Parts:\s*(\d+)\/(\d+)/); if(m){ cur.pk=+m[1]; cur.pn=+m[2]; }
+      m=s.match(/Granules:\s*(\d+)\/(\d+)/); if(m){ cur.gk=+m[1]; cur.gn=+m[2]; }
+      m=s.match(/Search Algorithm:\s*(.+)$/); if(m) cur.alg=m[1].trim();
+      m=s.match(/^\s{12,}(Name|Description):\s*(.+)$/); if(m&&!cur.desc) cur.desc=m[2].trim();
+    });
+    RQ.expl=steps.filter(s=>s.gn);
+    return RQ.expl;
+  });
+}
+function realBoot(){
+  rst('接続中…');
+  return Promise.all([
+    realParts(),
+    chq("SELECT ServiceName, count() c FROM "+RQ.db+"."+RQ.tbl+" GROUP BY 1 ORDER BY c DESC LIMIT 8").then(r=>{ RQ.svcs=r.map(x=>x[0]); }),
+    chq("SHOW CREATE TABLE "+RQ.db+"."+RQ.tbl).then(r=>{ RQ.ddl=r.length?String(r[0][0]):''; }),
+    chq("SELECT level, count(), sum(rows), formatReadableSize(sum(bytes_on_disk)) FROM system.parts WHERE database='stockhouse' AND table='crypto_trades' AND active GROUP BY level ORDER BY level").then(r=>{ RQ.gen=r; }).catch(()=>{}),
+    realExplain()
+  ]).then(()=>{
+    const sel=document.getElementById('svcSel');
+    if(sel&&RQ.svcs.length){ sel.innerHTML='<option value="">*(すべて)</option>'+RQ.svcs.map(s=>'<option>'+s+'</option>').join(''); SVCF=''; }
+    hUpdWb();
+  }).catch(e=>rst('取得失敗: '+e.message,true));
+}
+function realInsp(){
+  const st=RQ.expl||[];
+  const bar=(k,n,col)=>{ const w=340, f=n?Math.max(2,Math.round(w*k/n)):0;
+    return '<svg class="fv" viewBox="0 0 '+(w+16)+' 26" width="100%" height="26">'
+      +'<rect x="8" y="6" width="'+w+'" height="14" rx="3" fill="#20201b" stroke="#3a3a32"/>'
+      +'<rect x="8" y="6" width="'+f+'" height="14" rx="3" fill="'+col+'"/></svg>'; };
+  let h='<h2>REAL '+RQ.db+'.'+RQ.tbl+'</h2><div class="sub">'+RQ.status+'</div>';
+  h+='<div class="note">公開プレイグラウンド(user=demo・読み取り専用)の実テーブル。書き込みは打てないので、'
+    +'INSERT の振付は縮尺シミュレータの担当。ここは<b>読み取りの答え合わせ</b>。</div>';
+  if(RQ.sql) h+='<pre>'+RQ.sql.replace(/</g,'&lt;')+'</pre>';
+  if(st.length){
+    h+='<div class="sub">EXPLAIN indexes=1 — 索引が実際に落とした量</div>';
+    st.forEach(s=>{
+      const pct=s.gn?Math.round(1000*s.gk/s.gn)/10:0;
+      h+='<div class="note" style="margin:6px 0 0"><b>'+s.name+'</b> — granule '+s.gk.toLocaleString()+' / '+s.gn.toLocaleString()
+        +' ('+pct+'%)'+(s.pn?' ・ parts '+s.pk+'/'+s.pn:'')+(s.alg?'<br>Search Algorithm: '+s.alg:'')+'</div>'
+        +bar(s.gk,s.gn,pct>60?'#e8d34a':(pct>20?'#f0a500':'#6fc78a'));
+    });
+  }
+  if(RQ.parts.length){
+    const top=RQ.parts.slice().sort((a,b)=>b.rows-a.rows).slice(0,8);
+    h+='<div class="sub">system.parts(実物)</div><pre>name                        L      rows   granule\n'
+      +top.map(q=>q.name.padEnd(26)+String(q.level).padEnd(3)+String(q.rows).padStart(10)+String(q.marks).padStart(9)).join('\n')+'</pre>';
+  }
+  if(RQ.gen.length){
+    h+='<div class="sub">マージ世代の実例 — stockhouse.crypto_trades</div><pre>level  parts        rows       size\n'
+      +RQ.gen.map(r=>String(r[0]).padStart(5)+String(r[1]).padStart(7)+String(r[2]).padStart(12)+'  '+r[3]).join('\n')+'</pre>'
+      +'<div class="note">level は「何度畳まれたか」。level 0 の小さな Part が生まれ続け、'
+      +'畳まれて世代が上がり、最終的に数十 GiB の塊になる。縮尺図では作れない数字。</div>';
+  }
+  if(RQ.ddl) h+='<div class="sub">SHOW CREATE TABLE</div><pre>'+RQ.ddl.replace(/</g,'&lt;')+'</pre>';
+  hOpenInsp(h);
+}
+
 /* ---------- 4. クライアント(DOM)と共有UI ---------- */
 let CURSQL=''; const cstatEl=document.getElementById('cstat');
 const resEl=document.getElementById('resgrid'), rescEl=document.getElementById('rescard');
@@ -1060,6 +1158,7 @@ scenes.S1=(()=>{
   const hViews=new Map();
   const mkZone=()=>{ const cont=new PIXI.Container(),bg=new PIXI.Graphics(),tx=textV('',11.5,0x2a2e39); tx.x=12; tx.y=24; cont.addChild(bg,tx); s.cont.addChild(cont); return {cont,bg,tx}; };
   const tZone=mkZone(), dZone=mkZone();
+  const rbG=new PIXI.Graphics(); s.cont.addChild(rbG);
   function partPos(i){ // 縦積み、partitionで字下げ
     const xs={}; let y=INS_Y+66;
     const list=actParts();
@@ -1155,9 +1254,17 @@ scenes.S1=(()=>{
     secL.text='';
     // ---- 高さを見積もる → 宣言 → 解く ----
     const pw=partW(), fw2=2*pw+46;
+    const REALV=RQ.on&&RQ.parts.length>0;
+    const lv={};
+    const bkt=x=>x===0?0:(x<10?1:(x<100?2:3));
+    const BKN=['level 0(生まれたまま)','level 1–9','level 10–99','level 100+'];
+    if(REALV) RQ.parts.forEach(q2=>{ const b=bkt(q2.level), L=lv[b]||(lv[b]={n:0,rows:0,marks:0,fresh:0,lo:q2.level,hi:q2.level});
+      L.n++; L.rows+=q2.rows; L.marks+=q2.marks; L.fresh+=q2.fresh;
+      L.lo=Math.min(L.lo,q2.level); L.hi=Math.max(L.hi,q2.level); });
+    const lvk=Object.keys(lv).map(Number).sort((a,b)=>a-b);
     let ca=0, cb=0;
     actParts().forEach(q2=>{ const h3=partH(q2)+18; if(ca<=cb) ca+=h3; else cb+=h3; });
-    const frameH=34+Math.max(120,Math.max(ca,cb))+8;
+    const frameH=REALV?(56+lvk.length*38+26):(34+Math.max(120,Math.max(ca,cb))+8);
     const cardH=(n2,per,ch)=>26+Math.max(1,Math.ceil(n2/per))*(ch+GAP)+12;
     const hp=mvHParts.length?mvHParts:[{id:-1,rows:{},flash:0}];
     const hHs=hp.map(q2=>cardH(Object.keys(q2.rows).length,3,34));
@@ -1210,7 +1317,7 @@ scenes.S1=(()=>{
     } else { const sc=chips.get('s1strip'); if(sc){sc.remove(); chips.delete('s1strip');} }
     // Parts
     let yL=F.y+34, yR=F.y+34; const seen=new Set();
-    actParts().forEach(p=>{
+    if(!REALV) actParts().forEach(p=>{
       let v=views.get(p.id);
       if(!v){ v=buildPartView(); views.set(p.id,v); s.cont.addChild(v.cont); }
       seen.add(p.id);
@@ -1240,16 +1347,38 @@ scenes.S1=(()=>{
       placeChip(c,px+partW()/2,py-2);
       if(left) yL=py+partH(p)+18; else yR=py+partH(p)+18;
     });
-    const y=Math.max(yL,yR);
+    const y=REALV?F.y+F.h:Math.max(yL,yR);
     views.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); views.delete(id); } });
     // TABLE 囲み(2列ぶんの幅)
     frameG.clear();
     frameG.roundRect(F.x,F.y,F.w,F.h,10).stroke({width:1.5,color:0xcfd2c8});
+    rbG.clear();
+    if(REALV){
+      views.forEach(v=>{ v.cont.visible=false; });
+      const maxR=Math.max.apply(null,lvk.map(k=>lv[k].rows))||1, BW=Math.min(460,F.w-420);
+      const hc2=chip('rhdr','',null);
+      hc2.textContent='system.parts(実物) ・ マージ世代ごと';
+      placeChip(hc2,F.x+150,F.y+30);
+      lvk.forEach((k,i)=>{
+        const yy=F.y+50+i*38, L=lv[k], bw=Math.max(4,Math.round(BW*L.rows/maxR));
+        rbG.roundRect(F.x+230,yy,BW,24,4).fill(0xf6f6f2).stroke({width:1,color:0xe4e4de});
+        rbG.roundRect(F.x+230,yy,bw,24,4).fill(L.fresh?0xd3f9d8:0xdce5f0).stroke({width:1,color:L.fresh?0x2b8a3e:0xbecdde});
+        const c=chip('rl'+k,L.fresh?'warn':'mv',null);
+        c.textContent=BKN[k]+(k?'('+L.lo+'–'+L.hi+')':'')+' ・ '+L.n+' part';
+        placeChip(c,F.x+120,yy+4);
+        const c2=chip('rr'+k,'',null);
+        c2.textContent=L.rows.toLocaleString()+' 行 ・ granule '+L.marks.toLocaleString();
+        placeChip(c2,F.x+244+bw,yy+4);
+      });
+      const c3=chip('rsum','warn',()=>realInsp());
+      c3.textContent='▣ EXPLAIN と DDL(実物)を見る';
+      placeChip(c3,F.x+F.w-140,F.y+F.h-6);
+    } else views.forEach(v=>{ v.cont.visible=true; });
     const mg3=chip('s1merge','warn',()=>doMerge());
     mg3.textContent='⇄ マージ';
     placeChip(mg3,F.x+F.w-60,F.y-4);
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
-    fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
+    fc.textContent=REALV?('TABLE '+RQ.db+'.'+RQ.tbl+'(実データ)'):'TABLE otel_traces(⊖ テーブル層へ)';
     placeChip(fc,F.x+140,F.y-4);
     // 派生テーブルの物理層も上→下(S0 と同じ2列・granuleタイルで)
     const lxx=P('d1h').x, rxx=P('dtr').x, fbF=F.y+F.h, cy0=P('d1h').y;
@@ -1661,6 +1790,15 @@ function updWb(){ wbEl.textContent=wbSQL(); }
 wbEl.onclick=()=>openInsp('<h2>🛠 Workbench</h2><div class="sub">実行される文(パラメータ連動)</div><pre>'+wbSQL().replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>');
 document.getElementById('stmtSel').onchange=e=>{ STMT=e.target.value; updWb(); };
 document.getElementById('bRun').onclick=()=>{ ({sel:doSelect,tid:doTraceSelect,del:doDelete,upd:doUpdate,proj:doProj})[STMT](); };
+hUpdWb=updWb; hOpenInsp=openInsp; hZoomS1=()=>{ S1T='otel_traces'; zoomTo('S1'); };
+document.getElementById('dataSel').onchange=e=>{
+  RQ.on=(e.target.value==='real');
+  if(RQ.on){ realBoot().then(()=>{ hZoomS1();
+      toast('実データモード: '+RQ.db+'.'+RQ.tbl+' を system.parts から読む。20 秒ごとに更新し、生まれた/消えた Part を報告する'); }); }
+  else { rst(''); RQ.seen=new Set(); toast('縮尺シミュレータに戻した'); }
+};
+if(rstEl()) rstEl().onclick=()=>{ if(RQ.on) realInsp(); };
+setInterval(()=>{ if(RQ.on) realParts().catch(e=>rst('取得失敗: '+e.message,true)); },20000);
 document.getElementById('bSql').onclick=()=>{
   openInsp('<h2>❯ 現在の文</h2><div class="sub">最後に実行された(される)DML/クエリ</div><pre>'
     +CURSQL.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>'
