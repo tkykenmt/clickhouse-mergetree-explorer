@@ -334,12 +334,20 @@ let hUpdWb=()=>{}, hOpenInsp=()=>{}, hZoomS1=()=>{};  // IIFE内の関数への�
 const RQ={
   ep:'https://sql-clickhouse.clickhouse.com/?user=demo&default_format=JSONCompact',
   db:'otel_clickpy', tbl:'otel_traces',
-  on:false, status:'', parts:[], seen:new Set(), svcs:[], expl:null, ddl:'', gen:[]
+  on:false, status:'', parts:[], seen:new Set(), svcs:[], expl:null, ddl:'', gen:[],
+  n:0, tlast:0, meas:null, budget:60  // Cloud は 1 時間あたり 60 クエリ
 };
-function chq(sql){
-  return fetch(RQ.ep,{method:'POST',body:sql}).then(r=>r.text()).then(txt=>{
-    let j; try{ j=JSON.parse(txt); }catch(e){ throw new Error(txt.slice(0,140)); }
-    return j.data||[];
+// ヘッダは一切付けない(allow-headers に content-type が無く、付けるとプリフライトで落ちる)
+function chq(sql){ return chqF(sql).then(o=>o.rows); }
+function chqF(sql){
+  RQ.n++; RQ.tlast=Date.now();
+  return fetch(RQ.ep,{method:'POST',body:sql}).then(r=>{
+    const sum=r.headers.get('x-clickhouse-summary');
+    return r.text().then(txt=>{
+      let j; try{ j=JSON.parse(txt); }catch(e){ throw new Error(txt.slice(0,140)); }
+      let s=null; try{ s=sum?JSON.parse(sum):null; }catch(e){}
+      return {rows:j.data||[],sum:s,stat:j.statistics||null};
+    });
   });
 }
 const rstEl=()=>document.getElementById('realst');
@@ -353,7 +361,7 @@ function realParts(){
       RQ.seen=now;
       RQ.parts=rows.map(r=>({name:r[0],level:+r[1],rows:+r[2],marks:+r[3],bytes:+r[4],part:r[5],fresh:born.indexOf(r[0])>=0?1:0}));
       const tr=RQ.parts.reduce((a,b)=>a+b.rows,0), tg=RQ.parts.reduce((a,b)=>a+b.marks,0);
-      rst('REAL '+RQ.db+'.'+RQ.tbl+' ・ Part '+rows.length+' ・ granule '+tg.toLocaleString()+' ・ '+tr.toLocaleString()+' 行');
+      rst('REAL '+RQ.db+'.'+RQ.tbl+' ・ Part '+rows.length+' ・ granule '+tg.toLocaleString()+' ・ '+tr.toLocaleString()+' 行 ・ q'+RQ.n+'/'+RQ.budget);
       if(born.length) toast('実データ: Part が '+born.length+' 個生まれた('+born.slice(0,2).join(', ')+')');
       if(gone.length) toast('実データ: Part が '+gone.length+' 個消えた — マージで畳まれた');
     });
@@ -379,6 +387,20 @@ function realExplain(){
     return RQ.expl;
   });
 }
+function realRun(){
+  const hrs=Math.max(1,Math.round((961-PRED)/60));
+  const wh="Timestamp >= now() - INTERVAL "+hrs+" HOUR"+(SVCF?" AND ServiceName = '"+SVCF+"'":'');
+  const sql="SELECT toStartOfHour(Timestamp) AS h, count() AS c FROM "+RQ.db+"."+RQ.tbl+" WHERE "+wh+" GROUP BY h ORDER BY h";
+  return chqF(sql).then(o=>{
+    const s=o.sum||{}, st=o.stat||{};
+    RQ.meas={rows:o.rows.length,read_rows:+(s.read_rows||st.rows_read||0),
+      read_bytes:+(s.read_bytes||st.bytes_read||0),
+      ms:s.elapsed_ns?Math.round(+s.elapsed_ns/1e6):Math.round((st.elapsed||0)*1000),
+      mem:+(s.memory_usage||0)};
+    rst('REAL 実測 read_rows '+RQ.meas.read_rows.toLocaleString()+' ・ '+RQ.meas.ms+' ms ・ q'+RQ.n+'/'+RQ.budget);
+    return RQ.meas;
+  });
+}
 function realBoot(){
   rst('接続中…');
   return Promise.all([
@@ -400,7 +422,9 @@ function realInsp(){
       +'<rect x="8" y="6" width="'+w+'" height="14" rx="3" fill="#20201b" stroke="#3a3a32"/>'
       +'<rect x="8" y="6" width="'+f+'" height="14" rx="3" fill="'+col+'"/></svg>'; };
   let h='<h2>REAL '+RQ.db+'.'+RQ.tbl+'</h2><div class="sub">'+RQ.status+'</div>';
-  h+='<div class="note">公開プレイグラウンド(user=demo・読み取り専用)の実テーブル。書き込みは打てないので、'
+  h+='<div class="note">このセッションで投げたクエリ: <b>'+RQ.n+'</b> 本(Cloud の上限は 1 時間あたり 60 本)。'
+    +'system.parts の更新は 120 秒間隔に抑えている。</div>'
+    +'<div class="note">公開プレイグラウンド(user=demo・読み取り専用)の実テーブル。書き込みは打てないので、'
     +'INSERT の振付は縮尺シミュレータの担当。ここは<b>読み取りの答え合わせ</b>。</div>';
   if(RQ.sql) h+='<pre>'+RQ.sql.replace(/</g,'&lt;')+'</pre>';
   if(st.length){
@@ -411,6 +435,13 @@ function realInsp(){
         +' ('+pct+'%)'+(s.pn?' ・ parts '+s.pk+'/'+s.pn:'')+(s.alg?'<br>Search Algorithm: '+s.alg:'')+'</div>'
         +bar(s.gk,s.gn,pct>60?'#e8d34a':(pct>20?'#f0a500':'#6fc78a'));
     });
+  }
+  if(RQ.meas){
+    const m=RQ.meas;
+    h+='<div class="sub">実測(x-clickhouse-summary)</div>'
+      +'<pre>rows     '+m.rows+'\nread_rows '+m.read_rows.toLocaleString()+'\nread_bytes '+(m.read_bytes/1048576).toFixed(1)+' MiB\nelapsed  '+m.ms+' ms</pre>'
+      +'<div class="note">この文は count() なので、実物では<b>暗黙の count projection</b>が効いて '
+      +'read_rows が極端に小さく出ることがある。読み取り性能を測る目的で count() を使うと測り損なう。</div>';
   }
   if(RQ.parts.length){
     const top=RQ.parts.slice().sort((a,b)=>b.rows-a.rows).slice(0,8);
@@ -1793,12 +1824,12 @@ document.getElementById('bRun').onclick=()=>{ ({sel:doSelect,tid:doTraceSelect,d
 hUpdWb=updWb; hOpenInsp=openInsp; hZoomS1=()=>{ S1T='otel_traces'; zoomTo('S1'); };
 document.getElementById('dataSel').onchange=e=>{
   RQ.on=(e.target.value==='real');
-  if(RQ.on){ realBoot().then(()=>{ hZoomS1();
+  if(RQ.on){ realBoot().then(()=>realRun()).then(()=>{ hZoomS1();
       toast('実データモード: '+RQ.db+'.'+RQ.tbl+' を system.parts から読む。20 秒ごとに更新し、生まれた/消えた Part を報告する'); }); }
   else { rst(''); RQ.seen=new Set(); toast('縮尺シミュレータに戻した'); }
 };
 if(rstEl()) rstEl().onclick=()=>{ if(RQ.on) realInsp(); };
-setInterval(()=>{ if(RQ.on) realParts().catch(e=>rst('取得失敗: '+e.message,true)); },20000);
+setInterval(()=>{ if(RQ.on&&RQ.n<RQ.budget-6) realParts().catch(e=>rst('取得失敗: '+e.message,true)); },120000);
 document.getElementById('bSql').onclick=()=>{
   openInsp('<h2>❯ 現在の文</h2><div class="sub">最後に実行された(される)DML/クエリ</div><pre>'
     +CURSQL.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>'
