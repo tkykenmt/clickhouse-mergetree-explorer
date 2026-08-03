@@ -751,30 +751,42 @@ function dagLayout(N,E,o){
   N.forEach(n=>rank(n.id));
   const rows=new Map();
   N.forEach(n=>{ const r=rk.get(n.id); if(!rows.has(r)) rows.set(r,[]); rows.get(r).push(n); });
-  const pos=new Map(); let y=y0;
+  const LR=(o.dir==='LR');
+  const mSize=n=>LR?n.w:n.h, cSize=n=>LR?n.h:n.w;
+  const pos=new Map(); let m=LR?x0:y0, cmax=0;
   [...rows.keys()].sort((a,b)=>a-b).forEach(r=>{
     const row=rows.get(r).slice().sort((a,b)=>(a.ord||0)-(b.ord||0));
-    let x=x0;
+    let c=LR?y0:x0;
     row.forEach(n=>{
-      let nx=x;
+      let nc=c;
       const ps=pre.get(n.id);
       if(ps.length===1&&suc.get(ps[0]).length===1&&pos.has(ps[0])){
-        const P=pos.get(ps[0]); nx=Math.max(x,Math.round(P.x+(P.w-n.w)/2));
+        const Q=pos.get(ps[0]), pc=LR?Q.y:Q.x, pcs=LR?Q.h:Q.w;
+        nc=Math.max(c,Math.round(pc+(pcs-cSize(n))/2));
       }
-      pos.set(n.id,{x:nx,y,w:n.w,h:n.h});
-      x=nx+n.w+gx;
+      pos.set(n.id,LR?{x:m,y:nc,w:n.w,h:n.h}:{x:nc,y:m,w:n.w,h:n.h});
+      c=nc+cSize(n)+gx;
     });
-    y+=Math.max.apply(null,row.map(n=>n.h))+gy;
+    cmax=Math.max(cmax,c-gx);
+    m+=Math.max.apply(null,row.map(mSize))+gy;
   });
   const routes=E.filter(e=>pos.has(e.a)&&pos.has(e.b)).map(e=>{
     const A=pos.get(e.a), B=pos.get(e.b);
+    if(LR){ const ay=A.y+A.h/2, by=B.y+B.h/2, x1=A.x+A.w, x2=B.x, mx=Math.round((x1+x2)/2);
+      return {e,d:'LR',ay,by,x1,x2,mx,straight:Math.abs(ay-by)<2,lx:Math.round((mx+x2)/2),ly:by-12}; }
     const ax=A.x+A.w/2, bx=B.x+B.w/2, y1=A.y+A.h, y2=B.y, my=Math.round((y1+y2)/2);
-    return {e,ax,bx,y1,y2,my,straight:Math.abs(ax-bx)<2,lx:bx,ly:Math.round((my+y2)/2)};
+    return {e,d:'TB',ax,bx,y1,y2,my,straight:Math.abs(ax-bx)<2,lx:bx,ly:Math.round((my+y2)/2)};
   });
-  return {pos,routes,bottom:y-gy};
+  return {pos,routes,bottom:LR?cmax:m-gy,right:LR?m-gy:cmax};
 }
 function drawRoute(g,r,col,fat){
   const w=fat?2.5:1.5;
+  if(r.d==='LR'){
+    if(r.straight) g.moveTo(r.x1,r.ay).lineTo(r.x2-7,r.ay).stroke({width:w,color:col});
+    else g.moveTo(r.x1,r.ay).lineTo(r.mx,r.ay).lineTo(r.mx,r.by).lineTo(r.x2-7,r.by).stroke({width:w,color:col});
+    g.poly([r.x2,r.by,r.x2-8,r.by-4.5,r.x2-8,r.by+4.5]).fill(col);
+    return;
+  }
   if(r.straight){ g.moveTo(r.ax,r.y1).lineTo(r.ax,r.y2-7).stroke({width:w,color:col}); }
   else { g.moveTo(r.ax,r.y1).lineTo(r.ax,r.my).lineTo(r.bx,r.my).lineTo(r.bx,r.y2-7).stroke({width:w,color:col}); }
   g.poly([r.bx,r.y2,r.bx-4.5,r.y2-8,r.bx+4.5,r.y2-8]).fill(col);
@@ -801,7 +813,7 @@ function updatePartView(v,p,marks,hitFn,hi){
     const gh=p.granules.length*(CELLH+GAP)+10, iy=24;
     if(hi==='part'){ v.bg.roundRect(2,2,w-4,22,6).stroke({width:2,color:pruned?0xe03131:0xf59f00}); }
     else if(hi==='idx'){ v.bg.roundRect(24+GPR*(CELL+GAP)+2,iy,IDXW-6,gh,5).stroke({width:2,color:0xf0a500}); }
-    else if(hi==='skip'){ v.bg.roundRect(24+GPR*(CELL+GAP)+IDXW+8,iy,SKW+34,gh,5).stroke({width:2,color:0x9775fa}); }
+    else if(hi==='skip'){ v.bg.roundRect(24+GPR*(CELL+GAP)+IDXW+8,iy,SKW+18,gh,5).stroke({width:2,color:0x9775fa}); }
   }
   v.idxT.text='primary.idx\n'+p.granules.map(g=>svcOf(g[0]).slice(0,2)+' '+fmtT(g[0])).join('\n');
   v.skT.text=IDXT==='minmax'?('minmax(ts)\n'+p.granules.map(g=>fmtT(Math.min.apply(null,g))+'–'+fmtT(Math.max.apply(null,g))).join('\n')):'skip idx\n(なし)';
@@ -1369,6 +1381,7 @@ scenes.S1=(()=>{
 scenes.S2=(()=>{
   const s=mkScene('S2');
   const views=new Map();
+  const rteG=new PIXI.Graphics(); s.cont.addChild(rteG);
   const laneG=[0,1,2].map(()=>{ const g=new PIXI.Graphics(); s.cont.addChild(g); return g; });
   const secL=textV('STORAGE — 枝刈り',11,0x9a9a90,false);
   const secR=textV('COMPUTE — CPU コアのレーン',11,0x9a9a90,false);
@@ -1378,12 +1391,9 @@ scenes.S2=(()=>{
   let marks=new Map(), lanes=[], intro=0, resRows=null, lk=null, curHit=null, hiCol=null, cutIds=[];
   const lkG=new PIXI.Graphics(); s.cont.addChild(lkG);
   const lkTx=textV('',11.5,0x5d4a86); s.cont.addChild(lkTx);
-  function laneGeom(i){
-    const px=24+partW()+36;
-    const sw=STW();
-    const w=Math.max(250,Math.min(520,sw-px-40-250));
-    return {x:px,y:INS_Y+60+LKUP*64+i*126,w,h:114};
-  }
+  let LG=[{x:460,y:INS_Y+60,w:420,h:114},{x:460,y:INS_Y+186,w:420,h:114},{x:460,y:INS_Y+312,w:420,h:114}];
+  let SG={x:24,y:INS_Y+60,w:partW(),h:200}, KG=null, LOR=null;
+  function laneGeom(i){ return LG[i]; }
   function resGeom(){ const g=laneGeom(0); return {x:g.x+g.w+16,y:g.y+8,w:Math.max(210,Math.min(280,STW()-(g.x+g.w)-30))}; }
   s.enter=()=>{ marks=new Map(); lanes=[0,1,2].map(i=>({q:[],done:0,sum:0,cur:null})); intro=1; resRows=null; lk=null; curHit=null; LKUP=0; hiCol=null; cutIds=[]; };
   s.exit=()=>{ setStage(0); LKUP=0; hiCol=null; };
@@ -1422,12 +1432,22 @@ scenes.S2=(()=>{
       introT.alpha=intro; introT.x=44; introT.y=INS_Y+80;
     } else { introG.clear(); introT.alpha=0; }
     // Parts(左列)
-    let y=INS_Y+60; const seen=new Set();
+    // ---- 宣言(左→右): [trace索引] / storage → レーン×3 ----
+    const sh=Math.max(160,actParts().reduce((a,q2)=>a+partH(q2)+16,0)-16);
+    const laneW=Math.max(260,Math.min(520,STW()-(24+partW()+70)-300));
+    const N2=[{id:'store',w:partW(),h:sh,ord:0}];
+    const E2=[];
+    if(lk){ N2.push({id:'lk',w:partW(),h:52,ord:-1}); }
+    [0,1,2].forEach(i=>{ N2.push({id:'l'+i,w:laneW,h:114,ord:i}); E2.push({a:'store',b:'l'+i}); });
+    LOR=dagLayout(N2,E2,{dir:'LR',x0:24,y0:INS_Y+(lk?60:36),gx:70,gy:12});
+    SG=LOR.pos.get('store'); KG=lk?LOR.pos.get('lk'):null;
+    [0,1,2].forEach(i=>{ LG[i]=LOR.pos.get('l'+i); });
+    let y=SG.y; const seen=new Set();
     actParts().forEach(p=>{
       let v=views.get(p.id);
       if(!v){ v=buildPartView(); views.set(p.id,v); s.cont.addChild(v.cont); }
       seen.add(p.id);
-      v.cont.x=24; v.cont.y=y; v.cont.alpha=(1-intro);
+      v.cont.x=SG.x; v.cont.y=y; v.cont.alpha=(1-intro);
       updatePartView(v,p,marks.get(p.id),curHit,hiCol);
       const c=chip('s2p'+p.id,(marks.get(p.id)||{}).pruned?'warn':'',()=>partInsp(p));
       c.textContent=p.name+(marks.get(p.id)&&marks.get(p.id).pruned?' ✂':'');
@@ -1445,17 +1465,21 @@ scenes.S2=(()=>{
     }
     // otel_traces_trace_id_ts ルックアップカード
     if(lk){
-      const g0=laneGeom(0);
+      const K=KG||{x:SG.x,y:INS_Y+56,w:SG.w,h:52};
       lkG.clear();
-      lkG.roundRect(g0.x,INS_Y+56,g0.w,52,8).fill(0xf9f6ff).stroke({width:2,color:0x9775fa});
-      lkG.rect(g0.x+1,INS_Y+57,g0.w-2,16).fill(0xeee6fb);
+      lkG.roundRect(K.x,K.y,K.w,52,8).fill(0xf9f6ff).stroke({width:2,color:0x9775fa});
+      lkG.rect(K.x+1,K.y+1,K.w-2,16).fill(0xeee6fb);
+      lkG.moveTo(K.x+K.w/2,K.y+52).lineTo(K.x+K.w/2,SG.y-7).stroke({width:1.5,color:0x9775fa});
+      lkG.poly([K.x+K.w/2,SG.y,K.x+K.w/2-4.5,SG.y-8,K.x+K.w/2+4.5,SG.y-8]).fill(0x9775fa);
       lkTx.text=lk.tid+'…   Start '+fmtT(lk.s)+' – End '+fmtT(lk.e)+' ・ '+lk.n+' span';
-      lkTx.x=g0.x+12; lkTx.y=INS_Y+80; lkTx.visible=true;
+      lkTx.x=K.x+12; lkTx.y=K.y+24; lkTx.visible=true;
       const c=chip('s2lk','mv',null);
       c.textContent='① TABLE otel_traces_trace_id_ts ▸ TraceId で範囲を特定';
-      placeChip(c,g0.x+g0.w/2,INS_Y+58);
+      placeChip(c,K.x+K.w/2,K.y+2);
     } else { lkG.clear(); lkTx.visible=false; }
     // レーン
+    rteG.clear();
+    if(LOR) LOR.routes.forEach(r=>{ drawRoute(rteG,r,0xc6cdd6,false); });
     lanes.forEach((l,i)=>{
       const g=laneGeom(i), gr=laneG[i];
       gr.clear();
@@ -1476,7 +1500,7 @@ scenes.S2=(()=>{
       placeChip(cc,g.x+g.w/2,g.y+g.h-8);
     });
     // RESULT カード(DOM)を配置
-    CONTENT_H=Math.max(y+60,laneGeom(2).y+180);
+    CONTENT_H=Math.max(y+60,LG[2].y+180);
 
   };
   return s;
@@ -1500,9 +1524,11 @@ scenes.S3=(()=>{
   hit.eventMode='static'; hit.cursor='pointer';
   hit.on('pointertap',()=>doAddReplica());
   let kPulse=0, n2Pulse=0, fPulse=0;
-  const geo=()=>{ const w=Math.min(620,STW()-80), x=40, y1=INS_Y+34, h1=126;
-    const yk=y1+h1+52, y2=yk+46+52;
-    return {x,w,y1,h1,yk,y2,h2:126}; };
+  const geo=()=>{ const w=Math.min(620,STW()-80);
+    const LOS=dagLayout([{id:'n1',w,h:126},{id:'kp',w,h:46},{id:'n2',w,h:126}],
+      [{a:'n1',b:'kp'},{a:'kp',b:'n2'}],{x0:40,y0:INS_Y+34,gy:52});
+    const A=LOS.pos.get('n1'), K=LOS.pos.get('kp'), B=LOS.pos.get('n2');
+    return {x:A.x,w,y1:A.y,h1:A.h,yk:K.y,y2:B.y,h2:B.h,routes:LOS.routes}; };
   s.enter=()=>{ kPulse=n2Pulse=fPulse=0; };
   s.onEvent=e=>{
     if(e.t==='repl.setup'){ kPulse=1; toast('ENGINE を ReplicatedMergeTree に置き換え、Keeper のパスとレプリカ名を与える。データではなくメタデータが Keeper に載る'); }
