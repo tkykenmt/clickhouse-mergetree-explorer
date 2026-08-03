@@ -735,6 +735,51 @@ function tickFly(){
 }
 function clearFly(){ fly.forEach(f=>f.c.destroy({children:true})); fly=[]; }
 
+/* ---- レイアウトエンジン: ノードとエッジを宣言 → 依存の深さでランク付け ---- */
+function dagLayout(N,E,o){
+  o=o||{};
+  const gx=o.gx||28, gy=o.gy||56, x0=o.x0||36, y0=o.y0||0;
+  const byId=new Map(); N.forEach(n=>byId.set(n.id,n));
+  const pre=new Map(), suc=new Map();
+  N.forEach(n=>{ pre.set(n.id,[]); suc.set(n.id,[]); });
+  E.forEach(e=>{ if(byId.has(e.a)&&byId.has(e.b)){ pre.get(e.b).push(e.a); suc.get(e.a).push(e.b); } });
+  const rk=new Map();
+  const rank=id=>{ if(rk.has(id)) return rk.get(id);
+    rk.set(id,0); let r=0;
+    pre.get(id).forEach(q=>{ r=Math.max(r,rank(q)+1); });
+    rk.set(id,r); return r; };
+  N.forEach(n=>rank(n.id));
+  const rows=new Map();
+  N.forEach(n=>{ const r=rk.get(n.id); if(!rows.has(r)) rows.set(r,[]); rows.get(r).push(n); });
+  const pos=new Map(); let y=y0;
+  [...rows.keys()].sort((a,b)=>a-b).forEach(r=>{
+    const row=rows.get(r).slice().sort((a,b)=>(a.ord||0)-(b.ord||0));
+    let x=x0;
+    row.forEach(n=>{
+      let nx=x;
+      const ps=pre.get(n.id);
+      if(ps.length===1&&suc.get(ps[0]).length===1&&pos.has(ps[0])){
+        const P=pos.get(ps[0]); nx=Math.max(x,Math.round(P.x+(P.w-n.w)/2));
+      }
+      pos.set(n.id,{x:nx,y,w:n.w,h:n.h});
+      x=nx+n.w+gx;
+    });
+    y+=Math.max.apply(null,row.map(n=>n.h))+gy;
+  });
+  const routes=E.filter(e=>pos.has(e.a)&&pos.has(e.b)).map(e=>{
+    const A=pos.get(e.a), B=pos.get(e.b);
+    const ax=A.x+A.w/2, bx=B.x+B.w/2, y1=A.y+A.h, y2=B.y, my=Math.round((y1+y2)/2);
+    return {e,ax,bx,y1,y2,my,straight:Math.abs(ax-bx)<2,lx:bx,ly:Math.round((my+y2)/2)};
+  });
+  return {pos,routes,bottom:y-gy};
+}
+function drawRoute(g,r,col,fat){
+  const w=fat?2.5:1.5;
+  if(r.straight){ g.moveTo(r.ax,r.y1).lineTo(r.ax,r.y2-7).stroke({width:w,color:col}); }
+  else { g.moveTo(r.ax,r.y1).lineTo(r.ax,r.my).lineTo(r.bx,r.my).lineTo(r.bx,r.y2-7).stroke({width:w,color:col}); }
+  g.poly([r.bx,r.y2,r.bx-4.5,r.y2-8,r.bx+4.5,r.y2-8]).fill(col);
+}
+
 /* ----- Part 描画(S1/S2 共用) ----- */
 function buildPartView(){
   const cont=new PIXI.Container();
@@ -878,99 +923,88 @@ scenes.S0=(()=>{
       +shown.map(r=>(r.d.slice(4,6)+'-'+r.d.slice(6)+' '+fmtT(r.v)).padEnd(12)+(traceIdOf(r.d,r.v)+'…').padEnd(11)+(spanIdOf(r.d,r.v)+'…').padEnd(11)+SPANOF[svcOf(r.v)].padEnd(17)+svcOf(r.v).padEnd(13)+(durOf(r.v)+'ms').padEnd(10)+statOf(r.v)).join('\n')
       +'\n… 全 '+Math.round(dispRows).toLocaleString()+' 行 ・ 他の列: ParentSpanId, SpanKind, Attributes(Map), Events…';
     const hh=28+(shown.length+2)*17+10;
-    // 受け口(ENGINE = Null)
-    const colY=INS_Y+6, colH=34;
-    panel(colBg,LTW,colH,0x26261f,0x4a4a40,1,8);
-    colHint.x=LTW-12-colHint.width;
-    col.x=36; col.y=colY;
-    const rawY=colY+colH+30, rawH=50;
-    panel(rawBg,LTW,rawH,0xfcfcf8,rawFlash>0?0x2b8a3e:0xdcdcd2,rawFlash>0?2:1);
-    rawBg.rect(1,1,LTW-2,22).fill(0xf1f1e8);
-    rawCount.x=LTW-12-rawCount.width;
-    rawTx.text='ENGINE = Null — 行を溜めない受け口。着いたブロックに MV だけが発火する';
-    raw.x=36; raw.y=rawY;
-    if(rawFlash>0) rawFlash=Math.max(0,rawFlash-0.02);
-    panel(ltblBg,LTW,hh,0xffffff,flash>0?0x2b8a3e:0xd9dbe0,flash>0?2:1);
-    ltblBg.rect(1,1,LTW-2,24).fill(0xfff9db);
-    ltMg.x=LTW-24;
-    ltCount.text=Math.round(dispRows).toLocaleString()+' 行'; ltCount.x=LTW-36-ltCount.width;
-    ltbl.x=36; ltbl.y=rawY+rawH+52;
-    if(flash>0) flash=Math.max(0,flash-0.015);
-    secL.x=24; secL.y=INS_Y+28; secR.x=MX(); secR.y=INS_Y+28;
-    // 書き込み先テーブル: テーブル → MV(線上) → 先テーブル を一直線に
-    const eH=Object.keys(mvH).sort();
-    const eD=Object.keys(mvD).sort(); const eT=Object.keys(mvT);
-    G={rawCy:rawY+26,rawBtm:rawY+rawH,trX:36+Math.floor((LTW-28)/2)/2,tblY:ltbl.y,segs:[]};
-    // 派生テーブル: データの流れは上→下(INSERT は落ちて積もる)
-    const colW=Math.floor((LTW-28)/2), lx=36, rx2=36+colW+28;
-    const lcx=lx+colW/2, rcx=rx2+colW/2;
-    const topY=ltbl.y+hh+68;
+    const eH=Object.keys(mvH).sort(), eD=Object.keys(mvD).sort(), eT=Object.keys(mvT);
     const bodies=[
-      {key:'otel_traces_1h',nm:'otel_traces_1h',hdr:'hour   Service    count   avg(Dur)',rows:eH.slice(0,3).map(k=>{const q=mvH[k]; const hs=+k.split('|')[0], sv=k.split('|')[1]; return fmtT(hs).padEnd(7)+sv.padEnd(11)+q.c.toLocaleString().padEnd(8)+Math.round(q.d/q.c)+'ms';}),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':''},
+      {key:'otel_traces_1h',nm:'otel_traces_1h',hdr:'hour   Service    count   avg(Dur)',rows:eH.slice(0,3).map(k=>{const q2=mvH[k]; const hs=+k.split('|')[0], sv=k.split('|')[1]; return fmtT(hs).padEnd(7)+sv.padEnd(11)+q2.c.toLocaleString().padEnd(8)+Math.round(q2.d/q2.c)+'ms';}),n:eH.length,extra:eH.length>3?'+'+(eH.length-3)+' 行':''},
       {key:'otel_traces_1d',nm:'otel_traces_1d',hdr:'day      count()',rows:eD.slice(0,2).map(d2=>(d2.slice(4,6)+'-'+d2.slice(6)).padEnd(9)+mvD[d2].toLocaleString()),n:eD.length,extra:''},
       {key:'otel_traces_trace_id_ts',nm:'otel_traces_trace_id_ts',hdr:'TraceId      Start–End      n',rows:eT.slice(-3).map(k=>(k+'…').padEnd(13)+(fmtT(mvT[k].s)+'–'+fmtT(mvT[k].e)).padEnd(14)+mvT[k].n),n:eT.length,extra:eT.length>3?'+'+(eT.length-3)+' 行':''},
     ];
     const geom=b=>{ const body=b.rows.length?b.rows.join('\n')+(b.extra?'\n'+b.extra:''):'(空 — INSERT 待ち)';
       return {body,h:26+(1+body.split('\n').length)*16+8}; };
-    const q0=geom(bodies[0]), q1=geom(bodies[1]), q2=geom(bodies[2]);
-    const pos=[
-      {x:lx,y:topY,w:colW,body:q0.body,h:q0.h},
-      {x:lx,y:topY+q0.h+64,w:colW,body:q1.body,h:q1.h},
-      {x:rx2,y:topY,w:colW,body:q2.body,h:q2.h},
-    ];
-    G.segs=[
-      {mv:'otel_traces_1h_mv',x:lcx,y1:ltbl.y+hh,y2:topY,dcy:topY+30,side:'L'},
-      {mv:'otel_traces_1d_mv',x:lcx,y1:topY+q0.h,y2:topY+q0.h+64,dcy:topY+q0.h+64+30,side:'L'},
-      {mv:'otel_traces_trace_id_ts_mv',x:rcx,y1:ltbl.y+hh,y2:topY,dcy:topY+30,side:'R'},
-    ];
-    edges.clear();
+    const q=[geom(bodies[0]),geom(bodies[1]),geom(bodies[2])];
+    const colW=Math.floor((LTW-28)/2);
+    // ---- 宣言: 何が何の下流か。座標は解く ----
+    const LO=dagLayout([
+      {id:'col', w:LTW,  h:34},
+      {id:'raw', w:LTW,  h:50},
+      {id:'wide',w:LTW,  h:hh},
+      {id:'d1h', w:colW, h:q[0].h, ord:0},
+      {id:'dtr', w:colW, h:q[2].h, ord:1},
+      {id:'d1d', w:colW, h:q[1].h},
+    ],[
+      {a:'col', b:'raw', kind:'send'},
+      {a:'raw', b:'wide',kind:'ing', mv:'transform_mv'},
+      {a:'wide',b:'d1h', mv:'otel_traces_1h_mv'},
+      {a:'wide',b:'dtr', mv:'otel_traces_trace_id_ts_mv'},
+      {a:'d1h', b:'d1d', mv:'otel_traces_1d_mv'},
+    ],{x0:36,y0:INS_Y+8,gx:28,gy:58});
+    const P=id=>LO.pos.get(id);
+    // Collector
+    panel(colBg,LTW,34,0x26261f,0x4a4a40,1,8);
+    colHint.x=LTW-12-colHint.width;
+    col.x=P('col').x; col.y=P('col').y;
+    // otel_raw
+    panel(rawBg,LTW,50,0xfcfcf8,rawFlash>0?0x2b8a3e:0xdcdcd2,rawFlash>0?2:1);
+    rawBg.rect(1,1,LTW-2,22).fill(0xf1f1e8);
+    rawCount.x=LTW-12-rawCount.width;
+    rawTx.text='ENGINE = Null — 行を溜めない受け口。着いたブロックに MV だけが発火する';
+    raw.x=P('raw').x; raw.y=P('raw').y;
+    if(rawFlash>0) rawFlash=Math.max(0,rawFlash-0.02);
+    // ワイドテーブル
+    panel(ltblBg,LTW,hh,0xffffff,flash>0?0x2b8a3e:0xd9dbe0,flash>0?2:1);
+    ltblBg.rect(1,1,LTW-2,24).fill(0xfff9db);
+    ltMg.x=LTW-24;
+    ltCount.text=Math.round(dispRows).toLocaleString()+' 行'; ltCount.x=LTW-36-ltCount.width;
+    ltbl.x=P('wide').x; ltbl.y=P('wide').y;
+    if(flash>0) flash=Math.max(0,flash-0.015);
+    G={rawCy:P('raw').y+26,rawBtm:P('raw').y+50,tblY:P('wide').y,segs:[]};
+    // 派生テーブル
+    const ids=['d1h','d1d','dtr'];
     bodies.forEach((d,i)=>{
-      const o=tgt[i], q=pos[i];
-      panel(o.bg,q.w,q.h,0xffffff,tgtFlash[i]>0?0x9775fa:0xd9dbe0,tgtFlash[i]>0?2:1);
-      o.bg.rect(1,1,q.w-2,22).fill(0xfff9db);
-      o.tx.text=d.hdr+'\n'+q.body;
+      const o=tgt[i], pp=P(ids[i]);
+      panel(o.bg,pp.w,q[i].h,0xffffff,tgtFlash[i]>0?0x9775fa:0xd9dbe0,tgtFlash[i]>0?2:1);
+      o.bg.rect(1,1,pp.w-2,22).fill(0xfff9db);
+      o.tx.text=d.hdr+'\n'+q[i].body;
       o.tx.style.fill=d.n?0x2a2e39:0x9aa0a8;
       o.tt.text='TABLE '+d.nm;
-      o.c.__w=q.w; if(o.tmg.text) o.tmg.x=q.w-22;
-      o.tcn.text=d.n+' 行'; o.tcn.x=q.w-(i===0?34:10)-o.tcn.width;
-      o.c.x=q.x; o.c.y=q.y;
+      o.c.__w=pp.w; if(o.tmg.text) o.tmg.x=pp.w-22;
+      o.tcn.text=d.n+' 行'; o.tcn.x=pp.w-(i===0?34:10)-o.tcn.width;
+      o.c.x=pp.x; o.c.y=pp.y;
       if(tgtFlash[i]>0) tgtFlash[i]=Math.max(0,tgtFlash[i]-0.02);
     });
-    // パイプ: 縦の実線+下向き矢印、ラベルは線の脇
-    G.segs.forEach((sg,i)=>{
-      const pulse=pipePulse[sg.mv]||0;
-      const col=pulse>0?0x7048c8:0xb9a6dd;
-      edges.moveTo(sg.x,sg.y1).lineTo(sg.x,sg.y2-7).stroke({width:pulse>0?2.5:1.5,color:col});
-      edges.poly([sg.x,sg.y2,sg.x-4.5,sg.y2-8,sg.x+4.5,sg.y2-8]).fill(col);
-      const ec=chip('s0e'+i,'mv',()=>tableInsp(sg.mv));
-      ec.textContent='MV '+sg.mv+' ▸';
-      const base=sg.side==='L'?'translate(-100%,-50%)':'translate(0,-50%)';
-      ec.style.transform=pulse>0?base+' scale(1.12)':base;
-      placeChip(ec,sg.side==='L'?sg.x-10:sg.x+10,(sg.y1+sg.y2)/2);
-      if(pulse>0) pipePulse[sg.mv]=Math.max(0,pulse-0.01);
+    // パイプ(解かれた経路をそのまま描く)
+    edges.clear();
+    LO.routes.forEach((r,i)=>{
+      const mv=r.e.mv, ing=r.e.kind==='ing';
+      const pulse=mv?(ing?rawPulse:(pipePulse[mv]||0)):0;
+      const col2=r.e.kind==='send'?0x9db08f:(ing?(pulse>0?0x2b8a3e:0xb9c2ae):(pulse>0?0x7048c8:0xb9a6dd));
+      drawRoute(edges,r,col2,pulse>0);
+      if(!mv) return;
+      const ec=chip('s0e'+i,'mv',()=>tableInsp(mv));
+      ec.textContent='MV '+mv+' ▸'+(ing?' 列に解く':'');
+      ec.style.transform=pulse>0?'translate(0,-50%) scale(1.1)':'translate(0,-50%)';
+      placeChip(ec,r.lx+10,r.ly);
+      if(!ing){ G.segs.push({mv,x:r.bx,y1:r.y1,y2:r.y2,dcy:r.y2+30});
+        if(pulse>0) pipePulse[mv]=Math.max(0,pulse-0.01); }
     });
-    // Collector → otel_raw(送信の線)
-    edges.moveTo(G.trX,colY+colH).lineTo(G.trX,rawY-7).stroke({width:1.5,color:0x9db08f});
-    edges.poly([G.trX,rawY,G.trX-4.5,rawY-8,G.trX+4.5,rawY-8]).fill(0x9db08f);
-    // 取り込みパイプ(縦): otel_raw → transform_mv → otel_traces
-    {
-      const px2=G.trX, y1=G.rawBtm, y2v=ltbl.y;
-      const col=rawPulse>0?0x2b8a3e:0xb9c2ae;
-      edges.moveTo(px2,y1).lineTo(px2,y2v-7).stroke({width:rawPulse>0?2.5:1.5,color:col});
-      edges.poly([px2,y2v,px2-4.5,y2v-8,px2+4.5,y2v-8]).fill(col);
-      const tec=chip('s0tr','mv',()=>tableInsp('transform_mv'));
-      tec.textContent='MV transform_mv ▸ 列に解く';
-      tec.style.transform=rawPulse>0?'translate(-100%,-50%) scale(1.08)':'translate(-100%,-50%)';
-      placeChip(tec,px2-10,(y1+y2v)/2);
-      if(rawPulse>0) rawPulse=Math.max(0,rawPulse-0.01);
-    }
-    const z1=chip('s0z1h','warn',()=>{ S1T='otel_traces_1h'; zoomTo('S1'); });
-    z1.textContent='⊕ 中を見る(Part / 状態)';
-    placeChip(z1,pos[0].x+pos[0].w/2,pos[0].y+pos[0].h+16);
-    CONTENT_H=pos[1].y+pos[1].h+120;
+    if(rawPulse>0) rawPulse=Math.max(0,rawPulse-0.01);
     const zc=chip('s0zoom','warn',()=>{ S1T='otel_traces'; zoomTo('S1'); });
     zc.textContent='⊕ 中を見る(Part / granule)';
-    placeChip(zc,36+LTW/2,ltbl.y+hh+14);
+    placeChip(zc,P('wide').x+150,P('wide').y+hh+16);
+    const z1=chip('s0z1h','warn',()=>{ S1T='otel_traces_1h'; zoomTo('S1'); });
+    z1.textContent='⊕ 中を見る(Part / 状態)';
+    placeChip(z1,P('d1h').x+110,P('d1h').y+q[0].h+16);
+    CONTENT_H=LO.bottom+140;
   };
   return s;
 })();
@@ -1029,8 +1063,9 @@ scenes.S1=(()=>{
         g.roundRect(0,0,CELL,22,4).fill(0xfff3bf).stroke({width:1,color:0xdad9d0});
         c.addChild(g,tx2); tx2.x=CELL/2-tx2.width/2; tx2.y=4;
         stripTiles.addChild(c);
-        const x0=30+i*(CELL+4);
-        sTiles.push({v,c,g,x:x0,y:INS_Y+116,tx:x0,ty:INS_Y+116,arc:0,p:1,sc:0,d:i*4,k:null});
+        const SP0=P&&LO?null:null; const bx0=38, by0=(LO?P('strip')?P('strip').y+12:INS_Y+116:INS_Y+116);
+        const x0=bx0+i*(CELL+4);
+        sTiles.push({v,c,g,x:x0,y:by0,tx:x0,ty:by0,arc:0,p:1,sc:0,d:i*4,k:null});
       });
     }
     else if(e.t==='insert.sorted'){
@@ -1106,26 +1141,50 @@ scenes.S1=(()=>{
     }
     hViews.forEach((v,id)=>{ v.cont.destroy({children:true}); hViews.delete(id); });
     secL.text='';
-    const cw3=partW()+22;
-    panel(colBg2,cw3,30,0x26261f,0x4a4a40,1,8);
-    colH2.x=cw3-12-colH2.width;
-    colB.visible=true; colB.x=14; colB.y=INS_Y;
-    panel(rawBg2,cw3,26,0xfcfcf8,0xdcdcd2,1,6);
-    rawB.visible=true; rawB.x=14; rawB.y=INS_Y+38;
+    // ---- 高さを見積もる → 宣言 → 解く ----
+    const pw=partW(), fw2=2*pw+46;
+    let ca=0, cb=0;
+    actParts().forEach(q2=>{ const h3=partH(q2)+18; if(ca<=cb) ca+=h3; else cb+=h3; });
+    const frameH=34+Math.max(120,Math.max(ca,cb))+8;
+    const cardH=(n2,per,ch)=>26+Math.max(1,Math.ceil(n2/per))*(ch+GAP)+12;
+    const hp=mvHParts.length?mvHParts:[{id:-1,rows:{},flash:0}];
+    const hHs=hp.map(q2=>cardH(Object.keys(q2.rows).length,3,34));
+    const d1hH=hHs.reduce((a,b)=>a+b+18,0)-18+26;
+    const colW2=470;
+    const dtrH=cardH(Object.keys(mvT).length,GPR,CELLH)+8;
+    const d1dH=cardH(Object.keys(mvD).length,GPR,CELLH)+8;
+    const stripOn=sTiles.length>0;
+    const LN=[{id:'col',w:fw2,h:30},{id:'raw',w:fw2,h:26}];
+    const LE=[{a:'col',b:'raw',kind:'send'}];
+    if(stripOn){ LN.push({id:'strip',w:fw2,h:46}); LE.push({a:'raw',b:'strip',kind:'ing',mv:'transform_mv'}); LE.push({a:'strip',b:'frame',kind:'ing2'}); }
+    else LE.push({a:'raw',b:'frame',kind:'ing',mv:'transform_mv'});
+    LN.push({id:'frame',w:fw2,h:frameH},
+      {id:'d1h',w:colW2,h:d1hH,ord:0},{id:'dtr',w:colW2,h:dtrH,ord:1},{id:'d1d',w:colW2,h:d1dH});
+    LE.push({a:'frame',b:'d1h',mv:'otel_traces_1h_mv'},
+      {a:'frame',b:'dtr',mv:'otel_traces_trace_id_ts_mv'},
+      {a:'d1h',b:'d1d',mv:'otel_traces_1d_mv'});
+    const LO=dagLayout(LN,LE,{x0:24,y0:INS_Y+6,gx:44,gy:52});
+    const P=id=>LO.pos.get(id), F=P('frame');
+    panel(colBg2,fw2,30,0x26261f,0x4a4a40,1,8);
+    colH2.x=fw2-12-colH2.width;
+    colB.visible=true; colB.x=P('col').x; colB.y=P('col').y;
+    panel(rawBg2,fw2,26,0xfcfcf8,0xdcdcd2,1,6);
+    rawB.visible=true; rawB.x=P('raw').x; rawB.y=P('raw').y;
 
     // INSERT 帯
     strip.clear();
     if(sTiles.length){
-      strip.roundRect(16,INS_Y+104,STW()-32,46,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
+      const SP=P('strip');
+      strip.roundRect(SP.x,SP.y,SP.w,46,6).fill(0xf2f1ec).stroke({width:1,color:0xdad9d0});
       const sc=chip('s1strip','',null);
       sc.textContent=sPhase==='arrive'?'OTLP バッチが届く(到着順・未ソート)'
         :sPhase==='sorted'?'ORDER BY (ServiceName, Timestamp) でソート中'
         :'8,192 行ごとに granule へ区切って新しい Part に書き出す';
-      placeChip(sc,STW()/2,INS_Y+102);
+      placeChip(sc,SP.x+SP.w/2,SP.y-2);
       if(sPhase==='sorted'){
         for(let k=0;k*GPR<sTiles.length;k++){
           const n=Math.min(GPR,sTiles.length-k*GPR);
-          strip.roundRect(30+k*GPR*(CELL+4)-4,INS_Y+111,n*(CELL+4)+2,32,4).stroke({width:1,color:0x8fa07e,alpha:0.85});
+          strip.roundRect(SP.x+14+k*GPR*(CELL+4)-4,SP.y+7,n*(CELL+4)+2,32,4).stroke({width:1,color:0x8fa07e,alpha:0.85});
         }
       }
       sTiles.forEach(o=>{
@@ -1138,12 +1197,12 @@ scenes.S1=(()=>{
       });
     } else { const sc=chips.get('s1strip'); if(sc){sc.remove(); chips.delete('s1strip');} }
     // Parts
-    let yL=INS_Y+192, yR=INS_Y+192; const seen=new Set();
+    let yL=F.y+34, yR=F.y+34; const seen=new Set();
     actParts().forEach(p=>{
       let v=views.get(p.id);
       if(!v){ v=buildPartView(); views.set(p.id,v); s.cont.addChild(v.cont); }
       seen.add(p.id);
-      const left=yL<=yR, px=left?24:538, py=left?yL:yR;
+      const left=yL<=yR, px=F.x+14+(left?0:pw+18), py=left?yL:yR;
       v.cont.x=px; v.cont.y=py;
       updatePartView(v,p,null);
       v.cont.alpha=p.filling?0.32:1;
@@ -1172,43 +1231,30 @@ scenes.S1=(()=>{
     const y=Math.max(yL,yR);
     views.forEach((v,id)=>{ if(!seen.has(id)){ v.cont.destroy({children:true}); views.delete(id); } });
     // TABLE 囲み(2列ぶんの幅)
-    const fw2=538+470-14+12;
     frameG.clear();
-    frameG.roundRect(14,INS_Y+160,fw2,Math.max(120,y-INS_Y-160-4),10).stroke({width:1.5,color:0xcfd2c8});
-    // 取り込み矢印: otel_raw → 枠
-    frameG.moveTo(154,INS_Y+64).lineTo(154,INS_Y+94).stroke({width:1.5,color:0xb9c2ae});
-    frameG.poly([154,INS_Y+101,149.5,INS_Y+93,158.5,INS_Y+93]).fill(0xb9c2ae);
-    frameG.moveTo(154,INS_Y+150).lineTo(154,INS_Y+153).stroke({width:1.5,color:0xb9c2ae});
-    frameG.poly([154,INS_Y+160,149.5,INS_Y+152,158.5,INS_Y+152]).fill(0xb9c2ae);
-    const trc=chip('s1tr','mv',()=>tableInsp('transform_mv'));
-    trc.textContent='MV transform_mv ▸ 列に解く';
-    trc.style.transform='translate(0,-50%)';
-    placeChip(trc,164,INS_Y+80);
+    frameG.roundRect(F.x,F.y,F.w,F.h,10).stroke({width:1.5,color:0xcfd2c8});
     const mg3=chip('s1merge','warn',()=>doMerge());
     mg3.textContent='⇄ マージ';
-    placeChip(mg3,14+fw2-60,INS_Y+156);
+    placeChip(mg3,F.x+F.w-60,F.y-4);
     const fc=chip('s1tbl','',()=>zoomTo('S0'));
     fc.textContent='TABLE otel_traces(⊖ テーブル層へ)';
-    placeChip(fc,14+fw2/2,INS_Y+156);
+    placeChip(fc,F.x+140,F.y-4);
     // 派生テーブルの物理層も上→下(S0 と同じ2列・granuleタイルで)
-    const colW2=470, lxx=24, rxx=24+colW2+44;
-    const fR=14+538+470-14+12, fbF=INS_Y+160+Math.max(120,y-INS_Y-160-4);
-    const cy0=fbF+70;
-    [{mv:'otel_traces_1h_mv',x:lxx+colW2/2,side:'L'},{mv:'otel_traces_trace_id_ts_mv',x:rxx+colW2/2,side:'R'}].forEach((sg,i)=>{
-      const g=stubs[i], pu=stubPulse[i]>0, col=pu?0x7048c8:0xb9a6dd;
-      const ex=Math.min(sg.x,fR-50);
-      g.clear();
-      g.moveTo(ex,fbF).lineTo(ex,fbF+18);
-      if(ex!==sg.x) g.lineTo(sg.x,fbF+18);
-      g.lineTo(sg.x,cy0-9);
-      g.stroke({width:pu?2.5:1.5,color:col});
-      g.poly([sg.x,cy0-2,sg.x-4.5,cy0-10,sg.x+4.5,cy0-10]).fill(col);
-      segC[sg.mv]={x:sg.x,y1:fbF,y2:cy0};
-      const c=chip('s1mv'+i,'mv',()=>tableInsp(sg.mv));
-      c.textContent='MV '+sg.mv+' ▸';
+    const lxx=P('d1h').x, rxx=P('dtr').x, fbF=F.y+F.h, cy0=P('d1h').y;
+    stubs.forEach(g2=>g2.clear());
+    LO.routes.forEach((r,i)=>{
+      const mv=r.e.mv, ing=r.e.kind==='ing'||r.e.kind==='ing2';
+      const si={otel_traces_1h_mv:0,otel_traces_trace_id_ts_mv:1}[mv];
+      const pu=si!=null?stubPulse[si]>0:false;
+      const col=r.e.kind==='send'?0x9db08f:(ing?0xb9c2ae:(pu?0x7048c8:0xb9a6dd));
+      drawRoute(stubs[2],r,col,pu);
+      if(!mv) return;
+      const c=chip('s1mv'+i,'mv',()=>tableInsp(mv));
+      c.textContent='MV '+mv+' ▸'+(ing?' 列に解く':'');
       c.style.transform=pu?'translate(0,-50%) scale(1.1)':'translate(0,-50%)';
-      placeChip(c,(sg.side==='L'?lxx:rxx)+6,fbF+34);
-      if(stubPulse[i]>0) stubPulse[i]=Math.max(0,stubPulse[i]-0.015);
+      placeChip(c,r.lx+10,r.ly);
+      if(si!=null){ segC[mv]={x:r.bx,y1:r.y1,y2:r.y2};
+        if(stubPulse[si]>0) stubPulse[si]=Math.max(0,stubPulse[si]-0.015); }
     });
     // タイル描画ヘルパ(状態行=タイル、右に primary.idx 先頭キー)
     const tileCard=(v,w,items,firstKey,band,op)=>{
@@ -1237,7 +1283,7 @@ scenes.S1=(()=>{
     let hy=cy0;
     const hc=chip('s1h-h','mv',()=>tableInsp('otel_traces_1h'));
     hc.textContent='TABLE otel_traces_1h ・ part ×'+mvHParts.length;
-    placeChip(hc,lxx+colW2/2,hy-12);
+    placeChip(hc,lxx+108,hy-10);
     const hmg=chip('s1h-mg','warn',()=>doMerge('1h'));
     hmg.textContent='⇄';
     placeChip(hmg,lxx+colW2-14,hy-12);
@@ -1305,23 +1351,16 @@ scenes.S1=(()=>{
     tZone.cont.x=rxx; tZone.cont.y=cy0;
     const tc2=chip('s1t-h','mv',()=>tableInsp('otel_traces_trace_id_ts'));
     tc2.textContent='TABLE otel_traces_trace_id_ts ・ '+eT2.length+' 行';
-    placeChip(tc2,rxx+colW2/2,cy0-12);
+    placeChip(tc2,rxx+128,cy0-10);
     // 1d(左列の下、1h からのカスケード)
-    stubs[2].clear();
-    stubs[2].moveTo(lxx+colW2/2,hy-6).lineTo(lxx+colW2/2,hy+26).stroke({width:1.5,color:0xb9a6dd});
-    stubs[2].poly([lxx+colW2/2,hy+33,lxx+colW2/2-4.5,hy+25,lxx+colW2/2+4.5,hy+25]).fill(0xb9a6dd);
-    const dmc=chip('s1d-mv','mv',()=>tableInsp('otel_traces_1d_mv'));
-    dmc.textContent='MV otel_traces_1d_mv ▸';
-    dmc.style.transform='translate(-100%,-50%)';
-    placeChip(dmc,lxx+colW2/2-10,hy+12);
     const eD2=Object.keys(mvD).sort();
     const dItems=eD2.map(d2=>({txt:d2.slice(4,6)+'/'+d2.slice(6),bg:0xfff3bf}));
     const dH=tileCard(dZone,colW2,dItems,eD2[0]?eD2[0].slice(4,6)+'-'+eD2[0].slice(6):'—',0xfff3bf);
-    dZone.cont.x=lxx; dZone.cont.y=hy+42;
+    dZone.cont.x=P('d1d').x; dZone.cont.y=P('d1d').y;
     const dc2=chip('s1d-h','mv',()=>tableInsp('otel_traces_1d'));
     dc2.textContent='TABLE otel_traces_1d ・ '+eD2.length+' 行';
-    placeChip(dc2,lxx+colW2/2,hy+30);
-    CONTENT_H=Math.max(hy+42+dH,cy0+tH)+130;
+    placeChip(dc2,P('d1d').x+104,P('d1d').y-10);
+    CONTENT_H=LO.bottom+150;
   };
   return s;
 })();
@@ -1672,7 +1711,7 @@ app.ticker.add(()=>{
   if(frame%10===0||frame<5) measureBars();
   paper.clear();
   paper.roundRect(0,0,STW(),Math.max((innerHeight-YBASE)/Z,CONTENT_H+30),12).fill(0xf8f8f6).stroke({width:1,color:0xe2e2dd});
-  if(cur) cur.tick();
+  if(cur){ try{ cur.tick(); }catch(e){ window.__v6tick=e.message; } }
   tickFly();
   chips.forEach((c,k)=>{ if(c.__seen!==frame){ c.remove(); chips.delete(k); } });
 });
