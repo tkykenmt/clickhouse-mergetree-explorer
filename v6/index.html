@@ -67,7 +67,17 @@ canvas{display:block;touch-action:none}
 #brand .ver{font:600 9px var(--ui);letter-spacing:.12em;color:var(--faint);border:1px solid var(--line);border-radius:3px;padding:1px 5px;margin-left:5px}
 #steps{position:fixed;left:12px;right:14px;z-index:9;background:var(--surface);
   border:1px solid var(--line);border-radius:8px}
-#searchbar{position:fixed;left:12px;right:14px;top:12px;z-index:9;background:#1b1b18;
+#lessonbar{position:fixed;left:12px;right:14px;top:12px;z-index:9;background:#1b1b18;
+  border:1px solid var(--line);border-radius:8px;padding:7px 14px;display:flex;flex-wrap:wrap;
+  gap:6px 10px;align-items:center}
+#lessonbar .lb-t{font:600 9.5px var(--ui);letter-spacing:.12em;color:var(--faint);margin-right:2px}
+#lessonbar .ls{font:600 11px var(--ui);color:var(--muted);border:1px solid var(--line);
+  border-radius:6px;padding:4px 11px;cursor:pointer;white-space:nowrap}
+#lessonbar .ls:hover{border-color:var(--line2);color:#fff}
+#lessonbar .ls.on{background:var(--accent);border-color:var(--accent);color:#1a1a17}
+#lessonbar .lb-hint{font:11px var(--ui);color:var(--faint);margin-left:6px;flex:1;min-width:120px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#searchbar{position:fixed;left:12px;right:14px;z-index:9;background:#1b1b18;
   border:1px solid var(--line);border-radius:8px;padding:8px 14px;display:flex;flex-wrap:wrap;
   gap:6px 16px;align-items:center;font:600 12px var(--mono);color:var(--muted)}
 #searchbar .sb-ico{opacity:.7}
@@ -168,6 +178,17 @@ canvas{display:block;touch-action:none}
   <div class="rhd">RESULT — クライアントに返る<span class="rx" id="resX">✕</span></div>
   <div id="resgrid"></div>
 </div>
+<div id="lessonbar">
+  <span class="lb-t">章</span>
+  <span class="ls" data-l="ingest">① 取り込み</span>
+  <span class="ls" data-l="part">② Part と granule</span>
+  <span class="ls" data-l="mv">③ MV の連鎖</span>
+  <span class="ls" data-l="index">④ 索引と枝刈り</span>
+  <span class="ls" data-l="merge">⑤ マージ</span>
+  <span class="ls" data-l="real">⑥ 実データ</span>
+  <span class="ls" data-l="cluster">⑦ クラスタ</span>
+  <span class="lb-hint" id="lsHint"></span>
+</div>
 <div id="searchbar">
   <span class="sb-ico">🛠</span>
   <select id="stmtSel" class="sel">
@@ -176,6 +197,9 @@ canvas{display:block;touch-action:none}
     <option value="del">DELETE — 軽量削除</option>
     <option value="upd">ALTER … UPDATE — mutation</option>
     <option value="proj">ALTER … ADD PROJECTION</option>
+    <option value="wrapped">診断 — 列を関数で包む(索引が効かない)</option>
+    <option value="wall">診断 — 述語の壁(サブクエリ ORDER BY … LIMIT)</option>
+    <option value="keydes">診断 — 主キー設計(接頭辞を外す)</option>
   </select>
   <span class="sb-q">ServiceName :
     <select id="svcSel" class="sel sb-sel">

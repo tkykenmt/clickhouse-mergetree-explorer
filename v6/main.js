@@ -51,6 +51,7 @@ function doAddReplica(){
   },600+i*900));
 } // S1 の対象テーブル / 現在シーン
 let PRED=600, SVCF='', IDXT='minmax', ENG='mt';
+let QMODE='plain'; // plain | wrapped | wall | keydes — 索引がどう効かなくなるかの実演
 function seedParts(){
   const mk=(vals,lvl,name,day)=>{ seq++; parts.push({id:seq,name,day,granules:mkGranules(keySort(vals)),lvl,del:{},upd:{}}); };
   mk([60,181,602,123,504,880,64,903,700,247],1,YDAY+'_1_3_1',YDAY);
@@ -233,7 +234,8 @@ function doSelect(){
   const cut=act.filter(p=>p.day<TODAY).map(p=>p.id);
   const kept=act.filter(p=>p.day===TODAY);
   // 主キー = (ServiceName, Timestamp)。境界キー(各granuleの先頭)だけで判定する
-  const plan=kept.map(p=>{
+  const IDXOFF=(QMODE==='wrapped'||QMODE==='wall'); // 索引が使えない実演
+  const plan=IDXOFF?kept.map(p=>({pid:p.id,keep:p.granules.map((_,i)=>i)})):kept.map(p=>{
     const gs=p.granules, keep=[];
     for(let i=0;i<gs.length;i++){
       const lo=gs[i][0], nx=(i+1<gs.length)?gs[i+1][0]:null;
@@ -254,21 +256,24 @@ function doSelect(){
     const p=kept.find(q=>q.id===pl.pid);
     pl.keep.forEach(gi=>{
       const g=p.granules[gi];
-      if(IDXT==='minmax'&&Math.max.apply(null,g)<PRED){ skipped.push({pid:pl.pid,gi}); return; }
+      if(!IDXOFF&&IDXT==='minmax'&&Math.max.apply(null,g)<PRED){ skipped.push({pid:pl.pid,gi}); return; }
       scan.push({pid:pl.pid,gi});
     });
   });
   const total=kept.reduce((s,p)=>s+p.granules.length,0)+act.filter(p=>p.day<TODAY).reduce((s,p)=>s+p.granules.length,0);
   seqRun([
     [900,()=>emit('prune.partition',{cut,kept:kept.map(p=>p.id)})],
-    [1300,()=>emit('prune.primary',{plan,note:SVCF?
-      "① 主キー先頭は ServiceName — service='"+SVCF+"' のブロックを二分探索で特定(そのブロック内は ts も単調)":
+    [1300,()=>emit('prune.primary',{plan,note:
+      QMODE==='wrapped'?'① 列が関数に包まれている → Condition: true。primary.idx は境界キーと定数を比べるので、toStartOfHour(Timestamp) のように包むと比較できず、全 granule が候補のまま':
+      QMODE==='wall'?'① 述語の壁 → サブクエリの ORDER BY … LIMIT より下に条件を下げられない。ReadFromMergeTree には条件が届かず Condition: true':
+      SVCF?"① 主キー先頭は ServiceName — service='"+SVCF+"' のブロックを二分探索で特定(そのブロック内は ts も単調)":
       '① 主キー先頭は ServiceName — ts だけでは接頭辞が欠け、単一サービスに収まる granule しか排除できない(一般化排他)'})],
-    [1300,()=>emit('prune.skip',{skipped,scanN:scan.length,total,note:IDXT==='minmax'?
-      '② skip idx minmax(Timestamp): granule ごとの ts の min–max で「含み得ない」granule を読む前に落とす':
+    [1300,()=>emit('prune.skip',{skipped,scanN:scan.length,total,note:
+      IDXOFF?'② 索引が効かないので落とせない — '+scan.length+' / '+total+' granule を全部読む':
+      IDXT==='minmax'?'② skip idx minmax(Timestamp): granule ごとの ts の min–max で「含み得ない」granule を読む前に落とす':
       '② skip idx なし: 主キーで残った granule を全部読む'})],
     [1100,()=>{
-      const tileHit=(p,gi,ci,v)=>v>=PRED&&(!SVCF||svcOf(v)===SVCF)&&!p.del[gi*GPR+ci];
+      const tileHit=(p,gi,ci,v)=>v>=PRED&&(!SVCF||svcOf(v)===SVCF)&&!p.del[gi*GPR+ci]; // 条件自体は読んだ後に評価する(索引が効いても効かなくても同じ)
       laneRun(scan,total,tileHit,()=>{
         const agg={};
         scan.forEach(s=>{ const p=parts.find(x=>x.id===s.pid); if(!p) return;
@@ -329,6 +334,85 @@ function doTraceSelect(){
     }],
   ]);
 }
+/* ---- EXPLAIN パーサ(ch-query-lifecycle の実装を移植。罠は向こうで潰し済み) ---- */
+function m1(re,t){ const m=re.exec(t); return (m&&m[1]!=null)?String(m[1]).trim():null; }
+function allm(re,t){ const o=[]; let m; const r=new RegExp(re.source,re.flags.indexOf('g')>=0?re.flags:re.flags+'g');
+  while((m=r.exec(t))!==null) o.push(m); return o; }
+function fnum(re,t){ const m=re.exec(t); return m?+m[1]:null; }
+function parsePlanCH(txt){
+  const p={branches:[]};
+  // 罠: ReadFromMergeTree で split すると LazilyReadFromMergeTree も割れる → " (" まで含めて分割
+  const chunks=txt.split(/(?:^|\n)[^\n]*?\bReadFromMergeTree \(/).slice(1);
+  chunks.forEach(c=>{
+    const g=allm(/Granules:\s*(\d+)\/(\d+)/,c).map(m=>[+m[1],+m[2]]);
+    const pp=allm(/Parts:\s*(\d+)\/(\d+)/,c).map(m=>[+m[1],+m[2]]);
+    // 索引ステップ(名前つき)。属性行は罫線(│)始まりのことがある
+    const steps=[]; let cur=null;
+    c.split('\n').forEach(line=>{
+      const nm=line.match(/^[│\s]*(?:[├└]──)?\s*(Min-Max|Partition|PrimaryKey|Skip)\s*$/);
+      if(nm){ cur={name:nm[1]}; steps.push(cur); return; }
+      if(!cur) return;
+      let m=line.match(/Parts:\s*(\d+)\/(\d+)/);      if(m){ cur.pk=+m[1]; cur.pn=+m[2]; }
+      m=line.match(/Granules:\s*(\d+)\/(\d+)/);        if(m){ cur.gk=+m[1]; cur.gn=+m[2]; }
+      m=line.match(/Search Algorithm:\s*(.+)$/);       if(m) cur.algo=m[1].trim();
+      m=line.match(/Condition:\s*(.+)$/);              if(m&&!cur.cond) cur.cond=m[1].trim();
+      m=line.match(/(?:Name|Description):\s*(.+)$/);   if(m&&!cur.desc) cur.desc=m[1].trim();
+    });
+    p.branches.push({
+      table:(/^([^)\n]+)\)/.exec(c)||[])[1]||null,
+      total:g.length?g[0][1]:null,
+      selected:g.length?g[g.length-1][0]:null,
+      parts:pp.length?pp[pp.length-1]:null,
+      ranges:fnum(/Ranges:\s*(\d+)/,c),
+      cond:m1(/Condition:\s*(.+)/,c),
+      algo:m1(/Search Algorithm:\s*(.+)/,c),
+      steps:steps.filter(s=>s.gn!=null)
+    });
+  });
+  p.branches=p.branches.filter(b=>b.total!=null||b.selected!=null);
+  p.granulesSel=p.branches.reduce((a,b)=>a+(b.selected||0),0)||null;
+  p.granulesTot=p.branches.reduce((a,b)=>a+(b.total||0),0)||null;
+  p.ranges=p.branches.reduce((a,b)=>a+(b.ranges||0),0)||null;
+  // 罫線の有無(play/cloud)で書式が違う
+  p.sortDesc=m1(/Sort description:\s*(.+)/,txt)||m1(/(?:^|\n)\s*Sorting:\s*(.+)/,txt);
+  p.limit=fnum(/[│\s]Limit (\d+)/,txt);
+  p.lazy=m1(/Lazily read columns:\s*(.+)/,txt);
+  p.topk=/__topKFilter/.test(txt);
+  // 罠: Algorithm: は Search Algorithm: にもマッチする → 行単位で除外
+  p.joinAlgo=(function(){ const l=txt.split('\n').filter(x=>x.indexOf('Algorithm:')>=0&&x.indexOf('Search Algorithm')<0)[0];
+    return l?l.split('Algorithm:')[1].trim():null; })();
+  return p;
+}
+/* ---- 診断(判定木も向こうの実装に合わせる) ---- */
+function diagnoseCH(plan,sql,qmode){
+  const out=[];
+  if(!plan||!plan.branches.length){ out.push({lv:'info',t:'MergeTree の読み取りがありません',d:'定数畳み込みか、集約が索引から答えられている。'}); return out; }
+  const noIdx=plan.branches.every(b=>!b.cond||/^true$/i.test(b.cond));
+  const ratio=(plan.granulesTot&&plan.granulesSel!=null)?plan.granulesSel/plan.granulesTot:null;
+  const pc=r=>Math.round(r*1000)/10+'%';
+  if(noIdx||(ratio!=null&&ratio>0.9)){
+    out.push({lv:'bad',t:noIdx?'主キーが使われていません':'条件はあるが全 granule が候補です',
+      d:(noIdx?'Condition: true = 全 '+(plan.granulesTot||0).toLocaleString()+' granule が候補。':
+        (plan.granulesSel||0).toLocaleString()+' / '+(plan.granulesTot||0).toLocaleString()+'('+pc(ratio)+')')});
+    if(qmode==='wrapped') out.push({lv:'bad',t:'原因: 列が関数に包まれている',d:'WHERE の比較で列が関数に包まれている。裸の列と定数の比較に書き換えると主キー条件になる。'});
+    else if(qmode==='wall'||(/\border\s+by\b[\s\S]*\blimit\b/i.test(sql||'')&&/\(\s*select/i.test(sql||'')))
+      out.push({lv:'bad',t:'原因: 述語の壁',d:'サブクエリの ORDER BY … LIMIT より下に条件を下げられない。条件をサブクエリの内側へ移す。'});
+    else out.push({lv:'warn',t:'原因: 主キー設計',d:'書き方の問題は見つからない。ORDER BY キーそのものを見直す領域。'});
+  } else if(ratio!=null){
+    if(ratio>0.3) out.push({lv:'warn',t:'絞り込みが弱い',d:pc(ratio)+' まで。skip index かキー順の見直しで下げられる余地がある。'});
+    else out.push({lv:'ok',t:'主キーが効いています',d:(plan.granulesSel||0).toLocaleString()+' / '+(plan.granulesTot||0).toLocaleString()+'('+pc(ratio)+')に絞れている。'});
+  }
+  plan.branches.forEach(b=>{
+    if(b.ranges&&b.selected){ const avg=b.selected/b.ranges;
+      if(avg<4) out.push({lv:'warn',t:'アクセスが断片化しています',d:'1レンジ平均 '+avg.toFixed(1)+' granule。実質ランダムアクセスで、Cloud のオブジェクトストレージでは特に遅い。'});
+      else out.push({lv:'ok',t:'連続読みになっています',d:'1レンジ平均 '+avg.toFixed(0)+' granule ≒ '+Math.round(avg*8192).toLocaleString()+' 行の連続読み。'});
+    }
+    if(b.algo&&/generic exclusion/.test(b.algo)&&ratio!=null&&ratio>0.5)
+      out.push({lv:'warn',t:'generic exclusion search で絞れていません',d:'第1キーを固定せず後続キーに条件を付けている形。キー順の再設計が効く。'});
+  });
+  return out;
+}
+
 /* ---------- REAL: 公開プレイグラウンドの実テーブルを読む ---------- */
 let hUpdWb=()=>{}, hOpenInsp=()=>{}, hZoomS1=()=>{};  // IIFE内の関数への橋
 const RQ={
@@ -336,7 +420,7 @@ const RQ={
   db:'otel_clickpy', tbl:'otel_traces',
   on:false, status:'', parts:[], seen:new Set(), svcs:[], expl:null, ddl:'', gen:[],
   n:0, tlast:0, meas:null, budget:60,  // Cloud は 1 時間あたり 60 クエリ
-  snap:'', diff:'' // 撮影時刻と前回との差分
+  snap:'', diff:'', plan:null, diag:null // 撮影時刻・差分・プランと診断
 };
 // ヘッダは一切付けない(allow-headers に content-type が無く、付けるとプリフライトで落ちる)
 function chq(sql){ return chqF(sql).then(o=>o.rows); }
@@ -371,30 +455,22 @@ function realParts(){
     });
 }
 function realExplain(){
-  const hrs=Math.max(1,Math.round((961-PRED)/60));
+  const hrs=Math.max(1,Math.round((961-PRED)/60)), T=RQ.db+'.'+RQ.tbl;
   const wh="Timestamp >= now() - INTERVAL "+hrs+" HOUR"+(SVCF?" AND ServiceName = '"+SVCF+"'":'');
-  const sql="EXPLAIN indexes=1 SELECT toStartOfHour(Timestamp) AS h, count() FROM "+RQ.db+"."+RQ.tbl+" WHERE "+wh+" GROUP BY h ORDER BY h";
-  RQ.sql="SELECT toStartOfHour(Timestamp) AS h, count() FROM "+RQ.db+"."+RQ.tbl+"\nWHERE "+wh+"\nGROUP BY h ORDER BY h";
+  if(QMODE==='wrapped') RQ.sql="SELECT count() FROM "+T+"\nWHERE toStartOfHour(Timestamp) >= now() - INTERVAL "+hrs+" HOUR";
+  else if(QMODE==='wall') RQ.sql="SELECT count() FROM (\n  SELECT * FROM "+T+" ORDER BY Timestamp DESC LIMIT 25\n)\nWHERE Timestamp >= now() - INTERVAL "+hrs+" HOUR";
+  else RQ.sql="SELECT toStartOfHour(Timestamp) AS h, count() FROM "+T+"\nWHERE "+wh+"\nGROUP BY h ORDER BY h";
+  const sql="EXPLAIN indexes=1 "+RQ.sql.replace(/^--[^\n]*\n/,'');
   return chq(sql).then(rows=>{
-    const L=rows.map(r=>String(r[0]));
-    const steps=[]; let cur=null;
-    L.forEach(s=>{
-      const nm=s.match(/^\s{10,}(Min-Max|Partition|PrimaryKey|Skip)\s*$/);
-      if(nm){ cur={name:nm[1]}; steps.push(cur); return; }
-      if(!cur) return;
-      let m=s.match(/Parts:\s*(\d+)\/(\d+)/); if(m){ cur.pk=+m[1]; cur.pn=+m[2]; }
-      m=s.match(/Granules:\s*(\d+)\/(\d+)/); if(m){ cur.gk=+m[1]; cur.gn=+m[2]; }
-      m=s.match(/Search Algorithm:\s*(.+)$/); if(m) cur.alg=m[1].trim();
-      m=s.match(/^\s{12,}(Name|Description):\s*(.+)$/); if(m&&!cur.desc) cur.desc=m[2].trim();
-    });
-    RQ.expl=steps.filter(s=>s.gn);
+    const txt=rows.map(r=>String(r[0])).join('\n');
+    RQ.plan=parsePlanCH(txt);
+    RQ.expl=RQ.plan.branches.length?RQ.plan.branches[0].steps:[];
+    RQ.diag=diagnoseCH(RQ.plan,RQ.sql,QMODE);
     return RQ.expl;
   });
 }
 function realRun(){
-  const hrs=Math.max(1,Math.round((961-PRED)/60));
-  const wh="Timestamp >= now() - INTERVAL "+hrs+" HOUR"+(SVCF?" AND ServiceName = '"+SVCF+"'":'');
-  const sql="SELECT toStartOfHour(Timestamp) AS h, count() AS c FROM "+RQ.db+"."+RQ.tbl+" WHERE "+wh+" GROUP BY h ORDER BY h";
+  const sql=RQ.sql||("SELECT count() FROM "+RQ.db+"."+RQ.tbl);
   return chqF(sql).then(o=>{
     const s=o.sum||{}, st=o.stat||{};
     RQ.meas={rows:o.rows.length,read_rows:+(s.read_rows||st.rows_read||0),
@@ -437,9 +513,15 @@ function realInsp(){
     st.forEach(s=>{
       const pct=s.gn?Math.round(1000*s.gk/s.gn)/10:0;
       h+='<div class="note" style="margin:6px 0 0"><b>'+s.name+'</b> — granule '+s.gk.toLocaleString()+' / '+s.gn.toLocaleString()
-        +' ('+pct+'%)'+(s.pn?' ・ parts '+s.pk+'/'+s.pn:'')+(s.alg?'<br>Search Algorithm: '+s.alg:'')+'</div>'
+        +' ('+pct+'%)'+(s.pn?' ・ parts '+s.pk+'/'+s.pn:'')+(s.algo?'<br>Search Algorithm: '+s.algo:'')+'</div>'
         +bar(s.gk,s.gn,pct>60?'#e8d34a':(pct>20?'#f0a500':'#6fc78a'));
     });
+  }
+  if(RQ.diag&&RQ.diag.length){
+    const ico={bad:'✕',warn:'△',ok:'✓',info:'·'}, col={bad:'#e08585',warn:'#e8d34a',ok:'#6fc78a',info:'#8b8b84'};
+    h+='<div class="sub">自動診断(ch-query-lifecycle の判定木)</div>';
+    RQ.diag.forEach(d=>{ h+='<div class="note" style="border-left:3px solid '+col[d.lv]+';padding-left:10px;margin:8px 0">'
+      +'<b style="color:'+col[d.lv]+'">'+ico[d.lv]+' '+d.t+'</b><br>'+d.d+'</div>'; });
   }
   if(RQ.meas){
     const m=RQ.meas;
@@ -1820,6 +1902,9 @@ function wbSQL(){
   if(STMT==='sel') return SQLQ()+';';
   if(STMT==='tid'){ const ks=Object.keys(mvT); const tid=ks.length?ks[ks.length-1]+'…':'<TraceId>';
     return "WITH '"+tid+"' AS tid, (SELECT min(Start) FROM otel_traces_trace_id_ts WHERE TraceId = tid) AS s, (SELECT max(End)+1 FROM otel_traces_trace_id_ts WHERE TraceId = tid) AS e SELECT Timestamp, ServiceName, SpanName FROM otel_traces WHERE Timestamp >= s AND Timestamp < e;"; }
+  if(STMT==='wrapped') return '-- 列を関数で包むと primary.idx は使えない\nSELECT count() FROM otel_traces\nWHERE toStartOfHour(Timestamp) >= \''+fmtT(PRED)+'\';';
+  if(STMT==='wall') return '-- サブクエリの ORDER BY … LIMIT より下に条件は下がらない\nSELECT count() FROM (\n  SELECT * FROM otel_traces ORDER BY Timestamp DESC LIMIT 25\n)\nWHERE Timestamp >= \''+fmtT(PRED)+'\';';
+  if(STMT==='keydes') return '-- 主キーの接頭辞(ServiceName)を外すと一般化排他しか効かない\nSELECT count() FROM otel_traces\nWHERE Timestamp >= \''+fmtT(PRED)+'\';';
   if(STMT==='del') return (SVCF?'':'-- ServiceName 未指定 → 既定の checkout を対象にする\n')+"DELETE FROM otel_traces WHERE ServiceName = '"+(SVCF||'checkout')+"';";
   if(STMT==='upd') return (SVCF?'':'-- ServiceName 未指定 → 既定の frontend を対象にする\n')+"ALTER TABLE otel_traces UPDATE SpanAttributes['tier'] = 'vip' WHERE ServiceName = '"+(SVCF||'frontend')+"';";
   return 'ALTER TABLE otel_traces ADD PROJECTION by_service (SELECT * ORDER BY ServiceName);';
@@ -1829,10 +1914,38 @@ function updWb(){ wbEl.textContent=wbSQL(); }
 wbEl.onclick=()=>openInsp('<h2>🛠 Workbench</h2><div class="sub">実行される文(パラメータ連動)</div><pre>'+wbSQL().replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>');
 document.getElementById('stmtSel').onchange=e=>{ STMT=e.target.value; updWb(); };
 document.getElementById('bRun').onclick=()=>{
-  ({sel:doSelect,tid:doTraceSelect,del:doDelete,upd:doUpdate,proj:doProj})[STMT]();
-  if(RQ.on&&STMT==='sel'&&RQ.n<RQ.budget-2)
+  QMODE=(STMT==='wrapped'||STMT==='wall')?STMT:'plain';
+  ({sel:doSelect,tid:doTraceSelect,del:doDelete,upd:doUpdate,proj:doProj,
+    wrapped:doSelect,wall:doSelect,keydes:()=>{ SVCF=''; const s2=document.getElementById('svcSel'); if(s2) s2.value=''; doSelect(); }})[STMT]();
+  if(RQ.on&&['sel','wrapped','wall','keydes'].indexOf(STMT)>=0&&RQ.n<RQ.budget-2)
     realExplain().then(()=>realRun()).catch(e=>rst('取得失敗: '+e.message,true));
 };
+/* ---- 章(lesson): 何を見せるかを宣言し、シーンと道具立てを合わせる ---- */
+const LESSONS={
+  ingest:{scene:'S0',hint:'Collector が OTLP バッチを投げ、Null の受け口を通って変換 MV が列に解く。Collector の箱を押す。',
+    act:()=>{ S1T='otel_traces'; }},
+  part:{scene:'S1',hint:'同じ INSERT を物理で見る。行が並び、ソートされ、8,192 行ごとに granule へ切られ、Part が生まれる。granule をクリックすると中身と索引が出る。',
+    act:()=>{ S1T='otel_traces'; }},
+  mv:{scene:'S0',hint:'MV はテーブルではなくパイプ。発火は uuid 順に直列。集計は状態として積まれ、読む側が畳む。',act:()=>{}},
+  index:{scene:'S2',hint:'クエリの一生。partition.dat → primary.idx → skp_idx の順に部品を引く。文セレクタの「診断」3種で索引が効かない形を試せる。',
+    act:()=>{ if(STMT==='sel'){} }},
+  merge:{scene:'S1',hint:'テーブルヘッダの ⇄ で畳む。AggregatingMergeTree では同じキーの状態が結合される。実データ(⑥)では level の山が見える。',
+    act:()=>{ S1T='otel_traces'; }},
+  real:{scene:'S1',hint:'公開プレイグラウンドの実テーブル。system.parts の実物・EXPLAIN の残存 granule・実測 read_rows。書き込みは打てないので振付は縮尺のまま。',
+    act:()=>{ const d=document.getElementById('dataSel'); if(d&&d.value!=='real'){ d.value='real'; d.dispatchEvent(new Event('change')); } }},
+  cluster:{scene:'S3',hint:'＋レプリカで ReplicatedMergeTree 化。調整は Keeper 経由、データはレプリカ間の fetch。ノード同士は調整では会話しない。',act:()=>{}}
+};
+let LESSON='ingest';
+function setLesson(k){
+  const L=LESSONS[k]; if(!L) return;
+  LESSON=k;
+  document.querySelectorAll('#lessonbar .ls').forEach(el=>el.classList.toggle('on',el.dataset.l===k));
+  const hint=document.getElementById('lsHint'); if(hint) hint.textContent=L.hint;
+  L.act();
+  zoomTo(L.scene);
+  SCROLL=0;
+}
+document.querySelectorAll('#lessonbar .ls').forEach(el=>{ el.onclick=()=>setLesson(el.dataset.l); });
 hUpdWb=updWb; hOpenInsp=openInsp; hZoomS1=()=>{ S1T='otel_traces'; zoomTo('S1'); };
 document.getElementById('dataSel').onchange=e=>{
   RQ.on=(e.target.value==='real');
@@ -1869,7 +1982,7 @@ if(bAmb) bAmb.onclick=()=>{
 document.getElementById('bReset').onclick=()=>{
   if(busy) return toast('実行中です','warn');
   parts=[]; seq=0; mvH={}; mvD={}; mvT={}; trSeq=0; mvHParts=[]; hpSeq=0; S1T='otel_traces'; REPL=false; n2Parts=[]; projOn=false; mutSeq=6;
-  seedParts(); showDefault(); updWb(); switchTo('S0');
+  seedParts(); showDefault(); updWb(); setLesson('ingest'); switchTo('S0');
   toast('初期状態に戻した');
 };
 function showDefault(){ showSql(SQLQ()+';'); showMsg('待機中'); resShown=false; }
@@ -1879,8 +1992,11 @@ seedParts(); showDefault();
 switchTo('S0');
 const sbEl=document.getElementById('searchbar');
 const stepsEl=document.getElementById('steps');
+const lbEl=document.getElementById('lessonbar');
 function measureBars(){
-  let y=12+sbEl.offsetHeight+8;
+  let y=12;
+  if(lbEl){ lbEl.style.top=y+'px'; y+=lbEl.offsetHeight+8; }
+  sbEl.style.top=y+'px'; y+=sbEl.offsetHeight+8;
   if(stepsEl.classList.contains('show')){ stepsEl.style.top=y+'px'; y+=stepsEl.offsetHeight+8; }
   rescEl.style.display=resShown?'block':'none';
   if(resShown){ rescEl.style.top=y+'px'; y+=rescEl.offsetHeight+8; }
