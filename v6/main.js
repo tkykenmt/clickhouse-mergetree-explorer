@@ -335,7 +335,8 @@ const RQ={
   ep:'https://sql-clickhouse.clickhouse.com/?user=demo&default_format=JSONCompact',
   db:'otel_clickpy', tbl:'otel_traces',
   on:false, status:'', parts:[], seen:new Set(), svcs:[], expl:null, ddl:'', gen:[],
-  n:0, tlast:0, meas:null, budget:60  // Cloud は 1 時間あたり 60 クエリ
+  n:0, tlast:0, meas:null, budget:60,  // Cloud は 1 時間あたり 60 クエリ
+  snap:'', diff:'' // 撮影時刻と前回との差分
 };
 // ヘッダは一切付けない(allow-headers に content-type が無く、付けるとプリフライトで落ちる)
 function chq(sql){ return chqF(sql).then(o=>o.rows); }
@@ -361,9 +362,12 @@ function realParts(){
       RQ.seen=now;
       RQ.parts=rows.map(r=>({name:r[0],level:+r[1],rows:+r[2],marks:+r[3],bytes:+r[4],part:r[5],fresh:born.indexOf(r[0])>=0?1:0}));
       const tr=RQ.parts.reduce((a,b)=>a+b.rows,0), tg=RQ.parts.reduce((a,b)=>a+b.marks,0);
-      rst('REAL '+RQ.db+'.'+RQ.tbl+' ・ Part '+rows.length+' ・ granule '+tg.toLocaleString()+' ・ '+tr.toLocaleString()+' 行 ・ q'+RQ.n+'/'+RQ.budget);
-      if(born.length) toast('実データ: Part が '+born.length+' 個生まれた('+born.slice(0,2).join(', ')+')');
-      if(gone.length) toast('実データ: Part が '+gone.length+' 個消えた — マージで畳まれた');
+      rst('REAL '+RQ.db+'.'+RQ.tbl+' ・ Part '+rows.length+' ・ granule '+tg.toLocaleString()+' ・ '+tr.toLocaleString()+' 行 ・ '+RQ.snap+' ・ q'+RQ.n+'/'+RQ.budget);
+      RQ.snap=new Date().toLocaleTimeString('ja-JP');
+      if(!had) RQ.diff='初回スナップショット';
+      else if(!born.length&&!gone.length) RQ.diff='前回から変化なし';
+      else RQ.diff='前回との差分: +'+born.length+' 個生まれ / −'+gone.length+' 個消えた(マージ)';
+      if(had&&(born.length||gone.length)) toast('実データ: Part が '+born.length+' 個生まれ、'+gone.length+' 個消えた(マージで畳まれた)。'+RQ.snap+' 時点');
     });
 }
 function realExplain(){
@@ -422,8 +426,9 @@ function realInsp(){
       +'<rect x="8" y="6" width="'+w+'" height="14" rx="3" fill="#20201b" stroke="#3a3a32"/>'
       +'<rect x="8" y="6" width="'+f+'" height="14" rx="3" fill="'+col+'"/></svg>'; };
   let h='<h2>REAL '+RQ.db+'.'+RQ.tbl+'</h2><div class="sub">'+RQ.status+'</div>';
-  h+='<div class="note">このセッションで投げたクエリ: <b>'+RQ.n+'</b> 本(Cloud の上限は 1 時間あたり 60 本)。'
-    +'system.parts の更新は 120 秒間隔に抑えている。</div>'
+  h+='<div class="note">スナップショット <b>'+RQ.snap+'</b> ・ '+RQ.diff+'。ポーリングはしない — '
+    +'2 分間隔は実時間の追跡にならず、Cloud の枠(1 時間 60 本)を食うだけなので、↻ で撮り直す方式にしている。'
+    +'このセッションで投げたクエリ: <b>'+RQ.n+'</b> 本。</div>'
     +'<div class="note">公開プレイグラウンド(user=demo・読み取り専用)の実テーブル。書き込みは打てないので、'
     +'INSERT の振付は縮尺シミュレータの担当。ここは<b>読み取りの答え合わせ</b>。</div>';
   if(RQ.sql) h+='<pre>'+RQ.sql.replace(/</g,'&lt;')+'</pre>';
@@ -1401,6 +1406,9 @@ scenes.S1=(()=>{
         c2.textContent=L.rows.toLocaleString()+' 行 ・ granule '+L.marks.toLocaleString();
         placeChip(c2,F.x+244+bw,yy+4);
       });
+      const c4=chip('rsnap','',null);
+      c4.textContent='スナップショット '+RQ.snap+' ・ '+RQ.diff+'(↻ で撮り直す)';
+      placeChip(c4,F.x+300,F.y+30);
       const c3=chip('rsum','warn',()=>realInsp());
       c3.textContent='▣ EXPLAIN と DDL(実物)を見る';
       placeChip(c3,F.x+F.w-140,F.y+F.h-6);
@@ -1820,16 +1828,22 @@ const wbEl=document.getElementById('wbsql');
 function updWb(){ wbEl.textContent=wbSQL(); }
 wbEl.onclick=()=>openInsp('<h2>🛠 Workbench</h2><div class="sub">実行される文(パラメータ連動)</div><pre>'+wbSQL().replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>');
 document.getElementById('stmtSel').onchange=e=>{ STMT=e.target.value; updWb(); };
-document.getElementById('bRun').onclick=()=>{ ({sel:doSelect,tid:doTraceSelect,del:doDelete,upd:doUpdate,proj:doProj})[STMT](); };
+document.getElementById('bRun').onclick=()=>{
+  ({sel:doSelect,tid:doTraceSelect,del:doDelete,upd:doUpdate,proj:doProj})[STMT]();
+  if(RQ.on&&STMT==='sel'&&RQ.n<RQ.budget-2)
+    realExplain().then(()=>realRun()).catch(e=>rst('取得失敗: '+e.message,true));
+};
 hUpdWb=updWb; hOpenInsp=openInsp; hZoomS1=()=>{ S1T='otel_traces'; zoomTo('S1'); };
 document.getElementById('dataSel').onchange=e=>{
   RQ.on=(e.target.value==='real');
+  document.getElementById('bSnap').style.display=RQ.on?'':'none';
   if(RQ.on){ realBoot().then(()=>realRun()).then(()=>{ hZoomS1();
       toast('実データモード: '+RQ.db+'.'+RQ.tbl+' を system.parts から読む。20 秒ごとに更新し、生まれた/消えた Part を報告する'); }); }
   else { rst(''); RQ.seen=new Set(); toast('縮尺シミュレータに戻した'); }
 };
 if(rstEl()) rstEl().onclick=()=>{ if(RQ.on) realInsp(); };
-setInterval(()=>{ if(RQ.on&&RQ.n<RQ.budget-6) realParts().catch(e=>rst('取得失敗: '+e.message,true)); },120000);
+const snapBtn=document.getElementById('bSnap');
+snapBtn.onclick=()=>{ if(!RQ.on) return; rst('撮り直し中…'); realParts().catch(e=>rst('取得失敗: '+e.message,true)); };
 document.getElementById('bSql').onclick=()=>{
   openInsp('<h2>❯ 現在の文</h2><div class="sub">最後に実行された(される)DML/クエリ</div><pre>'
     +CURSQL.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</pre>'
